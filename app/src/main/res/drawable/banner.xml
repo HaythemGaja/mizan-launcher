@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV home-screen banner (320x180 slot): deep gradient with an accent
+     bar — drawn as shapes so the APK carries no image assets. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="linear"
+                android:angle="270"
+                android:startColor="#FF262C4A"
+                android:endColor="#FF000000" />
+        </shape>
+    </item>
+    <item
+        android:left="24dp"
+        android:top="120dp"
+        android:right="220dp"
+        android:bottom="132dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="6dp" />
+            <solid android:color="#FFEBEBF0" />
+        </shape>
+    </item>
+</layer-list>

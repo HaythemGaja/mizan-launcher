@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher icon: rounded dark square with an accent "M" bar motif. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="18dp" />
+            <gradient
+                android:type="linear"
+                android:angle="270"
+                android:startColor="#FF383E42"
+                android:endColor="#FF101114" />
+        </shape>
+    </item>
+    <item
+        android:left="18dp"
+        android:top="52dp"
+        android:right="66dp"
+        android:bottom="62dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="5dp" />
+            <solid android:color="#FFEBEBF0" />
+        </shape>
+    </item>
+</layer-list>

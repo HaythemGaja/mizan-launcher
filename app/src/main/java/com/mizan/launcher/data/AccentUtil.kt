@@ -1,0 +1,117 @@
+package com.mizan.launcher.data
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.net.Uri
+import com.mizan.launcher.core.DominantColor
+import com.mizan.launcher.core.Themes
+import com.mizan.launcher.core.WeatherLogic
+
+/**
+ * Computes the Dynamic theme's accent: the dominant colour of the current
+ * wallpaper. Works for every wallpaper kind — image wallpapers are decoded
+ * (downscaled), gradient/solid/theme wallpapers are rendered to a small
+ * bitmap first. Result is stored in Prefs.accentOverride. Fail-open: on any
+ * error the stored value is left alone and the preset accent is used.
+ */
+object AccentUtil {
+
+    fun recompute(ctx: Context, prefs: Prefs) {
+        try {
+            val bmp = wallpaperBitmap(ctx, prefs) ?: return
+            val small = Bitmap.createScaledBitmap(bmp, 32, 32, true)
+            val pixels = IntArray(32 * 32)
+            small.getPixels(pixels, 0, 32, 0, 0, 32, 32)
+            val preset = Themes.preset(prefs.themeId)
+            val colour = DominantColor.extract(pixels, preset.accent)
+            prefs.accentOverride = colour
+            if (small !== bmp) small.recycle()
+            bmp.recycle()
+        } catch (e: Exception) {
+            Prefs.noteError(ctx, "accentRecompute", e)
+        }
+    }
+
+    /** The wallpaper as a bitmap (used for accent extraction), or null. */
+    fun wallpaperBitmap(ctx: Context, prefs: Prefs): Bitmap? {
+        return when (prefs.wallpaperKind) {
+            "image" -> loadImage(ctx, prefs.wallpaperValue)
+            // Reddit wallpapers are downloaded files in app-private storage;
+            // wallpaperValue is the absolute file path (v1.1).
+            "reddit" -> loadImageFile(prefs.wallpaperValue)
+            // Weather background (v1.2): rendered from the cached
+            // snapshot's palette at thumbnail size; null when there's no
+            // weather data, so the preset accent is used (fail-open).
+            "weather" -> {
+                val snap = Weather.decodeSnapshot(prefs.weatherData)
+                val cond = snap?.let { WeatherLogic.chooseCondition(it.code, it.isDay, it.dailyCodes) }
+                if (cond != null) {
+                    WeatherArt.render(WeatherLogic.paletteFor(cond), 64, 36)
+                } else {
+                    null
+                }
+            }
+            "gradient" -> {
+                val g = Themes.gradient(prefs.wallpaperValue)
+                renderGradient(g.top, g.bottom)
+            }
+            "solid" -> {
+                val c = prefs.wallpaperValue.toIntOrNull() ?: Themes.SOLIDS[0].second
+                renderGradient(c, c)
+            }
+            else -> {
+                val p = Themes.preset(prefs.themeId)
+                renderGradient(p.bgTop, p.bgBottom)
+            }
+        }
+    }
+
+    /** Decode a user image wallpaper, downscaled; null on any failure. */
+    fun loadImage(ctx: Context, uriString: String): Bitmap? {
+        if (uriString.isBlank()) return null
+        return try {
+            val uri = Uri.parse(uriString)
+            val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, opts)
+            }
+        } catch (e: Exception) {
+            Prefs.noteError(ctx, "loadWallpaperImage", e)
+            null
+        }
+    }
+
+    /** Decode a wallpaper from a plain file path, downscaled; null on failure. */
+    fun loadImageFile(path: String): Bitmap? {
+        if (path.isBlank()) return null
+        return try {
+            val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+            BitmapFactory.decodeFile(path, opts)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun renderGradient(top: Int, bottom: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paint = Paint()
+        for (y in 0 until 32) {
+            val f = y / 31f
+            paint.color = blend(top, bottom, f)
+            canvas.drawLine(0f, y.toFloat(), 32f, y.toFloat(), paint)
+        }
+        return bmp
+    }
+
+    private fun blend(a: Int, b: Int, f: Float): Int {
+        fun ch(x: Int, y: Int) = (x + (y - x) * f).toInt()
+        return (0xFF shl 24) or
+            (ch((a shr 16) and 0xFF, (b shr 16) and 0xFF) shl 16) or
+            (ch((a shr 8) and 0xFF, (b shr 8) and 0xFF) shl 8) or
+            ch(a and 0xFF, b and 0xFF)
+    }
+}

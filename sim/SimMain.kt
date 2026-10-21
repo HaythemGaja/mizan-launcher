@@ -1,0 +1,1191 @@
+import com.mizan.launcher.core.AllAppsLogic
+import com.mizan.launcher.core.AppSearch
+import com.mizan.launcher.core.BingWallpaper
+import com.mizan.launcher.core.DominantColor
+import com.mizan.launcher.core.ForecastLogic
+import com.mizan.launcher.core.GuestGate
+import com.mizan.launcher.core.HourPoint
+import com.mizan.launcher.core.DayPoint
+import com.mizan.launcher.core.MoveContainer
+import com.mizan.launcher.core.MoveSessionMachine
+import com.mizan.launcher.core.NeverList
+import com.mizan.launcher.core.NowPlayingLogic
+import com.mizan.launcher.core.RecentsStore
+import com.mizan.launcher.core.RotationLogic
+import com.mizan.launcher.core.RowOrder
+import com.mizan.launcher.core.SettingsGate
+import com.mizan.launcher.core.SpeedUp
+import com.mizan.launcher.core.Folder
+import com.mizan.launcher.core.FolderEntry
+import com.mizan.launcher.core.FolderTree
+import com.mizan.launcher.core.LayoutCodec
+import com.mizan.launcher.core.LayoutData
+import com.mizan.launcher.core.ArrowDir
+import com.mizan.launcher.core.ArrowPinCodec
+import com.mizan.launcher.core.ArrowPinEntry
+import com.mizan.launcher.core.ArrowPinEvent
+import com.mizan.launcher.core.ArrowPinSetupFlow
+import com.mizan.launcher.core.ArrowPinSetupResult
+import com.mizan.launcher.core.FolderGate
+import com.mizan.launcher.core.FolderLogic
+import com.mizan.launcher.core.GridMove
+import com.mizan.launcher.core.SettingsFit
+import com.mizan.launcher.core.SettingsNavMachine
+import com.mizan.launcher.core.SwitchLogic
+import com.mizan.launcher.core.TileLayout
+import com.mizan.launcher.core.WifiLabel
+import com.mizan.launcher.core.WeatherCondition
+import com.mizan.launcher.core.WeatherLogic
+import com.mizan.launcher.core.WeatherUnits
+import com.mizan.launcher.core.RedditCacheCodec
+import com.mizan.launcher.core.RedditWallpapers
+import com.mizan.launcher.core.StatusBarCodec
+import com.mizan.launcher.core.StatusBarConfig
+import com.mizan.launcher.core.Themes
+import kotlin.math.abs
+
+/**
+ * Headless JVM sim for Mizan Launcher's pure logic.
+ * Run: see run_sim.sh. Prints PASS/FAIL per check and a final count;
+ * exits non-zero if anything failed.
+ */
+var pass = 0
+var fail = 0
+
+fun check(name: String, cond: Boolean, detail: String = "") {
+    if (cond) { pass++; println("PASS  $name") }
+    else { fail++; println("FAIL  $name  $detail") }
+}
+
+fun chan(c: Int, shift: Int) = (c shr shift) and 0xFF
+
+fun closeTo(actual: Int, r: Int, g: Int, b: Int, tol: Int): Boolean =
+    abs(chan(actual, 16) - r) <= tol && abs(chan(actual, 8) - g) <= tol && abs(chan(actual, 0) - b) <= tol
+
+/**
+ * Build a folder from entry KEYS (v1.5 typed-entry model): a plain
+ * package name is an app entry, "@f:<id>" is a sub-folder reference —
+ * the same keys the layout codec stores and move sessions order.
+ */
+fun testFolder(id: String, name: String, vararg keys: String, locked: Boolean = false): Folder {
+    val f = Folder(id, name, mutableListOf(), locked)
+    for (k in keys) f.entries.add(FolderEntry.fromKey(k))
+    return f
+}
+
+fun main() {
+    // ---------- (1) Never-list (v1.5: all that remains of the classifier) ----------
+    // The Cleanup classifier and its SAFE/REVIEW categories were
+    // REMOVED in v1.5 with the Cleanup feature. Its never-list data
+    // survives as core/NeverList — Speed Up's exclusion list — and is
+    // exercised here directly and again through the kill list (§20).
+    check("neverlist: gms is never", NeverList.isNever("com.google.android.gms"))
+    check("neverlist: launcherx is never", NeverList.isNever("com.google.android.apps.tv.launcherx"))
+    check("neverlist: Play Store is never", NeverList.isNever("com.android.vending"))
+    check("neverlist: Settings + SystemUI are never",
+        NeverList.isNever("com.android.tv.settings") && NeverList.isNever("com.android.systemui"))
+    check("neverlist: setup/keyboard/bluetooth/tvinput are never",
+        NeverList.isNever("com.google.android.tungsten.setupwraith") &&
+            NeverList.isNever("com.example.keyboard") &&
+            NeverList.isNever("com.android.bluetooth") &&
+            NeverList.isNever("com.vendor.tvinput"))
+    check("neverlist: own package is never", NeverList.isNever("com.mizan.launcher"))
+    check("neverlist: ordinary apps are not never",
+        !NeverList.isNever("com.netflix.ninja") && !NeverList.isNever("com.example.whatever"))
+
+    // ---------- (2) Layout store: round-trip + per-profile isolation ----------
+    val a = LayoutData()
+    a.favorites.addAll(listOf("com.a", "com.b", "com.c"))
+    a.hidden.addAll(setOf("com.hidden1", "com.hidden2"))
+    a.allAppsOrder.addAll(listOf("com.z", "com.a"))
+    a.folders.add(testFolder("f1", "Kids, |Fun%", "com.a", "com.k"))
+    a.folders.add(testFolder("f2", "News", "com.n"))
+    a.rowOrder.clear(); a.rowOrder.addAll(listOf("apps", "favorites", "folders", "continue", "inputs"))
+    a.rowVisible["continue"] = false
+
+    val encA = LayoutCodec.encode(a)
+    val back = LayoutCodec.decode(encA)
+    check("layout: favorites round-trip", back.favorites == a.favorites, back.favorites.toString())
+    check("layout: hidden round-trip", back.hidden == a.hidden, back.hidden.toString())
+    check("layout: allAppsOrder round-trip", back.allAppsOrder == a.allAppsOrder)
+    check("layout: folder names with separators round-trip",
+        back.folders.map { it.name } == a.folders.map { it.name }, back.folders.map { it.name }.toString())
+    check("layout: folder ids round-trip",
+        back.folders.map { it.id } == a.folders.map { it.id })
+    check("layout: folder apps round-trip",
+        back.folders.map { it.appPackages } == a.folders.map { it.appPackages })
+    check("layout: row order round-trip", back.rowOrder == a.rowOrder, back.rowOrder.toString())
+    check("layout: row visibility round-trip", back.rowVisible["continue"] == false && back.isRowVisible("apps"))
+    check("layout: re-encode is stable", LayoutCodec.encode(back) == encA)
+    check("layout: empty/garbage decode fails open",
+        LayoutCodec.decode("garbage\n===\n").favorites.isEmpty())
+
+    // Per-profile isolation: the codec is what each profile stores under its
+    // own key; two stores must not share state.
+    val profileA = LayoutCodec.decode(encA)
+    val profileB = LayoutCodec.decode(null)
+    profileB.favorites.add("com.onlyb")
+    profileB.hidden.add("com.onlyb")
+    check("layout: profile isolation (favorites)", !profileA.favorites.contains("com.onlyb"))
+    check("layout: profile isolation (hidden)", !profileA.hidden.contains("com.onlyb"))
+    check("layout: move swaps neighbours", profileA.move(profileA.favorites, "com.b", +1) &&
+        profileA.favorites == listOf("com.a", "com.c", "com.b"))
+    check("layout: move at edge is no-op", !profileA.move(profileA.favorites, "com.b", +1))
+
+    // ---------- (3) Dominant colour on synthetic bitmaps ----------
+    val red = (0xFF shl 24) or (200 shl 16) or (30 shl 8) or 30
+    val blue = (0xFF shl 24) or (30 shl 16) or (40 shl 8) or 210
+    val mostlyRed = IntArray(1000) { if (it % 10 == 0) blue else red }
+    val domRed = DominantColor.extract(mostlyRed, 0)
+    check("colour: dominant red wins", closeTo(domRed, 200, 30, 30, 16), Integer.toHexString(domRed))
+    val mostlyBlue = IntArray(500) { blue }
+    val domBlue = DominantColor.extract(mostlyBlue, 0)
+    check("colour: solid blue returned", closeTo(domBlue, 30, 40, 210, 16), Integer.toHexString(domBlue))
+    val allBlack = IntArray(100) { 0xFF000000.toInt() }
+    check("colour: near-black image falls back",
+        DominantColor.extract(allBlack, 0xFF336699.toInt()) == 0xFF336699.toInt())
+    check("colour: empty image falls back",
+        DominantColor.extract(IntArray(0), 0xFF336699.toInt()) == 0xFF336699.toInt())
+    check("colour: result is opaque", (DominantColor.extract(mostlyRed, 0) ushr 24) == 0xFF)
+
+    // ---------- (4) Theme presets + gradients ----------
+    check("themes: at least 8 presets + dynamic", Themes.PRESETS.size >= 9, Themes.PRESETS.size.toString())
+    val ids = Themes.PRESETS.map { it.id }
+    check("themes: preset ids unique", ids.distinct().size == ids.size)
+    for (required in listOf("apple_black", "roku_purple", "midnight", "dusk", "plum", "forest", "ocean", "graphite", "dynamic")) {
+        check("themes: preset '$required' exists", ids.contains(required))
+    }
+    check("themes: exactly one dynamic preset", Themes.PRESETS.count { it.dynamic } == 1)
+    var presetsComplete = true
+    for (p in Themes.PRESETS) {
+        // Every colour fully opaque and text != background (readable).
+        val colours = listOf(p.bgTop, p.bgBottom, p.accent, p.text, p.subText)
+        if (colours.any { (it ushr 24) != 0xFF }) presetsComplete = false
+        if (p.text == p.bgTop || p.text == p.bgBottom) presetsComplete = false
+        if (p.name.isBlank()) presetsComplete = false
+    }
+    check("themes: every preset defines opaque bg/accent/text", presetsComplete)
+    check("gradients: exactly 14 built-ins", Themes.GRADIENTS.size == 14, Themes.GRADIENTS.size.toString())
+    var gradientsOk = true
+    val gnames = HashSet<String>()
+    for (g in Themes.GRADIENTS) {
+        if ((g.top ushr 24) != 0xFF || (g.bottom ushr 24) != 0xFF) gradientsOk = false
+        if (g.name.isBlank() || !gnames.add(g.name)) gradientsOk = false
+    }
+    check("gradients: all 14 define render params (unique names, opaque colours)", gradientsOk)
+    check("themes: unknown preset id falls back to first preset",
+        Themes.preset("does-not-exist") == Themes.PRESETS[0])
+    check("themes: unknown gradient falls back to first gradient",
+        Themes.gradient("does-not-exist") == Themes.GRADIENTS[0])
+
+    // ---------- (5) Arrow PIN state machine (v1.2) ----------
+    // REPLACES the v1.1 numeric PIN-pad tests entirely — the numeric
+    // PIN is retired in v1.2 (spec section 10); the lock is now a
+    // D-pad direction sequence. Old PIN tests did not carry over.
+    run {
+        val e1 = ArrowPinEntry()
+        check("arrow append changes state", e1.append(ArrowDir.UP) == ArrowPinEvent.Changed && e1.entered == 1)
+        e1.append(ArrowDir.DOWN); e1.append(ArrowDir.LEFT)
+        check("arrow submit below min is too short", !e1.canSubmit && e1.submit() == ArrowPinEvent.TooShort && e1.entered == 3)
+        e1.append(ArrowDir.RIGHT)
+        check("arrow 4 steps can submit", e1.canSubmit)
+        check("arrow submit of 4 accepted", (e1.submit() as? ArrowPinEvent.Submitted)?.sequence == "UDLR")
+        // Upper bound: 8 accepted, 9th append rejected.
+        val e2 = ArrowPinEntry()
+        repeat(8) { e2.append(ArrowDir.UP) }
+        check("arrow 8 steps still submittable", e2.canSubmit)
+        check("arrow 9th append rejected as full", e2.append(ArrowDir.DOWN) == ArrowPinEvent.RejectedFull && e2.entered == 8)
+        check("arrow submit of 8 accepted", (e2.submit() as? ArrowPinEvent.Submitted)?.sequence?.length == 8)
+        // Backspace: removes last; empty means cancel.
+        val e3 = ArrowPinEntry()
+        e3.append(ArrowDir.LEFT); e3.append(ArrowDir.RIGHT)
+        check("arrow backspace removes last", e3.pressBack() == ArrowPinEvent.Changed && e3.entered == 1)
+        e3.pressBack()
+        check("arrow backspace on empty cancels", e3.pressBack() == ArrowPinEvent.Cancelled)
+        // Explicit cancel clears.
+        val e4 = ArrowPinEntry()
+        e4.append(ArrowDir.UP); e4.append(ArrowDir.UP)
+        check("arrow cancel clears buffer", e4.cancel() == ArrowPinEvent.Cancelled && e4.entered == 0)
+        // Set + confirm: match completes, mismatch restarts.
+        val flow = ArrowPinSetupFlow()
+        check("arrow set needs confirm", flow.submit("UDLR") == ArrowPinSetupResult.NeedConfirm && flow.awaitingConfirm)
+        check("arrow set confirm match completes", flow.submit("UDLR") == ArrowPinSetupResult.Done("UDLR"))
+        val flow2 = ArrowPinSetupFlow()
+        flow2.submit("UDLR")
+        check("arrow set confirm mismatch restarts", flow2.submit("UDRL") == ArrowPinSetupResult.Mismatch && !flow2.awaitingConfirm)
+        check("arrow set after mismatch takes fresh build", flow2.submit("UDRL") == ArrowPinSetupResult.NeedConfirm)
+        // Unlock check via codec.
+        check("arrow unlock correct sequence matches",
+            ArrowPinCodec.matches(listOf(ArrowDir.UP, ArrowDir.DOWN, ArrowDir.LEFT, ArrowDir.RIGHT), "UDLR"))
+        check("arrow unlock wrong sequence rejected",
+            !ArrowPinCodec.matches(listOf(ArrowDir.UP, ArrowDir.DOWN, ArrowDir.RIGHT, ArrowDir.LEFT), "UDLR"))
+        check("arrow unlock empty never matches unset lock",
+            !ArrowPinCodec.matches(emptyList(), ""))
+        // Encoding: round-trip, validation, legacy-numeric migration discard.
+        val seq = listOf(ArrowDir.UP, ArrowDir.DOWN, ArrowDir.LEFT, ArrowDir.RIGHT, ArrowDir.UP)
+        check("arrow encode round-trips", ArrowPinCodec.decode(ArrowPinCodec.encode(seq)) == seq)
+        check("arrow encoded form is UDLRU", ArrowPinCodec.encode(seq) == "UDLRU")
+        check("arrow numeric value is legacy", ArrowPinCodec.isLegacyNumeric("2580"))
+        check("arrow numeric value decodes empty (migration discard)",
+            ArrowPinCodec.decode("2580").isEmpty() && !ArrowPinCodec.isValidEncoded("2580"))
+        check("arrow glyphs are arrows not digits",
+            ArrowDir.UP.glyph == "\u2191" && ArrowDir.DOWN.glyph == "\u2193" &&
+                ArrowDir.LEFT.glyph == "\u2190" && ArrowDir.RIGHT.glyph == "\u2192")
+    }
+
+    // ---------- (6) Reddit wallpaper parser (v1.1) ----------
+    val fixture = """
+    {"kind":"Listing","data":{"children":[
+      {"kind":"t3","data":{"title":"Mountain lake at dawn","subreddit":"EarthPorn","stickied":false,
+        "is_video":false,"is_gallery":false,"over_18":false,
+        "url":"https://i.redd.it/lake123.jpg","permalink":"/r/EarthPorn/comments/a1/mountain/",
+        "preview":{"images":[{"source":{"url":"https://preview.redd.it/lake123.jpg?width=2560&amp;height=1440","width":2560,"height":1440}}]}}},
+      {"kind":"t3","data":{"title":"Mod announcement","subreddit":"EarthPorn","stickied":true,
+        "is_video":false,"is_gallery":false,"over_18":false,
+        "url":"https://i.redd.it/rules.jpg",
+        "preview":{"images":[{"source":{"url":"https://preview.redd.it/rules.jpg","width":1920,"height":1080}}]}}},
+      {"kind":"t3","data":{"title":"Cool video","subreddit":"wallpaper","stickied":false,
+        "is_video":true,"is_gallery":false,"over_18":false,
+        "url":"https://v.redd.it/clip99","permalink":"/r/wallpaper/comments/a2/video/"}},
+      {"kind":"t3","data":{"title":"My gallery","subreddit":"wallpaper","stickied":false,
+        "is_video":false,"is_gallery":true,"over_18":false,
+        "url":"https://www.reddit.com/gallery/xyz1","permalink":"/r/wallpaper/comments/a3/gallery/"}},
+      {"kind":"t3","data":{"title":"Spicy art","subreddit":"wallpapers","stickied":false,
+        "is_video":false,"is_gallery":false,"over_18":true,
+        "url":"https://i.redd.it/spicy.jpg",
+        "preview":{"images":[{"source":{"url":"https://preview.redd.it/spicy.jpg","width":1920,"height":1080}}]}}},
+      {"kind":"t3","data":{"title":"Phone wallpaper portrait","subreddit":"wallpapers","stickied":false,
+        "is_video":false,"is_gallery":false,"over_18":false,
+        "url":"https://i.redd.it/portrait.jpg",
+        "preview":{"images":[{"source":{"url":"https://preview.redd.it/portrait.jpg","width":1080,"height":1920}}]}}},
+      {"kind":"t3","data":{"title":"External host desert","subreddit":"wallpaper","stickied":false,
+        "is_video":false,"is_gallery":false,"over_18":false,
+        "url":"https://imgur.example/desert-page","permalink":"/r/wallpaper/comments/a4/desert/",
+        "preview":{"images":[{"source":{"url":"https://preview.redd.it/desert.jpg?width=3840&amp;height=2160","width":3840,"height":2160}}]}}},
+      {"kind":"t3","data":{"title":"Just a question","subreddit":"wallpaper","stickied":false,
+        "is_video":false,"is_gallery":false,"over_18":false,
+        "url":"https://www.reddit.com/r/wallpaper/comments/a5/question/","permalink":"/r/wallpaper/comments/a5/question/"}}
+    ]}}
+    """.trimIndent()
+
+    val parsed = RedditWallpapers.parseListing(fixture)
+    check("reddit: only usable image posts survive", parsed.size == 2, "got ${parsed.size}")
+    check("reddit: direct i.redd.it image accepted",
+        parsed.any { it.url == "https://i.redd.it/lake123.jpg" && it.subreddit == "EarthPorn" })
+    check("reddit: stickied rejected", parsed.none { it.url.contains("rules.jpg") })
+    check("reddit: video rejected", parsed.none { it.url.contains("v.redd.it") })
+    check("reddit: gallery rejected", parsed.none { it.url.contains("gallery") || it.title.contains("gallery", true) })
+    check("reddit: NSFW rejected by default", parsed.none { it.url.contains("spicy.jpg") })
+    check("reddit: portrait rejected", parsed.none { it.url.contains("portrait.jpg") })
+    check("reddit: preview fallback accepted + URL unescaped",
+        parsed.any { it.url == "https://preview.redd.it/desert.jpg?width=3840&height=2160" },
+        parsed.map { it.url }.toString())
+    check("reddit: landscape dimensions carried through",
+        parsed.firstOrNull { it.url.contains("lake123") }?.let { it.width == 2560 && it.height == 1440 } == true)
+    val parsedNsfw = RedditWallpapers.parseListing(fixture, allowNsfw = true)
+    check("reddit: NSFW accepted only with the toggle on",
+        parsedNsfw.size == 3 && parsedNsfw.any { it.url.contains("spicy.jpg") })
+    check("reddit: malformed JSON fails open to empty",
+        RedditWallpapers.parseListing("not json at all").isEmpty() &&
+            RedditWallpapers.parseListing(null).isEmpty() &&
+            RedditWallpapers.parseListing("{\"data\":{}}").isEmpty())
+
+    check("reddit: valid subreddit names",
+        RedditWallpapers.isValidSubreddit("EarthPorn") && RedditWallpapers.isValidSubreddit("wallpaper") &&
+            RedditWallpapers.isValidSubreddit("a_b_1"))
+    check("reddit: invalid subreddit names rejected",
+        !RedditWallpapers.isValidSubreddit("r/wallpaper") && !RedditWallpapers.isValidSubreddit("has space") &&
+            !RedditWallpapers.isValidSubreddit("x") && !RedditWallpapers.isValidSubreddit("") &&
+            !RedditWallpapers.isValidSubreddit("bad-dash"))
+    check("reddit: r/ prefix cleaned", RedditWallpapers.cleanSubreddit("r/EarthPorn") == "EarthPorn")
+    check("reddit: cache round-trip",
+        RedditCacheCodec.decode(RedditCacheCodec.encode(parsed)) == parsed)
+
+    // ---------- (7) Status bar config (v1.1) ----------
+    val defaults = StatusBarConfig()
+    check("statusbar: defaults match v1.0 behaviour",
+        defaults.showBar && defaults.showClock && defaults.showDate && defaults.showWeather &&
+            defaults.showNetwork && defaults.showBluetooth && defaults.showQuickTiles &&
+            !defaults.clock24h && !defaults.showSeconds &&
+            defaults.dateFormat == StatusBarConfig.DATE_WEEKDAY_MONTH_DAY &&
+            defaults.textSize == StatusBarConfig.SIZE_MEDIUM &&
+            defaults.background == StatusBarConfig.BG_TRANSPARENT &&
+            defaults.opacity == StatusBarConfig.OPACITY_SOLID && defaults.isDefault())
+    val custom = StatusBarConfig(
+        showBar = false, showWeather = false, showBluetooth = false,
+        clock24h = true, showSeconds = true,
+        dateFormat = StatusBarConfig.DATE_ISO, textSize = StatusBarConfig.SIZE_LARGE,
+        background = StatusBarConfig.BG_BLACK, opacity = StatusBarConfig.OPACITY_TRANSLUCENT
+    )
+    check("statusbar: codec round-trip identity",
+        StatusBarCodec.decode(StatusBarCodec.encode(custom)) == custom)
+    check("statusbar: default codec round-trip identity",
+        StatusBarCodec.decode(StatusBarCodec.encode(defaults)) == defaults)
+    check("statusbar: garbage decode fails open to defaults",
+        StatusBarCodec.decode("garbage||||") == defaults && StatusBarCodec.decode(null) == defaults)
+    check("statusbar: unknown field values fall back individually",
+        StatusBarCodec.decode("111111111|nope|nope|nope|nope") ==
+            defaults.copy(clock24h = true, showSeconds = true))
+    check("statusbar: clock patterns honour 12/24h + seconds",
+        StatusBarConfig().clockPattern() == "h:mm a" &&
+            StatusBarConfig(clock24h = true, showSeconds = true).clockPattern() == "H:mm:ss" &&
+            StatusBarConfig(showSeconds = true).clockPattern() == "h:mm:ss a")
+    check("statusbar: date patterns cover all formats",
+        StatusBarConfig.DATE_FORMATS.all { StatusBarConfig(dateFormat = it).datePattern().isNotEmpty() } &&
+            StatusBarConfig(dateFormat = StatusBarConfig.DATE_ISO).datePattern() == "yyyy-MM-dd")
+    check("statusbar: text scales small/medium/large",
+        StatusBarConfig(textSize = StatusBarConfig.SIZE_SMALL).textScale() < 1f &&
+            StatusBarConfig(textSize = StatusBarConfig.SIZE_MEDIUM).textScale() == 1.0f &&
+            StatusBarConfig(textSize = StatusBarConfig.SIZE_LARGE).textScale() > 1f)
+    check("statusbar: opacity alpha solid vs translucent",
+        StatusBarConfig.backgroundAlpha(StatusBarConfig.OPACITY_SOLID) == 0xFF &&
+            StatusBarConfig.backgroundAlpha(StatusBarConfig.OPACITY_TRANSLUCENT) == 0x99)
+
+    // Status bar travels inside the layout codec (per-profile).
+    val layoutWithBar = LayoutData()
+    layoutWithBar.statusBar = custom
+    val layoutBack = LayoutCodec.decode(LayoutCodec.encode(layoutWithBar))
+    check("statusbar: survives layout encode/decode",
+        layoutBack.statusBar == custom, layoutBack.statusBar.toString())
+    check("statusbar: v1.0 layout without status line decodes to defaults",
+        LayoutCodec.decode("v=1\nfav=com.a\n").statusBar == defaults)
+
+    println()
+    // ---------- (8) Uniform tile layout (v1.2) ----------
+    run {
+        val a = TileLayout.tileMetrics(1920, 2.0f, "standard", 6)
+        val b = TileLayout.tileMetrics(1920, 2.0f, "standard", 6)
+        check("tiles deterministic: same inputs same size", a == b)
+        val small = TileLayout.tileMetrics(1920, 2.0f, "compact", 6)
+        val large = TileLayout.tileMetrics(1920, 2.0f, "large", 6)
+        check("tiles scale uniformly S < M < L",
+            small.tileWidthPx < a.tileWidthPx && a.tileWidthPx < large.tileWidthPx &&
+                small.tileHeightPx < a.tileHeightPx && a.tileHeightPx < large.tileHeightPx)
+        val more = TileLayout.tileMetrics(1920, 2.0f, "standard", 10)
+        check("tiles more columns means smaller tiles", more.tileWidthPx < a.tileWidthPx)
+        check("tile icon fits inside tile", a.iconPx < a.tileWidthPx && a.iconPx < a.tileHeightPx)
+        val card = TileLayout.cardMetrics(1920, 2.0f, "standard", 6)
+        check("watch card is uniform width > tile, same height",
+            card.tileWidthPx > a.tileWidthPx && card.tileHeightPx == a.tileHeightPx)
+        check("label visible only when focused", TileLayout.labelVisible(true) && !TileLayout.labelVisible(false))
+    }
+
+    // ---------- (9) Weather units + background logic (v1.2) ----------
+    run {
+        check("weather units fahrenheit params",
+            WeatherUnits.FAHRENHEIT.apiTemperatureUnit == "fahrenheit" && WeatherUnits.FAHRENHEIT.apiWindSpeedUnit == "mph" &&
+                WeatherUnits.FAHRENHEIT.tempSymbol == "\u00B0F" && WeatherUnits.FAHRENHEIT.windSymbol == "mph")
+        check("weather units celsius params",
+            WeatherUnits.CELSIUS.apiTemperatureUnit == "celsius" && WeatherUnits.CELSIUS.apiWindSpeedUnit == "kmh" &&
+                WeatherUnits.CELSIUS.tempSymbol == "\u00B0C" && WeatherUnits.CELSIUS.windSymbol == "km/h")
+        check("weather units fromKey falls back to fahrenheit",
+            WeatherUnits.fromKey("celsius") == WeatherUnits.CELSIUS &&
+                WeatherUnits.fromKey("junk") == WeatherUnits.FAHRENHEIT &&
+                WeatherUnits.fromKey(null) == WeatherUnits.FAHRENHEIT)
+        // Every WMO group, day + night.
+        check("weather clear day/night", WeatherLogic.conditionFor(0, true) == WeatherCondition.CLEAR_DAY &&
+            WeatherLogic.conditionFor(0, false) == WeatherCondition.CLEAR_NIGHT &&
+            WeatherLogic.conditionFor(1, false) == WeatherCondition.CLEAR_NIGHT)
+        check("weather partly day/night", WeatherLogic.conditionFor(2, true) == WeatherCondition.PARTLY &&
+            WeatherLogic.conditionFor(2, false) == WeatherCondition.PARTLY)
+        check("weather cloudy + fog", WeatherLogic.conditionFor(3, true) == WeatherCondition.CLOUDY &&
+            WeatherLogic.conditionFor(45, false) == WeatherCondition.FOG &&
+            WeatherLogic.conditionFor(48, true) == WeatherCondition.FOG)
+        check("weather rain group all rain",
+            listOf(51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82)
+                .all { WeatherLogic.conditionFor(it, true) == WeatherCondition.RAIN })
+        check("weather storm group", listOf(95, 96, 99)
+            .all { WeatherLogic.conditionFor(it, false) == WeatherCondition.STORM })
+        check("weather snow group", listOf(71, 73, 75, 77, 85, 86)
+            .all { WeatherLogic.conditionFor(it, true) == WeatherCondition.SNOW })
+        check("weather unknown code falls back to cloudy",
+            WeatherLogic.conditionFor(999, true) == WeatherCondition.CLOUDY &&
+                WeatherLogic.conditionFor(-1, false) == WeatherCondition.CLOUDY)
+        // Choice: current first, forecast dominant as fallback.
+        check("weather choice prefers current",
+            WeatherLogic.chooseCondition(0, true, listOf(95)) == WeatherCondition.CLEAR_DAY)
+        check("weather choice falls back to forecast dominant",
+            WeatherLogic.chooseCondition(null, true, listOf(0, 61, 3)) == WeatherCondition.RAIN)
+        check("weather choice fallback worst wins",
+            WeatherLogic.chooseCondition(null, true, listOf(61, 71)) == WeatherCondition.SNOW &&
+                WeatherLogic.chooseCondition(null, false, listOf(0, 95)) == WeatherCondition.STORM)
+        check("weather choice with nothing is null",
+            WeatherLogic.chooseCondition(null, true, emptyList()) == null)
+        check("weather palettes complete + opaque for every condition",
+            WeatherCondition.values().all { c ->
+                val p = WeatherLogic.paletteFor(c)
+                p.motif == c.motif && (p.top ushr 24) == 0xFF && (p.bottom ushr 24) == 0xFF && (p.accent ushr 24) == 0xFF
+            })
+    }
+
+    // ---------- (10) Settings two-column nav machine (v1.2) ----------
+    run {
+        val cats = listOf("home", "statusbar", "look", "weather", "lock", "safe")
+        val navm = SettingsNavMachine(cats)
+        check("settings starts in list column, first category",
+            navm.focusColumn == SettingsNavMachine.COLUMN_LEFT && navm.selectedId == "home" && !navm.inDetail)
+        check("settings right enters detail", navm.enterDetail() && navm.inDetail)
+        check("settings right again is a no-op", !navm.enterDetail())
+        check("settings left/back returns to list", navm.backToList() && !navm.inDetail)
+        check("settings back in list stays (caller exits)", !navm.backToList())
+        navm.select(3)
+        check("settings category change swaps detail model", navm.selectedId == "weather")
+        navm.select(99)
+        check("settings selection clamps at end", navm.selectedIndex == cats.size - 1)
+        navm.select(-5)
+        check("settings selection clamps at start", navm.selectedIndex == 0)
+        check("settings move down works", navm.moveSelection(1) && navm.selectedIndex == 1)
+        navm.select(cats.size - 1)
+        check("settings move past end clamps (no wrap)", !navm.moveSelection(1) && navm.selectedIndex == cats.size - 1)
+        navm.noteFocus(SettingsNavMachine.COLUMN_RIGHT)
+        check("settings focus sync marks detail", navm.inDetail)
+        navm.noteFocus(99)
+        check("settings focus sync ignores nonsense", navm.inDetail)
+    }
+
+    // ---------- (11) Folder dedupe + folder lock (v1.3) ----------
+    run {
+        val folders = listOf(
+            testFolder("f1", "Kids", "com.kid1", "com.shared"),
+            testFolder("f2", "News", "com.news1", "com.shared")
+        )
+        val installed = listOf("com.a", "com.kid1", "com.b", "com.shared", "com.news1", "com.c")
+        check("dedupe: apps in folders are excluded from All Apps",
+            FolderLogic.allAppsVisible(installed, emptySet(), folders) == listOf("com.a", "com.b", "com.c"))
+        check("dedupe: app in two folders excluded once",
+            FolderLogic.folderPackages(folders).count { it == "com.shared" } == 1 &&
+                !FolderLogic.allAppsVisible(installed, emptySet(), folders).contains("com.shared"))
+        val afterRemoval = listOf(
+            testFolder("f1", "Kids", "com.shared"),
+            testFolder("f2", "News", "com.news1", "com.shared")
+        )
+        check("dedupe: removing an app from its folder restores it",
+            FolderLogic.allAppsVisible(installed, emptySet(), afterRemoval).contains("com.kid1"))
+        check("dedupe: hidden + in-folder still excluded",
+            !FolderLogic.allAppsVisible(installed, setOf("com.b"), folders).contains("com.b") &&
+                FolderLogic.allAppsVisible(installed, setOf("com.b"), folders) == listOf("com.a", "com.c"))
+        check("dedupe: empty folder list keeps everything visible",
+            FolderLogic.allAppsVisible(installed, emptySet(), emptyList()) == installed)
+        check("dedupe: favorites unaffected (favorite may live in a folder)",
+            FolderLogic.folderPackages(folders).contains("com.kid1")) // membership is data, not a block
+
+        // Folder lock: codec round-trip + backward compat.
+        val lf = LayoutData()
+        lf.folders.add(testFolder("f1", "Kids", "com.a", locked = true))
+        lf.folders.add(testFolder("f2", "Open", "com.b", locked = false))
+        val lback = LayoutCodec.decode(LayoutCodec.encode(lf))
+        check("folderlock: locked flag round-trips",
+            lback.folders.size == 2 && lback.folders[0].locked && !lback.folders[1].locked &&
+                lback.folders[0].appPackages == listOf("com.a"))
+        check("folderlock: re-encode is stable",
+            LayoutCodec.encode(lback) == LayoutCodec.encode(lf))
+        // A v1.2-era folder line (no lock segment) decodes unlocked.
+        val legacy = LayoutCodec.decode("v=1\nfolder=Legacy|com.a,com.b\nfolder=Empty|\n")
+        check("folderlock: v1.2 folder strings decode unlocked",
+            legacy.folders.size == 2 && legacy.folders.none { it.locked } &&
+                legacy.folders[0].appPackages == listOf("com.a", "com.b") &&
+                legacy.folders[1].appPackages.isEmpty())
+        // v1.5 migration: legacy lines carry no id — decode assigns
+        // stable ids in line order, contents unchanged.
+        check("folderlock: legacy strings migrate with sequential ids",
+            legacy.folders.map { it.id } == listOf("f1", "f2"))
+        val vaultLayout = LayoutData()
+        vaultLayout.folders.add(testFolder("f1", "Vault", locked = true))
+        check("folderlock: locked empty folder round-trips",
+            LayoutCodec.decode(LayoutCodec.encode(vaultLayout)).folders.single().locked)
+
+        // Gate decision.
+        val open = testFolder("f1", "Open")
+        val vault = testFolder("f2", "Vault", locked = true)
+        check("foldergate: unlocked folder opens",
+            FolderLogic.folderGate(open, patternSet = false) == FolderGate.OPEN &&
+                FolderLogic.folderGate(open, patternSet = true) == FolderGate.OPEN)
+        check("foldergate: locked with pattern prompts for pattern",
+            FolderLogic.folderGate(vault, patternSet = true) == FolderGate.PROMPT_PATTERN)
+        check("foldergate: locked without pattern prompts to set one (never locked out)",
+            FolderLogic.folderGate(vault, patternSet = false) == FolderGate.PROMPT_SET_PATTERN)
+    }
+
+    // ---------- (12) Grid hold-and-move (v1.3) ----------
+    run {
+        // 7 items in 3 columns: rows [a b c] [d e f] [g]
+        val base = mutableListOf("a", "b", "c", "d", "e", "f", "g")
+        val l1 = base.toMutableList()
+        check("gridmove: left swaps with neighbour",
+            GridMove.gridMove(l1, 1, ArrowDir.LEFT, 3) == 0 && l1 == listOf("b", "a", "c", "d", "e", "f", "g"))
+        val l2 = base.toMutableList()
+        check("gridmove: left at row start is no-op (no wrap)",
+            GridMove.gridMove(l2, 3, ArrowDir.LEFT, 3) == -1 && l2 == base)
+        val l3 = base.toMutableList()
+        check("gridmove: right swaps with neighbour",
+            GridMove.gridMove(l3, 0, ArrowDir.RIGHT, 3) == 1 && l3 == listOf("b", "a", "c", "d", "e", "f", "g"))
+        val l4 = base.toMutableList()
+        check("gridmove: right at row end is no-op (no wrap)",
+            GridMove.gridMove(l4, 2, ArrowDir.RIGHT, 3) == -1 && l4 == base)
+        check("gridmove: right at very last item is no-op",
+            GridMove.gridMove(base.toMutableList(), 6, ArrowDir.RIGHT, 3) == -1)
+        val l5 = base.toMutableList()
+        check("gridmove: up swaps with item one row up",
+            GridMove.gridMove(l5, 4, ArrowDir.UP, 3) == 1 && l5 == listOf("a", "e", "c", "d", "b", "f", "g"))
+        check("gridmove: up from top row is no-op",
+            GridMove.gridMove(base.toMutableList(), 1, ArrowDir.UP, 3) == -1)
+        val l6 = base.toMutableList()
+        check("gridmove: down swaps with item one row down",
+            GridMove.gridMove(l6, 0, ArrowDir.DOWN, 3) == 3 && l6 == listOf("d", "b", "c", "a", "e", "f", "g"))
+        check("gridmove: down into partial last row works where an item sits below",
+            GridMove.gridMove(base.toMutableList(), 3, ArrowDir.DOWN, 3) == 6)
+        check("gridmove: down is no-op where partial row has no item below",
+            GridMove.gridMove(base.toMutableList(), 4, ArrowDir.DOWN, 3) == -1 &&
+                GridMove.gridMove(base.toMutableList(), 5, ArrowDir.DOWN, 3) == -1)
+        check("gridmove: single item list never moves",
+            ArrowDir.values().all { GridMove.gridMove(mutableListOf("x"), 0, it, 3) == -1 })
+        check("gridmove: invalid index/columns are no-ops",
+            GridMove.gridMove(base.toMutableList(), 99, ArrowDir.LEFT, 3) == -1 &&
+                GridMove.gridMove(base.toMutableList(), 0, ArrowDir.LEFT, 0) == -1)
+        // Snapshot/restore: cancel must restore the exact original order.
+        val working = base.toMutableList()
+        val snapshot = working.toList()
+        GridMove.gridMove(working, 0, ArrowDir.DOWN, 3)
+        GridMove.gridMove(working, 3, ArrowDir.RIGHT, 3)
+        working.clear(); working.addAll(snapshot)
+        check("gridmove: cancel restores the exact snapshot", working == base)
+        // Commit path: the moved list differs and keeps every element once.
+        val committed = base.toMutableList()
+        GridMove.gridMove(committed, 6, ArrowDir.UP, 3)
+        check("gridmove: drop-commit keeps all items exactly once",
+            committed.sorted() == base.sorted() && committed != base)
+    }
+
+    // ---------- (13) Per-tile status-bar switches (v1.3) ----------
+    run {
+        check("tileswitch: defaults all on",
+            StatusBarConfig().let {
+                it.showTileWifi && it.showTileBluetooth && it.showTileSound &&
+                    it.showTilePicture && it.showTileSettings && it.showTileSearch &&
+                    it.showTileAllApps
+            })
+        val tilesOff = StatusBarConfig(showTileSound = false, showTileWifi = false)
+        check("tileswitch: codec round-trip with tiles off",
+            StatusBarCodec.decode(StatusBarCodec.encode(tilesOff)) == tilesOff)
+        check("tileswitch: sound independently off, others on",
+            StatusBarCodec.decode(StatusBarCodec.encode(tilesOff)).let {
+                !it.showTileSound && it.showTileBluetooth && it.showTilePicture && it.showTileSettings
+            })
+        // A v1.2 status line (5 fields, no tile segment) decodes all-on.
+        val v12 = StatusBarCodec.decode("111111111|iso|medium|black|solid")
+        check("tileswitch: v1.2 status strings decode to all tiles on",
+            v12.showTileWifi && v12.showTileBluetooth && v12.showTileSound &&
+                v12.showTilePicture && v12.showTileSettings && v12.dateFormat == StatusBarConfig.DATE_ISO)
+        check("tileswitch: tiles survive the layout codec",
+            LayoutCodec.decode(LayoutCodec.encode(LayoutData().apply { statusBar = tilesOff })).statusBar == tilesOff)
+        check("tileswitch: garbage tiles segment fails open to on",
+            StatusBarCodec.decode("111111111|xx|iso|medium|black|solid").let {
+                it.showTileWifi && it.showTileSound
+            })
+    }
+
+    // ---------- (14) Settings fit metrics (v1.3) ----------
+    run {
+        val full = SettingsFit.compute(1920, 1080, 1.0f)
+        check("fit: 1920x1080 is normal (not compact)",
+            !full.compact && !full.stacked && full.headerSp == 24f && full.rowTextSp == 19f)
+        check("fit: left pane is 30% clamped to 260..360dp",
+            full.leftPaneWidthDp == 360 &&
+                SettingsFit.compute(1000, 900, 1.0f).leftPaneWidthDp == 300 &&
+                SettingsFit.compute(800, 900, 1.0f).leftPaneWidthDp == 260)
+        val hd = SettingsFit.compute(1280, 720, 1.0f)
+        check("fit: 1280x720 is compact with smaller type/padding",
+            hd.compact && hd.headerSp == 20f && hd.rowTextSp == 17f && hd.rowPadVDp < full.rowPadVDp)
+        val small = SettingsFit.compute(960, 540, 1.0f)
+        check("fit: 960x540 is compact", small.compact)
+        check("fit: density converts px to dp (1920px @2x = 540dp tall = compact)",
+            SettingsFit.compute(1920, 1080, 2.0f).compact)
+        val portrait = SettingsFit.compute(1080, 1920, 2.0f)
+        check("fit: portrait/narrow stacks panes",
+            portrait.stacked && portrait.leftPaneWidthDp == 540)
+        check("fit: bottom padding is at least one row height at every size",
+            listOf(full, hd, small, portrait).all { it.detailBottomPadDp >= it.rowHeightDp })
+    }
+
+    // ---------- (15) iOS switch logic (v1.3) ----------
+    run {
+        check("switch: on = green track, knob right",
+            SwitchLogic.trackColor(true) == 0xFF34C759.toInt() && SwitchLogic.knobFraction(true) == 1f)
+        check("switch: off = grey track, knob left",
+            SwitchLogic.trackColor(false) == 0xFF3A3A3C.toInt() && SwitchLogic.knobFraction(false) == 0f)
+        check("switch: toggle flips both ways",
+            SwitchLogic.toggled(true) == false && SwitchLogic.toggled(false) == true &&
+                SwitchLogic.KNOB == 0xFFFFFFFF.toInt())
+    }
+
+    // ---------- (16) Wi-Fi SSID label (v1.3) ----------
+    run {
+        check("wifi: quoted SSID is cleaned", WifiLabel.cleanSsid("\"HomeWifi\"") == "HomeWifi")
+        check("wifi: unquoted SSID passes through", WifiLabel.cleanSsid("HomeWifi") == "HomeWifi")
+        check("wifi: unknown sentinel becomes no-name",
+            WifiLabel.cleanSsid("<unknown ssid>") == null && WifiLabel.cleanSsid("<UNKNOWN SSID>") == null)
+        check("wifi: null/empty/quotes-only become no-name",
+            WifiLabel.cleanSsid(null) == null && WifiLabel.cleanSsid("") == null &&
+                WifiLabel.cleanSsid("\"\"") == null && WifiLabel.cleanSsid("   ") == null)
+        check("wifi: label shows the network name",
+            WifiLabel.label(WifiLabel.Kind.WIFI, "\"HomeWifi\"") == "📶 HomeWifi")
+        check("wifi: label falls back to generic Wi-Fi without a name",
+            WifiLabel.label(WifiLabel.Kind.WIFI, "<unknown ssid>") == "● Wi-Fi" &&
+                WifiLabel.label(WifiLabel.Kind.WIFI, null) == "● Wi-Fi")
+        check("wifi: ethernet/other/offline labels unchanged",
+            WifiLabel.label(WifiLabel.Kind.ETHERNET, "\"HomeWifi\"") == "● Ethernet" &&
+                WifiLabel.label(WifiLabel.Kind.OTHER, null) == "● Online" &&
+                WifiLabel.label(WifiLabel.Kind.OFFLINE, null) == "● Offline")
+    }
+
+    // ---------- (17) Forecast formatting (v1.4) ----------
+    run {
+        // 48 hourly entries starting 2026-10-20T00:00, temp = hour index.
+        val hours = (0 until 48).map { i ->
+            val day = 20 + i / 24
+            val h = i % 24
+            HourPoint("2026-10-%02dT%02d:00".format(day, h), i.toDouble(), 0)
+        }
+        check("forecast: current hour index found",
+            ForecastLogic.currentHourIndex(hours.map { it.timeIso }, "2026-10-20T14") == 14)
+        check("forecast: current hour index missing is -1",
+            ForecastLogic.currentHourIndex(hours.map { it.timeIso }, "2026-11-01T09") == -1 &&
+                ForecastLogic.currentHourIndex(hours.map { it.timeIso }, "") == -1)
+        val window = ForecastLogic.hourWindow(hours, 14)
+        check("forecast: window has 24 entries starting at current hour",
+            window.size == 24 && window.first().timeIso == "2026-10-20T14:00" &&
+                window.last().timeIso == "2026-10-21T13:00")
+        // Midnight wrap: starting at 22:00, labels run 10 PM, 11 PM, 12 AM, 1 AM...
+        val late = ForecastLogic.hourWindow(hours, 22)
+        check("forecast: window wraps past midnight",
+            late[0].timeIso.endsWith("T22:00") && late[2].timeIso == "2026-10-21T00:00")
+        check("forecast: 12h labels wrap at midnight",
+            ForecastLogic.hourLabel("2026-10-20T22:00", false) == "10 PM" &&
+                ForecastLogic.hourLabel("2026-10-20T23:00", false) == "11 PM" &&
+                ForecastLogic.hourLabel("2026-10-21T00:00", false) == "12 AM" &&
+                ForecastLogic.hourLabel("2026-10-21T01:00", false) == "1 AM" &&
+                ForecastLogic.hourLabel("2026-10-21T12:00", false) == "12 PM")
+        check("forecast: 24h labels",
+            ForecastLogic.hourLabel("2026-10-20T14:00", true) == "14:00" &&
+                ForecastLogic.hourLabel("2026-10-20T00:00", true) == "00:00" &&
+                ForecastLogic.hourLabel("garbage", true) == "")
+        // Near the end of the array the window wraps modulo to stay full.
+        val tail = ForecastLogic.hourWindow(hours, 40)
+        check("forecast: window wraps modulo at array end",
+            tail.size == 24 && tail.first().timeIso == "2026-10-21T16:00" &&
+                tail.last().timeIso == "2026-10-20T15:00")
+        check("forecast: short source yields whole source, empty yields empty",
+            ForecastLogic.hourWindow(hours.take(5), 2).size == 5 &&
+                ForecastLogic.hourWindow(emptyList(), 0).isEmpty())
+        check("forecast: temp renders in Fahrenheit",
+            ForecastLogic.tempText(72.4, WeatherUnits.FAHRENHEIT) == "72°F" &&
+                ForecastLogic.tempText(72.5, WeatherUnits.FAHRENHEIT) == "73°F")
+        check("forecast: temp renders in Celsius",
+            ForecastLogic.tempText(22.2, WeatherUnits.CELSIUS) == "22°C")
+        val day = DayPoint("2026-10-20", 61, 68.0, 51.0, 80)
+        val dayRow = ForecastLogic.dayRow(day, WeatherUnits.FAHRENHEIT)
+        check("forecast: day row label is weekday + date (2026-10-20 is a Tuesday)",
+            dayRow.label == "Tue, Oct 20", dayRow.label)
+        check("forecast: day row condition + hi/lo + precip",
+            dayRow.condition == "Rain" && dayRow.hiLo == "68°F / 51°F" && dayRow.precip == "💧 80%")
+        check("forecast: day row without precip omits it",
+            ForecastLogic.dayRow(day.copy(precipProb = null), WeatherUnits.CELSIUS).precip == null &&
+                ForecastLogic.dayRow(day.copy(precipProb = null), WeatherUnits.CELSIUS).hiLo == "68°C / 51°C")
+        check("forecast: hour row formats all fields",
+            ForecastLogic.hourRow(HourPoint("2026-10-20T14:00", 71.6, 2), WeatherUnits.FAHRENHEIT, false) ==
+                com.mizan.launcher.core.HourRow("2 PM", "72°F", "Partly cloudy"))
+        check("forecast: condition labels cover groups",
+            ForecastLogic.conditionLabel(0) == "Clear" &&
+                ForecastLogic.conditionLabel(95) == "Storm" &&
+                ForecastLogic.conditionLabel(71) == "Snow" &&
+                ForecastLogic.conditionLabel(45) == "Fog")
+    }
+
+    // ---------- (18) Rotation + Bing (v1.4) ----------
+    run {
+        check("rotation: off is never due",
+            !RotationLogic.isDue(10_000_000L, 0L, RotationLogic.OFF) &&
+                !RotationLogic.isDue(10_000_000L, 0L, "bogus"))
+        check("rotation: never rotated counts as due",
+            RotationLogic.isDue(1_000L, 0L, RotationLogic.EVERY_15_MIN))
+        check("rotation: not due before interval, due at exact boundary",
+            !RotationLogic.isDue(899_999L, 0L + 1L, RotationLogic.EVERY_15_MIN) &&
+                RotationLogic.isDue(900_001L, 1L, RotationLogic.EVERY_15_MIN))
+        check("rotation: 1h and 6h and daily intervals",
+            RotationLogic.intervalMillis(RotationLogic.EVERY_1_HOUR) == 3_600_000L &&
+                RotationLogic.intervalMillis(RotationLogic.EVERY_6_HOURS) == 21_600_000L &&
+                RotationLogic.intervalMillis(RotationLogic.DAILY) == 86_400_000L &&
+                !RotationLogic.isDue(3_599_999L, 0L + 1L, RotationLogic.EVERY_1_HOUR))
+        check("rotation: next index advances and wraps",
+            RotationLogic.nextIndex(0, 3) == 1 && RotationLogic.nextIndex(2, 3) == 0 &&
+                RotationLogic.nextIndex(-1, 3) == 0)
+        check("rotation: next index empty list is -1, stale index wraps",
+            RotationLogic.nextIndex(0, 0) == -1 && RotationLogic.nextIndex(9, 3) == 0)
+        val bingJson = """{"images":[{"url":"/th?id=OHR.Test_EN-US1_1920x1080.jpg","title":"x"}],"tooltips":{}}"""
+        check("bing: relative url becomes absolute",
+            BingWallpaper.parseImageUrl(bingJson) ==
+                "https://www.bing.com/th?id=OHR.Test_EN-US1_1920x1080.jpg")
+        check("bing: absolute url passes through",
+            BingWallpaper.parseImageUrl("""{"images":[{"url":"https://cdn.example.com/a.jpg"}]}""") ==
+                "https://cdn.example.com/a.jpg")
+        check("bing: malformed json fails open to null",
+            BingWallpaper.parseImageUrl("not json") == null &&
+                BingWallpaper.parseImageUrl("""{"images":[]}""") == null &&
+                BingWallpaper.parseImageUrl(null) == null &&
+                BingWallpaper.parseImageUrl("""{"images":[{"url":""}]}""") == null)
+        check("bing: day key is the calendar date",
+            BingWallpaper.dayKey(java.util.GregorianCalendar(2026, 9, 20, 23, 59).timeInMillis)
+                .matches(Regex("\\d{4}-\\d{2}-\\d{2}")) &&
+                BingWallpaper.dayKey(0L).isNotEmpty())
+        check("bing: day key changes across midnight",
+            BingWallpaper.dayKey(java.util.GregorianCalendar(2026, 9, 20, 23, 59).timeInMillis) !=
+                BingWallpaper.dayKey(java.util.GregorianCalendar(2026, 9, 21, 0, 1).timeInMillis))
+    }
+
+    // ---------- (19) App search filter (v1.4) ----------
+    run {
+        val apps = listOf(
+            AppSearch.Item("com.netflix", "Netflix"),
+            AppSearch.Item("com.youtube", "YouTube"),
+            AppSearch.Item("com.myyou", "My YouTube Clips"),
+            AppSearch.Item("com.youcount", "YouCount"),
+            AppSearch.Item("com.hbo", "HBO Max")
+        )
+        check("search: empty query returns all in order",
+            AppSearch.filter(apps, "") == apps && AppSearch.filter(apps, "   ") == apps)
+        check("search: substring match is case-insensitive",
+            AppSearch.filter(apps, "TUBE").map { it.pkg } ==
+                listOf("com.youtube", "com.myyou"))
+        check("search: prefix matches sort before substring matches",
+            AppSearch.filter(apps, "you").map { it.pkg } ==
+                listOf("com.youtube", "com.youcount", "com.myyou"))
+        check("search: no match is empty",
+            AppSearch.filter(apps, "zzz").isEmpty())
+        check("search: order preserved inside groups",
+            AppSearch.filter(apps, "o").map { it.pkg } ==
+                listOf("com.youtube", "com.myyou", "com.youcount", "com.hbo"))
+    }
+
+    // ---------- (20) Speed up kill list (v1.4) ----------
+    run {
+        val candidates = listOf(
+            SpeedUp.Candidate("com.google.android.gms", false),
+            SpeedUp.Candidate("com.android.systemui", true),
+            SpeedUp.Candidate("com.vendor.framework", true),
+            SpeedUp.Candidate("com.mizan.launcher", false),
+            SpeedUp.Candidate("com.netflix.ninja", false),
+            SpeedUp.Candidate("com.spotify.tv", false),
+            SpeedUp.Candidate("com.netflix.ninja", false)
+        )
+        check("speedup: excludes never-list, system, self, foreground; dedupes",
+            SpeedUp.killList(candidates, "com.mizan.launcher", "com.spotify.tv") ==
+                listOf("com.netflix.ninja"))
+        check("speedup: null foreground excludes nothing extra",
+            SpeedUp.killList(candidates, "com.mizan.launcher", null) ==
+                listOf("com.netflix.ninja", "com.spotify.tv"))
+        check("speedup: never-list wins even for non-system flag",
+            SpeedUp.killList(
+                listOf(SpeedUp.Candidate("com.google.android.apps.tv.launcherx", false)),
+                "com.mizan.launcher", null
+            ).isEmpty())
+        check("speedup: empty in, empty out",
+            SpeedUp.killList(emptyList(), "com.mizan.launcher", null).isEmpty())
+    }
+
+    // ---------- (21) Recents store (v1.4) ----------
+    run {
+        var recents = RecentsStore.decode("")
+        check("recents: empty decodes empty", recents.isEmpty())
+        recents = RecentsStore.record(recents, "com.a", 100L, "com.mizan.launcher")
+        recents = RecentsStore.record(recents, "com.b", 200L, "com.mizan.launcher")
+        recents = RecentsStore.record(recents, "com.c", 300L, "com.mizan.launcher")
+        check("recents: MRU order is newest first",
+            recents.map { it.pkg } == listOf("com.c", "com.b", "com.a"))
+        recents = RecentsStore.record(recents, "com.a", 400L, "com.mizan.launcher")
+        check("recents: relaunch dedupes to front with new timestamp",
+            recents.map { it.pkg } == listOf("com.a", "com.c", "com.b") && recents[0].at == 400L)
+        recents = RecentsStore.record(recents, "com.mizan.launcher", 500L, "com.mizan.launcher")
+        check("recents: self is never recorded",
+            recents.none { it.pkg == "com.mizan.launcher" } && recents.size == 3)
+        var many = RecentsStore.decode("")
+        for (i in 1..12) many = RecentsStore.record(many, "com.app$i", i.toLong(), "com.mizan.launcher")
+        check("recents: capped at 8, oldest dropped",
+            many.size == RecentsStore.CAP && many.first().pkg == "com.app12" &&
+                many.last().pkg == "com.app5")
+        val roundTrip = RecentsStore.decode(RecentsStore.encode(many))
+        check("recents: codec round-trips", roundTrip == many)
+        check("recents: garbage decodes fail-open",
+            RecentsStore.decode("|||,,|,x|notanumber").isEmpty() &&
+                RecentsStore.decode(null).isEmpty())
+    }
+
+    // ---------- (22) Now Playing mapping (v1.4) ----------
+    run {
+        val np = NowPlayingLogic
+        val sessions = listOf(
+            NowPlayingLogic.RawSession("com.spotify.tv", "Song One", "Artist A",
+                np.STATE_PLAYING, np.ACTION_PLAY_PAUSE or np.ACTION_SKIP_TO_NEXT or np.ACTION_SKIP_TO_PREVIOUS),
+            NowPlayingLogic.RawSession("com.spotify.tv", "Song One (dup)", "Artist A",
+                np.STATE_PAUSED, np.ACTION_PLAY_PAUSE),
+            NowPlayingLogic.RawSession("com.android.systemui", "System", "", np.STATE_PLAYING, np.ACTION_PLAY_PAUSE),
+            NowPlayingLogic.RawSession("com.example.notitle", "  ", "Nobody", np.STATE_PLAYING, np.ACTION_PLAY_PAUSE),
+            NowPlayingLogic.RawSession("com.youtube.tv", "A Video", null, np.STATE_PAUSED, np.ACTION_PLAY_PAUSE)
+        )
+        val cards = np.cards(sessions)
+        check("nowplaying: dedupes by package, filters system-ui and blank titles",
+            cards.map { it.pkg } == listOf("com.spotify.tv", "com.youtube.tv"))
+        check("nowplaying: first session wins for a package",
+            cards[0].title == "Song One" && cards[0].playing)
+        check("nowplaying: controls follow the actions mask",
+            cards[0].canToggle && cards[0].canNext && cards[0].canPrev &&
+                !cards[1].canNext && !cards[1].canPrev && cards[1].canToggle)
+        check("nowplaying: paused state is not playing, artist may be empty",
+            !cards[1].playing && cards[1].artist == "")
+        check("nowplaying: no actions means no toggle",
+            !np.cards(listOf(NowPlayingLogic.RawSession("com.x", "T", "A", np.STATE_PAUSED, 0L)))[0].canToggle)
+        check("nowplaying: buffering reads as playing",
+            np.cards(listOf(NowPlayingLogic.RawSession("com.x", "T", "A", np.STATE_BUFFERING, np.ACTION_PAUSE)))[0].playing)
+        check("nowplaying: empty in, empty out", np.cards(emptyList()).isEmpty())
+    }
+
+    // ---------- (23) Guest gate (v1.4, trimmed v1.5) ----------
+    // v1.5: the OPEN_SETTINGS and OPEN_CLEANUP actions are GONE from
+    // the enum — Cleanup no longer exists, and Settings entry is
+    // decided by core/SettingsGate (section 27), which merges the
+    // guest rule with the global Lock Settings switch into one
+    // prompt. The two removed checks covered exactly those actions;
+    // the profile-switch gate keeps its full coverage here.
+    run {
+        val g = GuestGate
+        val away = GuestGate.Action.SWITCH_AWAY_FROM_GUEST
+        val toGuest = GuestGate.Action.SWITCH_TO_GUEST
+        val personal = GuestGate.Action.SWITCH_BETWEEN_PERSONAL
+        check("guest: locked guest must enter pattern to switch away",
+            g.decide(true, true, true, away) == GuestGate.Decision.REQUIRE_PATTERN)
+        check("guest: switching TO guest is never gated",
+            g.decide(false, true, true, toGuest) == GuestGate.Decision.ALLOW &&
+                g.decide(true, true, true, toGuest) == GuestGate.Decision.ALLOW)
+        check("guest: fail-open when no pattern set",
+            g.decide(true, true, false, away) == GuestGate.Decision.ALLOW)
+        check("guest: lock switch off means no gate",
+            g.decide(true, false, true, away) == GuestGate.Decision.ALLOW)
+        check("guest: not in guest means no gate",
+            g.decide(false, true, true, away) == GuestGate.Decision.ALLOW)
+        check("guest: personal-to-personal switch is free",
+            g.decide(false, true, true, personal) == GuestGate.Decision.ALLOW)
+        check("guest: active flag only for the flagged profile",
+            g.isGuestActive(2, 2) && !g.isGuestActive(1, 2) && !g.isGuestActive(1, 0))
+    }
+
+    // ---------- (24) Row order normalize + status codec v1.4 (v1.4) ----------
+    run {
+        val old = listOf("favorites", "folders", "continue", "inputs", "apps")
+        val normalized = RowOrder.normalize(old)
+        check("rows: v1.3 order gains recents after favorites",
+            normalized == listOf("favorites", "recents", "folders", "nowplaying", "continue", "inputs", "apps"),
+            normalized.toString())
+        check("rows: normalize is idempotent",
+            RowOrder.normalize(normalized) == normalized)
+        val custom = listOf("apps", "favorites", "folders", "continue", "inputs")
+        check("rows: custom order preserved, insertions follow their anchors",
+            RowOrder.normalize(custom) ==
+                listOf("apps", "favorites", "recents", "folders", "nowplaying", "continue", "inputs"))
+        check("rows: empty order gains both rows at the end",
+            RowOrder.normalize(emptyList()) == listOf("recents", "nowplaying"))
+        // Status codec: v1.4 writes 6 tile flags; v1.3's 5-flag strings
+        // decode with Search ON; the flag itself round-trips.
+        val searchOff = StatusBarConfig(showTileSearch = false)
+        val decodedOff = StatusBarCodec.decode(StatusBarCodec.encode(searchOff))
+        check("statusbar: search tile flag round-trips",
+            !decodedOff.showTileSearch && decodedOff.showTileWifi)
+        val v13 = "111111100|11111|weekday_month_day|medium|transparent|solid"
+        check("statusbar: v1.3 string decodes with search tile on",
+            StatusBarCodec.decode(v13).showTileSearch &&
+                !StatusBarCodec.decode(v13).clock24h)
+        val v14 = StatusBarCodec.encode(StatusBarConfig())
+        check("statusbar: v1.4 default round-trips with search on",
+            StatusBarCodec.decode(v14).showTileSearch && StatusBarCodec.decode(v14).isDefault())
+        // v1.5: the tile segment grew a 7th flag (All Apps). Older
+        // strings decode with it ON; the flag itself round-trips.
+        check("statusbar: v1.3 string decodes with All Apps tile on",
+            StatusBarCodec.decode(v13).showTileAllApps)
+        val segs14 = v14.split("|").toMutableList()
+        segs14[1] = "111110"
+        check("statusbar: v1.4 tile string decodes with All Apps tile on",
+            StatusBarCodec.decode(segs14.joinToString("|")).showTileAllApps)
+        check("statusbar: All Apps tile flag round-trips",
+            !StatusBarCodec.decode(
+                StatusBarCodec.encode(StatusBarConfig(showTileAllApps = false))
+            ).showTileAllApps)
+    }
+
+    // ---------- (25) Move session (v1.4 fix — session level) ----------
+    // Regression test for the on-device v1.3 bug: the activity reloads
+    // its layout from prefs on every rebuild, orphaning any captured
+    // list reference, so swaps never rendered/persisted. These tests
+    // replay the activity's FIXED loop exactly: the machine owns a
+    // working copy; each successful move is written into the CURRENT
+    // layout; a codec round-trip mid-session stands in for rebuild()'s
+    // reload; the assertions read the FINAL PERSISTED state (a fresh
+    // decode — what the next cold render would show).
+    run {
+        fun persisted(layout: LayoutData): LayoutData =
+            LayoutCodec.decode(LayoutCodec.encode(layout))
+
+        // Write-back exactly as MainActivity.applyMoveOrder does it:
+        // resolve the target from the CURRENT layout, replace contents.
+        // v1.5: FOLDER write-back resolves the folder by its STABLE ID
+        // (v1.4 used the list index) and converts entry keys back into
+        // typed entries.
+        fun writeBack(layout: LayoutData, container: MoveContainer, folderId: String?, order: List<String>) {
+            when (container) {
+                MoveContainer.FAVORITES -> {
+                    layout.favorites.clear(); layout.favorites.addAll(order)
+                }
+                MoveContainer.ALL_APPS -> {
+                    layout.allAppsOrder.clear(); layout.allAppsOrder.addAll(order)
+                }
+                MoveContainer.FOLDER -> {
+                    val folder = folderId?.let { FolderTree.byId(layout.folders, it) } ?: return
+                    folder.entries.clear()
+                    folder.entries.addAll(order.map { FolderEntry.fromKey(it) })
+                }
+            }
+        }
+
+        // -- Favorites: grab -> RIGHT -> DOWN -> drop, reload mid-session --
+        var live = LayoutData()
+        live.favorites.addAll(listOf("a", "b", "c", "d", "e", "f"))
+        val favMachine = MoveSessionMachine("b", live.favorites, 3)
+        check("movesession: grab finds the item, store untouched until write-back",
+            favMachine.isValid && favMachine.index == 1 &&
+                live.favorites == listOf("a", "b", "c", "d", "e", "f"))
+        check("movesession: machine moves do not leak into the store by themselves",
+            favMachine.move(ArrowDir.RIGHT) &&
+                live.favorites == listOf("a", "b", "c", "d", "e", "f"))
+        writeBack(live, MoveContainer.FAVORITES, null, favMachine.currentOrder())
+        // THE regression step: rebuild() reloads the layout from prefs.
+        live = persisted(live)
+        check("movesession: first swap survives a layout reload",
+            live.favorites == listOf("a", "c", "b", "d", "e", "f"), live.favorites.toString())
+        check("movesession: moves still land after the reload (down)",
+            favMachine.move(ArrowDir.DOWN))
+        writeBack(live, MoveContainer.FAVORITES, null, favMachine.currentOrder())
+        // Drop = nothing pending; final persisted order is the assertion.
+        check("movesession: favorites final persisted order after RIGHT+DOWN+drop",
+            persisted(live).favorites == listOf("a", "c", "f", "d", "e", "b"),
+            persisted(live).favorites.toString())
+
+        // -- All Apps: grab -> LEFT -> UP -> drop --
+        var liveApps = LayoutData()
+        liveApps.allAppsOrder.addAll(listOf("a", "b", "c", "d", "e", "f", "g", "h"))
+        val appMachine = MoveSessionMachine("f", liveApps.allAppsOrder, 4)
+        check("movesession: all-apps grab index", appMachine.isValid && appMachine.index == 5)
+        check("movesession: all-apps LEFT swaps",
+            appMachine.move(ArrowDir.LEFT))
+        writeBack(liveApps, MoveContainer.ALL_APPS, null, appMachine.currentOrder())
+        liveApps = persisted(liveApps)
+        check("movesession: all-apps UP swaps after reload",
+            appMachine.move(ArrowDir.UP))
+        writeBack(liveApps, MoveContainer.ALL_APPS, null, appMachine.currentOrder())
+        check("movesession: all-apps final persisted order after LEFT+UP+drop",
+            persisted(liveApps).allAppsOrder == listOf("f", "b", "c", "d", "a", "e", "g", "h"),
+            persisted(liveApps).allAppsOrder.toString())
+
+        // -- Folder: grab -> RIGHT -> drop, folder resolved by ID after reload --
+        var liveFolder = LayoutData()
+        liveFolder.folders.add(testFolder("f1", "Kids", "x", "y", "z", "w", "v", "u"))
+        val folderMachine = MoveSessionMachine("y", liveFolder.folders[0].entryKeys(), 3)
+        check("movesession: folder RIGHT swaps",
+            folderMachine.move(ArrowDir.RIGHT))
+        writeBack(liveFolder, MoveContainer.FOLDER, "f1", folderMachine.currentOrder())
+        liveFolder = persisted(liveFolder) // reload replaces the Folder object itself
+        check("movesession: folder DOWN still lands after the folder object was replaced",
+            folderMachine.move(ArrowDir.DOWN))
+        writeBack(liveFolder, MoveContainer.FOLDER, "f1", folderMachine.currentOrder())
+        check("movesession: folder final persisted order after RIGHT+DOWN+drop",
+            persisted(liveFolder).folders[0].entryKeys() == listOf("x", "z", "u", "w", "v", "y"),
+            persisted(liveFolder).folders[0].entryKeys().toString())
+
+        // -- Sub-folder ENTRY moves inside its parent like an app (v1.5) --
+        var liveNested = LayoutData()
+        liveNested.folders.add(testFolder("f1", "Media", "com.a", "@f:f2", "com.b"))
+        liveNested.folders.add(testFolder("f2", "Video", "com.v"))
+        val entryMachine = MoveSessionMachine("@f:f2", liveNested.folders[0].entryKeys(), 3)
+        check("movesession: sub-folder entry grabs by its entry key",
+            entryMachine.isValid && entryMachine.index == 1)
+        check("movesession: sub-folder entry swaps like an app",
+            entryMachine.move(ArrowDir.RIGHT))
+        writeBack(liveNested, MoveContainer.FOLDER, "f1", entryMachine.currentOrder())
+        check("movesession: parent order persisted with the entry moved",
+            persisted(liveNested).folders[0].entryKeys() == listOf("com.a", "com.b", "@f:f2"))
+        check("movesession: the sub-folder itself is untouched by the move",
+            persisted(liveNested).folders[1].appPackages == listOf("com.v"))
+
+        // -- Cancel: moves happen, then the snapshot is written back --
+        var liveCancel = LayoutData()
+        liveCancel.favorites.addAll(listOf("a", "b", "c", "d"))
+        val cancelMachine = MoveSessionMachine("a", liveCancel.favorites, 2)
+        cancelMachine.move(ArrowDir.RIGHT)
+        writeBack(liveCancel, MoveContainer.FAVORITES, null, cancelMachine.currentOrder())
+        cancelMachine.move(ArrowDir.DOWN)
+        writeBack(liveCancel, MoveContainer.FAVORITES, null, cancelMachine.currentOrder())
+        liveCancel = persisted(liveCancel)
+        writeBack(liveCancel, MoveContainer.FAVORITES, null, cancelMachine.snapshotOrder())
+        check("movesession: cancel restores the exact grab-time order",
+            persisted(liveCancel).favorites == listOf("a", "b", "c", "d"),
+            persisted(liveCancel).favorites.toString())
+
+        // -- Edge no-op at machine level: returns false, order untouched --
+        val edgeMachine = MoveSessionMachine("a", listOf("a", "b", "c"), 3)
+        check("movesession: edge move is a no-op and reports false",
+            !edgeMachine.move(ArrowDir.LEFT) &&
+                edgeMachine.currentOrder() == listOf("a", "b", "c") &&
+                edgeMachine.index == 0)
+        check("movesession: unknown package cannot start a session",
+            !MoveSessionMachine("nope", listOf("a", "b"), 3).isValid)
+    }
+
+    // ---------- (26) Folder tree: nesting, legality, codec (v1.5) ----------
+    run {
+        // f1 Media (root) ⊃ f2 Video ⊃ f3 Clips; f4 Games (root).
+        fun tree(): MutableList<Folder> = mutableListOf(
+            testFolder("f1", "Media", "com.music", "@f:f2"),
+            testFolder("f2", "Video", "com.player", "@f:f3"),
+            testFolder("f3", "Clips", "com.deep"),
+            testFolder("f4", "Games", "com.game")
+        )
+        val t = tree()
+        check("tree: depths are 1 for roots, +1 per level",
+            FolderTree.depth(t, "f1") == 1 && FolderTree.depth(t, "f2") == 2 &&
+                FolderTree.depth(t, "f3") == 3 && FolderTree.depth(t, "gone") == 0)
+        check("tree: subtree heights",
+            FolderTree.subtreeHeight(t, "f1") == 3 && FolderTree.subtreeHeight(t, "f2") == 2 &&
+                FolderTree.subtreeHeight(t, "f3") == 1)
+        check("tree: descendants and ancestors",
+            FolderTree.descendants(t, "f1") == setOf("f2", "f3") &&
+                FolderTree.ancestors(t, "f3").map { it.id } == listOf("f1", "f2"))
+        check("tree: breadcrumb is root-to-folder",
+            FolderTree.breadcrumb(t, "f3").map { it.name } == listOf("Media", "Video", "Clips"))
+        check("tree: roots are the parentless folders",
+            FolderTree.rootFolders(t).map { it.id } == listOf("f1", "f4"))
+        check("tree: fresh id skips taken ids",
+            FolderTree.freshId(t) == "f5" &&
+                FolderTree.freshId(listOf(testFolder("f2", "X"))) == "f1")
+        // Legality matrix (canNest arguments are child, then parent).
+        check("tree: a folder cannot contain itself",
+            !FolderTree.canNest(t, "f3", "f3"))
+        check("tree: cycle — an ancestor cannot move under its descendant",
+            !FolderTree.canNest(t, "f1", "f2"))
+        check("tree: max depth — a height-3 subtree fits nowhere deeper",
+            !FolderTree.canNest(t, "f1", "f4") && !FolderTree.canNest(t, "f2", "f3"))
+        check("tree: re-parenting a leaf up a level is legal",
+            FolderTree.canNest(t, "f3", "f1"))
+        check("tree: legal parents exclude self, descendants, too-deep targets",
+            FolderTree.legalParents(t, "f1").isEmpty() &&
+                FolderTree.legalParents(t, "f3").map { it.id } == listOf("f1", "f2", "f4"))
+        // Move semantics: the child leaves its old parent.
+        val moved = tree()
+        FolderTree.moveFolder(moved, "f3", "f4")
+        check("tree: move re-parents (old parent loses the entry)",
+            FolderTree.parentOf(moved, "f3")?.id == "f4" &&
+                FolderTree.byId(moved, "f2")!!.subFolderIds.isEmpty())
+        FolderTree.moveFolder(moved, "f3", null)
+        check("tree: move to null makes the folder a root",
+            FolderTree.parentOf(moved, "f3") == null &&
+                FolderTree.byId(moved, "f4")!!.subFolderIds.isEmpty())
+        // Delete never cascades: sub-folders re-home to the root row.
+        val del = tree()
+        FolderTree.deleteFolder(del, "f2")
+        check("tree: deleting a nested folder rehomes its sub-folders",
+            FolderTree.byId(del, "f2") == null &&
+                FolderTree.parentOf(del, "f3") == null &&
+                FolderTree.byId(del, "f1")!!.subFolderIds.isEmpty() &&
+                FolderTree.byId(del, "f3")!!.appPackages == listOf("com.deep"))
+        // Recursive membership + home-row dedupe at depth 3.
+        val deep = tree()
+        check("tree: recursive membership spans all depths",
+            FolderTree.allFolderPackages(deep) ==
+                setOf("com.music", "com.player", "com.deep", "com.game"))
+        check("tree: dedupe hides an app nested at depth 3 from All Apps row",
+            FolderLogic.allAppsVisible(
+                listOf("com.deep", "com.free"), emptySet(), deep
+            ) == listOf("com.free"))
+        // Prune: dangling refs, self refs, duplicate parents.
+        val messy = mutableListOf(
+            testFolder("f1", "A", "com.a", "@f:gone", "@f:f1"),
+            testFolder("f2", "B", "@f:f3"),
+            testFolder("f3", "C", "@f:f2", "com.c")
+        )
+        FolderTree.prune(messy)
+        check("tree: prune drops dangling and self references",
+            FolderTree.byId(messy, "f1")!!.entryKeys() == listOf("com.a"))
+        check("tree: prune leaves a folder with exactly one parent",
+            (FolderTree.parentOf(messy, "f3")?.id == "f2") !=
+                (FolderTree.parentOf(messy, "f2")?.id == "f3"))
+        // Codec: nested structure round-trips, and re-encode is stable.
+        val nestedLayout = LayoutData()
+        nestedLayout.folders.addAll(tree())
+        val nestedBack = LayoutCodec.decode(LayoutCodec.encode(nestedLayout))
+        check("tree: nested folders round-trip through the codec",
+            nestedBack.folders.map { it.id } == listOf("f1", "f2", "f3", "f4") &&
+                nestedBack.folders.map { it.entryKeys() } ==
+                nestedLayout.folders.map { it.entryKeys() } &&
+                LayoutCodec.encode(nestedBack) == LayoutCodec.encode(nestedLayout))
+    }
+
+    // ---------- (27) Settings gate (v1.5) ----------
+    run {
+        val REQ = SettingsGate.Decision.REQUIRE_PATTERN
+        val ALW = SettingsGate.Decision.ALLOW
+        check("settingsgate: lock on + pattern set -> prompt",
+            SettingsGate.decide(true, false, false, true, false) == REQ)
+        check("settingsgate: already unlocked this entry -> allow",
+            SettingsGate.decide(true, false, false, true, true) == ALW)
+        check("settingsgate: no pattern -> fail open even with lock on",
+            SettingsGate.decide(true, false, false, false, false) == ALW)
+        check("settingsgate: guest rule alone requires the pattern",
+            SettingsGate.decide(false, true, true, true, false) == REQ)
+        check("settingsgate: neither lock -> allow",
+            SettingsGate.decide(false, false, false, true, false) == ALW)
+        check("settingsgate: global lock wins when guest lock is off",
+            SettingsGate.decide(true, true, false, true, false) == REQ)
+        check("settingsgate: guest active but guest lock off and global off -> allow",
+            SettingsGate.decide(false, true, false, true, false) == ALW)
+    }
+
+    // ---------- (28) All Apps tab list (v1.5) ----------
+    run {
+        val tabFolders = listOf(
+            testFolder("f1", "Media", "app.zed", "@f:f2"),
+            testFolder("f2", "Video", "app.deep"),
+            testFolder("f3", "Games", "app.game")
+        )
+        val catalog = listOf(
+            AppSearch.Item("app.zed", "Zed"),
+            AppSearch.Item("app.deep", "Deep"),
+            AppSearch.Item("app.game", "Game"),
+            AppSearch.Item("app.free", "Free"),
+            AppSearch.Item("app.hidden", "Aardvark")
+        )
+        val items = AllAppsLogic.build(catalog, setOf("app.hidden"), tabFolders)
+        check("allapps: hidden excluded, everything else listed",
+            items.map { it.pkg } == listOf("app.deep", "app.free", "app.game", "app.zed"),
+            items.map { it.pkg }.toString())
+        check("allapps: alphabetical by label",
+            items.map { it.label } == listOf("Deep", "Free", "Game", "Zed"))
+        check("allapps: foldered apps badged with the containing folder",
+            items.first { it.pkg == "app.zed" }.let { it.inFolder && it.folderName == "Media" } &&
+                items.first { it.pkg == "app.deep" }.let { it.inFolder && it.folderName == "Video" })
+        check("allapps: unfoldered apps carry no badge",
+            items.filter { !it.inFolder }.map { it.pkg } == listOf("app.free"))
+        check("allapps: label ties break by package",
+            AllAppsLogic.build(
+                listOf(AppSearch.Item("b.pkg", "Same"), AppSearch.Item("a.pkg", "Same")),
+                emptySet(), emptyList()
+            ).map { it.pkg } == listOf("a.pkg", "b.pkg"))
+    }
+
+    println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
+    if (fail > 0) kotlin.system.exitProcess(1)
+}
