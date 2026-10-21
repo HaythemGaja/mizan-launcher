@@ -40,6 +40,7 @@ import com.mizan.launcher.core.WeatherUnits
 import com.mizan.launcher.core.RedditCacheCodec
 import com.mizan.launcher.core.RedditWallpapers
 import com.mizan.launcher.core.HomeStyle
+import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.StatusBarCodec
 import com.mizan.launcher.core.StatusBarConfig
 import com.mizan.launcher.core.Themes
@@ -1346,8 +1347,8 @@ fun main() {
         check("homestyle: ipad survives the codec",
             HomeStyle.normalize("ipad") == "ipad" && HomeStyle.isIpad("ipad") &&
                 !HomeStyle.isIpad("tv"))
-        check("homestyle: value list is tv then ipad",
-            HomeStyle.VALUES == listOf("tv", "ipad"))
+        check("homestyle: value list is tv then ipad (v1.8: tracker appended)",
+            HomeStyle.VALUES == listOf("tv", "ipad", "tracker"))
 
         // Label rule truth table: TV = focus-only (the v1.2 rule),
         // iPad = always under the icon.
@@ -1458,6 +1459,225 @@ fun main() {
         check("homestyle: default boost leaves metrics unchanged",
             TileLayout.tileMetrics(1920, 2f, "standard", 6) ==
                 TileLayout.tileMetrics(1920, 2f, "standard", 6, 1f))
+    }
+
+    // ---------- (33) Tracker view: codec v2, parsing, hero, dates, merge, movies, marked-set, search (v1.8) ----------
+    run {
+        // Codec v2: "tracker" joins tv/ipad; everything else is TV.
+        check("tracker: codec — tracker survives, garbage still decodes to tv",
+            HomeStyle.normalize("tracker") == "tracker" && HomeStyle.isTracker("tracker") &&
+                !HomeStyle.isTracker("tv") && !HomeStyle.isTracker("ipad") &&
+                HomeStyle.normalize("Tracker") == "tv" && HomeStyle.normalize("bogus") == "tv")
+        // Tracker style follows the TV label + icon-shape rules
+        // (focus-only names, the profile's own shape) — only iPad
+        // overrides them.
+        check("tracker: tracker style keeps tv label + shape rules",
+            !HomeStyle.labelVisible("tracker", false) && HomeStyle.labelVisible("tracker", true) &&
+                HomeStyle.effectiveIconShape("tracker", "circle") == "circle" &&
+                HomeStyle.effectiveIconShape("tracker", "rounded") == "rounded")
+
+        // Snapshot parsing (JsonMini): full item, defaults, garbage.
+        val upJson = """[{"title":"Silo","sub":"S2 E3 · Solo","date":"Nov 14 · in 3d","sort":"2026-11-14","poster":"/p1.jpg","backdrop":"/b1.jpg","overview":"In a silo…","season":2,"episode":3,"tmdbId":125988,"type":"tv"},{"title":"Bad","tmdbId":0}]"""
+        val upParsed = TrackerLogic.parseUpNext(upJson)
+        check("tracker: upnext parse — fields land, id-less item dropped",
+            upParsed.size == 1 && upParsed[0].title == "Silo" && upParsed[0].season == 2 &&
+                upParsed[0].episode == 3 && upParsed[0].dateIso == "2026-11-14" &&
+                upParsed[0].backdrop == "/b1.jpg" && upParsed[0].tmdbId == 125988L)
+        check("tracker: parse is fail-open — garbage and null give empty lists",
+            TrackerLogic.parseUpNext("not json").isEmpty() &&
+                TrackerLogic.parseUpNext(null).isEmpty() &&
+                TrackerLogic.parseContinue("{}").isEmpty() &&
+                TrackerLogic.parseMovies("[{]").isEmpty() &&
+                TrackerLogic.parseTrackedShows("[]").isEmpty())
+        val contJson = """[{"title":"Silo","sub":"Next S1 E4 · 3 of 20 watched","watched":3,"total":20,"poster":"/p1.jpg","backdrop":"/b1.jpg","overview":"…","tmdbId":125988,"type":"tv"}]"""
+        val contParsed = TrackerLogic.parseContinue(contJson)
+        check("tracker: continue parse — progress counts land",
+            contParsed.size == 1 && contParsed[0].watched == 3 && contParsed[0].total == 20)
+        val movJson = """[{"tmdbId":693134,"title":"Dune: Part Two","releaseDate":"2024-03-01","planned":true,"poster":"/dune.jpg","watched":false},{"tmdbId":11,"title":"Old","releaseDate":null,"planned":false}]"""
+        val movParsed = TrackerLogic.parseMovies(movJson)
+        check("tracker: movies parse — planned/poster/watched land, null date reads blank",
+            movParsed.size == 2 && movParsed[0].planned && movParsed[0].poster == "/dune.jpg" &&
+                !movParsed[0].watched && movParsed[1].releaseDate == "" && !movParsed[1].watched)
+        val trkJson = """[{"tmdbId":125988,"name":"Silo","muted":false,"planned":false,"watched":["1x1","1x2","2x1"]},{"tmdbId":999,"name":"Parked","muted":false,"planned":true,"watched":[]}]"""
+        val trkParsed = TrackerLogic.parseTrackedShows(trkJson)
+        check("tracker: tracked parse — watched[] becomes a count",
+            trkParsed.size == 2 && trkParsed[0].watchedCount == 3 && trkParsed[1].planned)
+
+        // Hero selection: priority groups + cycle wrap.
+        fun up(id: Long, bd: String, s: Int = 1, e: Int = 1) = TrackerLogic.UpNextItem(
+            id, "Show$id", "S${s} E$e", "2026-11-01", "/p$id.jpg", bd, "ov", s, e, "tv"
+        )
+        fun cont(id: Long, bd: String) = TrackerLogic.ContinueItem(
+            id, "Cont$id", "Next S1 E1", 1, 10, "/p$id.jpg", bd, "ov", "tv"
+        )
+        val heroCands = TrackerLogic.heroCandidates(
+            listOf(up(1, ""), up(2, "/b2.jpg")), listOf(cont(3, "/b3.jpg"), cont(4, ""))
+        )
+        check("tracker: hero order — upnext+backdrop, continue+backdrop, rest",
+            heroCands.map { it.tmdbId } == listOf(2L, 3L, 1L, 4L))
+        check("tracker: hero featured pick is the first upnext with a backdrop",
+            TrackerLogic.selectHero(heroCands, 0)?.tmdbId == 2L)
+        check("tracker: hero cycle wraps forward and backward",
+            TrackerLogic.selectHero(heroCands, 4)?.tmdbId == 2L &&
+                TrackerLogic.selectHero(heroCands, -1)?.tmdbId == 4L &&
+                TrackerLogic.selectHero(heroCands, 6)?.tmdbId == 1L)
+        check("tracker: hero falls back to continue when upnext has no backdrop",
+            TrackerLogic.selectHero(
+                TrackerLogic.heroCandidates(listOf(up(1, "")), listOf(cont(3, "/b3.jpg"))), 0
+            )?.tmdbId == 3L)
+        check("tracker: hero falls back to first upnext when nothing has a backdrop",
+            TrackerLogic.selectHero(
+                TrackerLogic.heroCandidates(listOf(up(1, ""), up(2, "")), emptyList()), 0
+            )?.tmdbId == 1L)
+        check("tracker: hero of an empty cycle is null",
+            TrackerLogic.selectHero(emptyList(), 0) == null)
+        check("tracker: continue hero carries no episode coordinates",
+            heroCands.first { it.tmdbId == 3L }.fromContinue &&
+                heroCands.first { it.tmdbId == 3L }.season == 0)
+
+        // Countdown labels against a fixed today (2026-10-21).
+        val today = "2026-10-21"
+        check("tracker: countdown — today, tomorrow, in N d",
+            TrackerLogic.countdownLabel("2026-10-21", today) == "Today" &&
+                TrackerLogic.countdownLabel("2026-10-22", today) == "Tomorrow" &&
+                TrackerLogic.countdownLabel("2026-10-26", today) == "in 5 d" &&
+                TrackerLogic.countdownLabel("2026-11-20", today) == "in 30 d")
+        check("tracker: countdown — past is Aired, far future is the date itself",
+            TrackerLogic.countdownLabel("2026-10-20", today) == "Aired" &&
+                TrackerLogic.countdownLabel("2026-11-21", today) == "Nov 21" &&
+                TrackerLogic.countdownLabel("2027-03-04", today) == "Mar 4")
+        check("tracker: countdown — month/year boundaries use real day math",
+            TrackerLogic.countdownLabel("2026-11-01", today) == "in 11 d" &&
+                TrackerLogic.countdownLabel("2027-01-01", "2026-12-31") == "Tomorrow")
+        check("tracker: countdown — empty or malformed dates give no label",
+            TrackerLogic.countdownLabel("", today) == "" &&
+                TrackerLogic.countdownLabel("Nov 14", today) == "" &&
+                TrackerLogic.countdownLabel("2026-13-40", today) == "")
+
+        // Airing-today + pill text.
+        val pillUp = listOf(
+            up(1, "").copy(dateIso = "2026-10-21"), up(2, "").copy(dateIso = "2026-10-21"),
+            up(3, "").copy(dateIso = "2026-10-25")
+        )
+        check("tracker: airing-today counts only today's items",
+            TrackerLogic.airingTodayCount(pillUp, today) == 2 &&
+                TrackerLogic.airingTodayCount(pillUp, "2026-10-22") == 0)
+        check("tracker: pill text composes the numbers the data supports",
+            TrackerLogic.pillText(2, 3) == "2 airing today · 3 unwatched" &&
+                TrackerLogic.pillText(1, 1) == "1 airing today · 1 unwatched" &&
+                TrackerLogic.pillText(0, 5) == "5 unwatched" &&
+                TrackerLogic.pillText(0, 0) == "")
+
+        // Continue merge: tracker first, title-tie dedupe, system dedupe.
+        val merged = TrackerLogic.mergeContinue(
+            listOf(cont(1, "").copy(title = "Silo"), cont(2, "").copy(title = "The Bear")),
+            listOf("Silo", "Dark", "the bear!", "Dark", "  ")
+        )
+        check("tracker: merge — tracker cards first, in snapshot order",
+            merged.take(2).map { it.title } == listOf("Silo", "The Bear") &&
+                merged.take(2).all { it.tracker != null && it.systemIndex == -1 })
+        check("tracker: merge — system titles matching a tracker title drop out",
+            merged.none { it.tracker == null && it.title == "Silo" } &&
+                merged.none { it.tracker == null && it.title == "the bear!" })
+        check("tracker: merge — unique system titles survive once, with their index",
+            merged.count { it.tracker == null } == 1 &&
+                merged.last().title == "Dark" && merged.last().systemIndex == 1)
+        check("tracker: title normalization ignores case, spaces, punctuation",
+            TrackerLogic.normalizeTitle("The Bear!") == "thebear" &&
+                TrackerLogic.normalizeTitle("S.W.A.T.") == "swat")
+
+        // Movie night ordering.
+        fun mov(id: Long, date: String, planned: Boolean, watched: Boolean = false) =
+            TrackerLogic.MovieItem(id, "M$id", date, planned, "/m$id.jpg", watched)
+        val ordered = TrackerLogic.orderMovies(
+            listOf(
+                mov(1, "2027-05-01", planned = true), mov(2, "2026-12-01", planned = true),
+                mov(3, "2026-11-01", planned = false), mov(4, "2026-10-01", planned = true, watched = true)
+            ),
+            emptyList()
+        )
+        check("tracker: movies — planned first by release date, then the rest, watched excluded",
+            ordered.map { it.tmdbId } == listOf(2L, 1L, 3L))
+        check("tracker: movies — unknown release dates sort last within their group",
+            TrackerLogic.orderMovies(
+                listOf(mov(1, "", planned = true), mov(2, "2027-01-01", planned = true)),
+                emptyList()
+            ).map { it.tmdbId } == listOf(2L, 1L))
+        check("tracker: movies — all-watched falls back to the full sorted list",
+            TrackerLogic.orderMovies(
+                listOf(mov(1, "2027-01-01", planned = false, watched = true),
+                    mov(2, "2026-01-01", planned = true, watched = true)),
+                emptyList()
+            ).map { it.tmdbId } == listOf(2L, 1L))
+        check("tracker: movies — locally-marked movies stay out even in the fallback",
+            TrackerLogic.orderMovies(
+                listOf(mov(1, "2027-01-01", planned = true, watched = true),
+                    mov(2, "2026-01-01", planned = false, watched = true)),
+                listOf(TrackerLogic.MarkedEntry(1L, "movie", 0, 0, 1L))
+            ).map { it.tmdbId } == listOf(2L))
+
+        // Marked-set: codec, dedupe, filters, convergence prune.
+        val m1 = TrackerLogic.MarkedEntry(125988L, "tv", 2, 3, 1_000L)
+        val m2 = TrackerLogic.MarkedEntry(693134L, "movie", 0, 0, 2_000L)
+        val roundTrip = TrackerLogic.decodeMarked(TrackerLogic.encodeMarked(listOf(m1, m2)))
+        check("tracker: marked codec round-trips and skips garbage lines",
+            roundTrip == listOf(m1, m2) &&
+                TrackerLogic.decodeMarked("junk\n1|tv|x|2|3\n").isEmpty() &&
+                TrackerLogic.decodeMarked(null).isEmpty())
+        check("tracker: withMarked replaces the same item instead of duplicating it",
+            TrackerLogic.withMarked(listOf(m1), m1.copy(markedAt = 5_000L)).size == 1 &&
+                TrackerLogic.withMarked(listOf(m1), m2).size == 2)
+        val filterUp = listOf(up(125988, "", 2, 3), up(125988, "", 2, 4), up(7, "", 1, 1))
+        check("tracker: filterUpNext hides only the marked episode",
+            TrackerLogic.filterUpNext(filterUp, listOf(m1)).map { it.episode } == listOf(4, 1))
+        check("tracker: filterContinue hides a show with any marked episode",
+            TrackerLogic.filterContinue(
+                listOf(cont(125988, ""), cont(7, "")), listOf(m1)
+            ).map { it.tmdbId } == listOf(7L))
+        check("tracker: prune keeps entries the snapshot is not fresher than",
+            TrackerLogic.pruneMarked(listOf(m1), emptyList(), emptyList(), 500L) == listOf(m1) &&
+                TrackerLogic.pruneMarked(listOf(m1), emptyList(), emptyList(), 0L) == listOf(m1))
+        check("tracker: prune drops a tv entry once a fresher snapshot lost the episode",
+            TrackerLogic.pruneMarked(
+                listOf(m1), listOf(up(125988, "", 2, 4)), emptyList(), 2_000L
+            ).isEmpty())
+        check("tracker: prune keeps a tv entry while the episode is still in the snapshot",
+            TrackerLogic.pruneMarked(
+                listOf(m1), listOf(up(125988, "", 2, 3)), emptyList(), 2_000L
+            ) == listOf(m1))
+        check("tracker: prune drops a movie entry once the snapshot flags it watched",
+            TrackerLogic.pruneMarked(
+                listOf(m2), emptyList(),
+                listOf(mov(693134, "2024-03-01", planned = false, watched = true)), 3_000L
+            ).isEmpty() &&
+                TrackerLogic.pruneMarked(
+                    listOf(m2), emptyList(),
+                    listOf(mov(693134, "2024-03-01", planned = false, watched = false)), 3_000L
+                ) == listOf(m2))
+
+        // Tracker search: prefix-first, details, empty query.
+        val searchShows = listOf(
+            TrackerLogic.TrackedShow(1L, "Silo", 3, false),
+            TrackerLogic.TrackedShow(2L, "Basil", 0, false)
+        )
+        val searchMovies = listOf(
+            TrackerLogic.MovieItem(3L, "Silence", "2026-01-01", false, "", false)
+        )
+        val hits = TrackerLogic.searchTracked(searchShows, searchMovies, "sil")
+        check("tracker: search — prefix hits (shows then movies) before substring hits",
+            hits.map { it.title } == listOf("Silo", "Silence", "Basil"))
+        check("tracker: search detail counts watched episodes",
+            hits.first { it.title == "Silo" }.detail == "3 episodes watched" &&
+                hits.first { it.title == "Silence" }.detail == "Movie · tracked")
+        val hitsDune = TrackerLogic.searchTracked(trkParsed, movParsed, "dune")
+        check("tracker: search finds movies with the tracked detail",
+            hitsDune.size == 1 && hitsDune[0].detail == "Movie · tracked" &&
+                hitsDune[0].type == "movie")
+        check("tracker: search is case-insensitive substring, prefix first",
+            TrackerLogic.searchTracked(trkParsed, movParsed, "ILO").map { it.title } ==
+                listOf("Silo") &&
+                TrackerLogic.searchTracked(trkParsed, movParsed, "  ").isEmpty() &&
+                TrackerLogic.searchTracked(trkParsed, movParsed, "zzz").isEmpty())
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

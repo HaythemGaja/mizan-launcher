@@ -79,11 +79,12 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putInt(k("columns"), v.coerceIn(3, 10)).apply() }
 
     /**
-     * Home-screen style (v1.7): "tv" (default) | "ipad". Per profile —
-     * one profile can be iPad while the other stays TV. Reads and
-     * writes both pass through the HomeStyle codec, so a missing or
-     * garbled stored value always resolves to TV (never a crash, and
-     * old backups restore as TV).
+     * Home-screen style (v1.7, extended v1.8): "tv" (default) |
+     * "ipad" | "tracker". Per profile — one profile can be iPad
+     * while the other stays TV. Reads and writes both pass through
+     * the HomeStyle codec, so a missing or garbled stored value
+     * always resolves to TV (never a crash, and old backups restore
+     * as TV).
      */
     var homeStyle: String
         get() = com.mizan.launcher.core.HomeStyle.normalize(sp.getString(k("home_style"), null))
@@ -91,6 +92,23 @@ class Prefs(ctx: Context) {
             sp.edit().putString(k("home_style"),
                 com.mizan.launcher.core.HomeStyle.normalize(v)).apply()
         }
+
+    // ---- per-profile Tracker view state (v1.8) ----
+    /**
+     * The local marked-set for the Tracker view, encoded by
+     * core/TrackerLogic (one "tmdbId|type|season|episode|markedAt"
+     * per line). Items the user marked watched FROM THIS PROFILE are
+     * hidden optimistically until the tracker's snapshots converge
+     * (TrackerLogic.pruneMarked). Not part of backups.
+     */
+    var trackerMarked: String
+        get() = sp.getString(k("tracker_marked"), "") ?: ""
+        set(v) { sp.edit().putString(k("tracker_marked"), v).apply() }
+
+    /** The Tracker hero cycle position for this profile. */
+    var trackerHeroIndex: Int
+        get() = sp.getInt(k("tracker_hero_index"), 0)
+        set(v) { sp.edit().putInt(k("tracker_hero_index"), v).apply() }
 
     var layout: LayoutData
         get() = LayoutCodec.decode(sp.getString(k("layout"), null))

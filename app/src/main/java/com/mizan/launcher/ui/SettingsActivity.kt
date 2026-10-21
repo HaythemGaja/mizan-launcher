@@ -352,7 +352,7 @@ class SettingsActivity : Activity() {
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         pane.addView(title)
         val version = TextView(this)
-        version.text = "Mizan Launcher v1.7"
+        version.text = "Mizan Launcher v1.8"
         version.setTextColor(subColour)
         version.textSize = 15f
         version.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, metrics.rowPadVDp + 2))
@@ -789,7 +789,7 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        content.addView(header("Mizan Launcher v1.7"))
+        content.addView(header("Mizan Launcher v1.8"))
         content.addView(info(diagnosticsText()))
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
@@ -865,27 +865,33 @@ class SettingsActivity : Activity() {
 
     }
 
-    /** The current home style with its one-line description (v1.7). */
+    /** The current home style with its one-line description (v1.7, v1.8). */
     private fun homeStyleLabel(): String =
-        if (com.mizan.launcher.core.HomeStyle.isIpad(prefs.homeStyle)) {
-            "iPad — big icon grid with a Favorites dock"
-        } else {
-            "TV — rows of apps under the hero bar"
+        when {
+            com.mizan.launcher.core.HomeStyle.isIpad(prefs.homeStyle) ->
+                "iPad — big icon grid with a Favorites dock"
+            com.mizan.launcher.core.HomeStyle.isTracker(prefs.homeStyle) ->
+                "Tracker — Netflix-style view of your shows & movies"
+            else ->
+                "TV — rows of apps under the hero bar"
         }
 
     /**
-     * Home style picker (v1.7): two described choices, per profile.
-     * Switching is presentation-only — favorites, folders, order and
-     * locks are shared, so nothing is lost either way.
+     * Home style picker (v1.7, extended v1.8): three described
+     * choices, per profile. Switching is presentation-only —
+     * favorites, folders, order and locks are shared, so nothing is
+     * lost either way.
      */
     private fun pickHomeStyle() {
         val keys = listOf(
             com.mizan.launcher.core.HomeStyle.TV,
-            com.mizan.launcher.core.HomeStyle.IPAD
+            com.mizan.launcher.core.HomeStyle.IPAD,
+            com.mizan.launcher.core.HomeStyle.TRACKER
         )
         val labels = arrayOf(
             "TV — rows of apps under the hero bar",
-            "iPad — big icon grid with a Favorites dock"
+            "iPad — big icon grid with a Favorites dock",
+            "Tracker — Netflix-style view of your shows & movies (needs TV Shows & Movies Tracker)"
         )
         val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
         AlertDialog.Builder(this).setTitle("Home style")

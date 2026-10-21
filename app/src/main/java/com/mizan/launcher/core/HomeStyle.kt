@@ -1,21 +1,28 @@
 package com.mizan.launcher.core
 
 /**
- * Home-screen STYLE (v1.7) — pure decisions, no Android imports.
+ * Home-screen STYLE (v1.7, extended v1.8) — pure decisions, no
+ * Android imports.
  *
  * A per-profile presentation choice: the classic TV home (rows under
- * a hero bar — everything v1.0–v1.6 built) or the iPad home (a big
+ * a hero bar — everything v1.0–v1.6 built), the iPad home (a big
  * icon grid with labels under the icons and a floating Favorites
- * dock). The style changes PRESENTATION + COMPOSITION ONLY: the
- * underlying data (favorites, folders, allAppsOrder, locks) and every
- * menu, gate and move session are shared between the two styles, so
- * switching styles can never lose or reinterpret a setting.
+ * dock), or — v1.8 — the Tracker home (a Netflix-style view of the
+ * user's shows & movies from TVShowsMoviesTracker, over the same TV
+ * status bar and the same Favorites / All Apps rows). The style
+ * changes PRESENTATION + COMPOSITION ONLY: the underlying data
+ * (favorites, folders, allAppsOrder, locks) and every menu, gate and
+ * move session are shared between the styles, so switching styles
+ * can never lose or reinterpret a setting. The TV and iPad renders
+ * stay tracker-free; tracker data appears ONLY in the Tracker style
+ * (and in Search, which is a shared screen).
  *
  * This object owns the testable decisions:
- * - the stored-key codec ([normalize] — anything but "ipad" is TV,
- *   so old profiles and old backups default to TV),
- * - the label rule (TV: focus-only overlay; iPad: always under the
- *   icon),
+ * - the stored-key codec ([normalize] — only the exact "ipad" /
+ *   "tracker" keys select those styles; anything else is TV, so old
+ *   profiles and old backups default to TV),
+ * - the label rule (TV + Tracker: focus-only overlay; iPad: always
+ *   under the icon),
  * - the icon-shape override (iPad forces the squircle),
  * - the iPad grid composition (apps segment + root-folders segment
  *   + inputs segment),
@@ -25,9 +32,10 @@ object HomeStyle {
 
     const val TV = "tv"
     const val IPAD = "ipad"
+    const val TRACKER = "tracker"
 
     /** Closed list of stored values, for Settings pickers. */
-    val VALUES: List<String> = listOf(TV, IPAD)
+    val VALUES: List<String> = listOf(TV, IPAD, TRACKER)
 
     /**
      * Shape key the iPad style forces for app icons: the existing
@@ -39,11 +47,19 @@ object HomeStyle {
     /** Max favorites shown in the iPad dock (it scrolls past this). */
     const val DOCK_FAVORITES_CAP = 10
 
-    /** Codec: only the exact "ipad" key selects iPad; anything else
-     * (missing, empty, garbage, an old backup) is TV. */
-    fun normalize(raw: String?): String = if (raw == IPAD) IPAD else TV
+    /** Codec: only the exact "ipad" / "tracker" keys select those
+     * styles; anything else (missing, empty, garbage, an old backup)
+     * is TV. */
+    fun normalize(raw: String?): String = when (raw) {
+        IPAD -> IPAD
+        TRACKER -> TRACKER
+        else -> TV
+    }
 
     fun isIpad(style: String): Boolean = style == IPAD
+
+    /** v1.8: the Tracker home style (Netflix-style tracker view). */
+    fun isTracker(style: String): Boolean = style == TRACKER
 
     /**
      * The one label decision for home tiles: in iPad style a tile's

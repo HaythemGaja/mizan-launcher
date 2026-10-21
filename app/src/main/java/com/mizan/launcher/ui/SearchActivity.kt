@@ -16,9 +16,11 @@ import com.mizan.launcher.core.AppSearch
 import com.mizan.launcher.core.FolderLogic
 import com.mizan.launcher.core.Themes
 import com.mizan.launcher.core.TileLayout
+import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.data.AppEntry
 import com.mizan.launcher.data.AppLoader
 import com.mizan.launcher.data.Prefs
+import com.mizan.launcher.data.TrackerClient
 
 /**
  * App Search screen (v1.4) — opened from the status-bar Search tile or
@@ -78,6 +80,9 @@ class SearchActivity : Activity() {
         keyboardRows.firstOrNull()?.firstOrNull()?.post {
             keyboardRows.firstOrNull()?.firstOrNull()?.requestFocus()
         }
+        // v1.8: warm the tracker snapshot cache (read-only, fail-open);
+        // the "In your tracker" section reads the cache per keystroke.
+        TrackerClient.refreshAsync(this) {}
     }
 
     /**
@@ -213,19 +218,49 @@ class SearchActivity : Activity() {
     private fun rebuildResults() {
         val box = resultsBox ?: return
         box.removeAllViews()
+        val rows = mutableListOf<List<View>>()
+
+        // v1.8: "In your tracker" — above the app results, present
+        // only when tracker snapshots exist and titles match. The
+        // cache is read per keystroke; no data → no section.
+        val snap = TrackerClient.cached(this)
+        val hits = TrackerLogic.searchTracked(snap.tracked, snap.movies, query)
+        if (hits.isNotEmpty()) {
+            val header = TextView(this)
+            header.text = "In your tracker"
+            header.setTextColor(accent); header.textSize = 20f
+            header.setTypeface(header.typeface, android.graphics.Typeface.BOLD)
+            header.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 6))
+            box.addView(header)
+            for (hit in hits) {
+                val rowView = trackerHitRow(hit)
+                rows.add(listOf(rowView))
+                box.addView(rowView)
+            }
+        }
+
         val items = AppSearch.filter(
             visibleApps.map { AppSearch.Item(it.pkg, it.label) }, query
         )
         if (items.isEmpty()) {
-            val t = TextView(this)
-            t.text = if (visibleApps.isEmpty()) "No apps to search." else "No apps match “$query”."
-            t.setTextColor(subColour); t.textSize = 18f
-            box.addView(t)
-            resultRows = emptyList()
+            if (hits.isEmpty()) {
+                val t = TextView(this)
+                t.text = if (visibleApps.isEmpty()) "No apps to search." else "No apps match “$query”."
+                t.setTextColor(subColour); t.textSize = 18f
+                box.addView(t)
+            }
+            resultRows = rows
             return
         }
+        if (hits.isNotEmpty()) {
+            val header = TextView(this)
+            header.text = "Apps"
+            header.setTextColor(accent); header.textSize = 20f
+            header.setTypeface(header.typeface, android.graphics.Typeface.BOLD)
+            header.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 6))
+            box.addView(header)
+        }
         val cols = prefs.columns
-        val rows = mutableListOf<List<View>>()
         var i = 0
         while (i < items.size) {
             val rowView = LinearLayout(this)
@@ -242,6 +277,88 @@ class SearchActivity : Activity() {
             i += cols
         }
         resultRows = rows
+    }
+
+    /** One "In your tracker" result row: title + tracker detail; OK opens the tracker. */
+    private fun trackerHitRow(hit: TrackerLogic.TrackerHit): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.isFocusable = true
+        row.isClickable = true
+        row.setPadding(Ui.dp(this, 14), Ui.dp(this, 10), Ui.dp(this, 14), Ui.dp(this, 10))
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 3), 0, Ui.dp(this, 3))
+        row.layoutParams = lp
+        row.background = Ui.tileBackground(accent, false, 10, this)
+        Ui.focusLift(row, accent, 10)
+
+        val title = TextView(this)
+        title.text = hit.title
+        title.setTextColor(textColour); title.textSize = 19f
+        title.maxLines = 1
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        row.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val detail = TextView(this)
+        detail.text = hit.detail
+        detail.setTextColor(subColour); detail.textSize = 16f
+        row.addView(detail)
+
+        row.setOnClickListener { openTrackerGated() }
+        return row
+    }
+
+    /**
+     * Open the tracker from a search hit, through the same arrow-lock
+     * gate as an app launch (the tracker is a launchable app; if it
+     * is locked, its lock applies). Absent tracker → toast.
+     */
+    private fun openTrackerGated() {
+        val doOpen: () -> Unit = {
+            try {
+                val intent = AppLoader.launchIntent(packageManager, TrackerClient.TRACKER_PKG)
+                if (intent == null) {
+                    Toast.makeText(
+                        this, "TV Shows & Movies Tracker isn't installed",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    prefs.recordLaunch(TrackerClient.TRACKER_PKG)
+                    startActivity(intent)
+                    finish()
+                }
+            } catch (e: Exception) {
+                Prefs.noteError(this, "searchOpenTracker", e)
+                Toast.makeText(this, "Couldn't open the tracker", Toast.LENGTH_SHORT).show()
+            }
+        }
+        if (!prefs.lockedApps.contains(TrackerClient.TRACKER_PKG)) {
+            doOpen()
+            return
+        }
+        val stored = prefs.arrowPin
+        if (stored.isEmpty()) {
+            ArrowPinDialog.showSetup(
+                activity = this,
+                title = "Set an arrow pattern to lock TV Shows & Movies Tracker",
+                accent = accent,
+                onDone = { seq ->
+                    prefs.arrowPin = seq
+                    Toast.makeText(this, "Arrow lock set", Toast.LENGTH_SHORT).show()
+                    doOpen()
+                }
+            )
+            return
+        }
+        ArrowPinDialog.showUnlock(
+            activity = this,
+            title = "TV Shows & Movies Tracker is locked",
+            accent = accent,
+            storedEncoded = stored,
+            onSuccess = { doOpen() },
+            onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
+        )
     }
 
     /** A result tile: the home screen's uniform tile + focus-name overlay. */

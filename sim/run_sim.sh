@@ -34,6 +34,7 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   app/src/main/java/com/mizan/launcher/core/Design.kt \
   app/src/main/java/com/mizan/launcher/core/AppCatalogue.kt \
   app/src/main/java/com/mizan/launcher/core/HomeStyle.kt \
+  app/src/main/java/com/mizan/launcher/core/TrackerLogic.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -61,6 +62,13 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   echo "(lock coverage), Reddit endpoint chain + RSS fallback parser +"
   echo "visible fetch status (spec section 14). All v1.5 tests carry"
   echo "over; the RSS parser feeds the same RedditImage model as JSON."
+  echo
+  echo "Note (v1.8): new section — tracker logic: home style codec v2"
+  echo "(tracker joins tv/ipad; the section-32 value-list check now"
+  echo "expects all three), snapshot parsing, hero selection + cycle,"
+  echo "countdown labels, continue merge/dedupe, movie ordering,"
+  echo "airing-today + pill, marked-set filter + convergence prune,"
+  echo "tracker search (spec section 16). All v1.7 tests carry over."
   echo
   echo "Note (v1.7): new section — home style (codec/default, label"
   echo "rule, squircle override), iPad grid composition (apps + root"

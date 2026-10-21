@@ -1,7 +1,7 @@
 # Mizan Launcher — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-21 19:15 UTC
+Date: 2026-10-21 20:01 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -22,6 +22,13 @@ Note (v1.6): new sections — design tokens, app catalogue merge
 (lock coverage), Reddit endpoint chain + RSS fallback parser +
 visible fetch status (spec section 14). All v1.5 tests carry
 over; the RSS parser feeds the same RedditImage model as JSON.
+
+Note (v1.8): new section — tracker logic: home style codec v2
+(tracker joins tv/ipad; the section-32 value-list check now
+expects all three), snapshot parsing, hero selection + cycle,
+countdown labels, continue merge/dedupe, movie ordering,
+airing-today + pill, marked-set filter + convergence prune,
+tracker search (spec section 16). All v1.7 tests carry over.
 
 Note (v1.7): new section — home style (codec/default, label
 rule, squircle override), iPad grid composition (apps + root
@@ -367,7 +374,7 @@ PASS  redditstatus: success summary shows the photo count
 PASS  redditstatus: failure summary names the last result
 PASS  homestyle: missing/garbage decodes to tv
 PASS  homestyle: ipad survives the codec
-PASS  homestyle: value list is tv then ipad
+PASS  homestyle: value list is tv then ipad (v1.8: tracker appended)
 PASS  homestyle: label rule ? tv needs focus, ipad always shows
 PASS  homestyle: ipad forces squircle, tv keeps the preference
 PASS  homestyle: grid apps exclude hidden and foldered (any depth), order kept
@@ -386,5 +393,45 @@ PASS  homestyle: dock drops search/all-apps when their switches are off
 PASS  homestyle: dock with no favorites has no divider
 PASS  homestyle: tile boost enlarges width and icon
 PASS  homestyle: default boost leaves metrics unchanged
-RESULT: 342 passed, 0 failed, 342 total
+PASS  tracker: codec ? tracker survives, garbage still decodes to tv
+PASS  tracker: tracker style keeps tv label + shape rules
+PASS  tracker: upnext parse ? fields land, id-less item dropped
+PASS  tracker: parse is fail-open ? garbage and null give empty lists
+PASS  tracker: continue parse ? progress counts land
+PASS  tracker: movies parse ? planned/poster/watched land, null date reads blank
+PASS  tracker: tracked parse ? watched[] becomes a count
+PASS  tracker: hero order ? upnext+backdrop, continue+backdrop, rest
+PASS  tracker: hero featured pick is the first upnext with a backdrop
+PASS  tracker: hero cycle wraps forward and backward
+PASS  tracker: hero falls back to continue when upnext has no backdrop
+PASS  tracker: hero falls back to first upnext when nothing has a backdrop
+PASS  tracker: hero of an empty cycle is null
+PASS  tracker: continue hero carries no episode coordinates
+PASS  tracker: countdown ? today, tomorrow, in N d
+PASS  tracker: countdown ? past is Aired, far future is the date itself
+PASS  tracker: countdown ? month/year boundaries use real day math
+PASS  tracker: countdown ? empty or malformed dates give no label
+PASS  tracker: airing-today counts only today's items
+PASS  tracker: pill text composes the numbers the data supports
+PASS  tracker: merge ? tracker cards first, in snapshot order
+PASS  tracker: merge ? system titles matching a tracker title drop out
+PASS  tracker: merge ? unique system titles survive once, with their index
+PASS  tracker: title normalization ignores case, spaces, punctuation
+PASS  tracker: movies ? planned first by release date, then the rest, watched excluded
+PASS  tracker: movies ? unknown release dates sort last within their group
+PASS  tracker: movies ? all-watched falls back to the full sorted list
+PASS  tracker: movies ? locally-marked movies stay out even in the fallback
+PASS  tracker: marked codec round-trips and skips garbage lines
+PASS  tracker: withMarked replaces the same item instead of duplicating it
+PASS  tracker: filterUpNext hides only the marked episode
+PASS  tracker: filterContinue hides a show with any marked episode
+PASS  tracker: prune keeps entries the snapshot is not fresher than
+PASS  tracker: prune drops a tv entry once a fresher snapshot lost the episode
+PASS  tracker: prune keeps a tv entry while the episode is still in the snapshot
+PASS  tracker: prune drops a movie entry once the snapshot flags it watched
+PASS  tracker: search ? prefix hits (shows then movies) before substring hits
+PASS  tracker: search detail counts watched episodes
+PASS  tracker: search finds movies with the tracked detail
+PASS  tracker: search is case-insensitive substring, prefix first
+RESULT: 382 passed, 0 failed, 382 total
 ```

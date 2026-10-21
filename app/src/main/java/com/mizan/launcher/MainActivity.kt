@@ -34,6 +34,7 @@ import com.mizan.launcher.core.MoveSessionMachine
 import com.mizan.launcher.core.LayoutData
 import com.mizan.launcher.core.NowPlayingLogic
 import com.mizan.launcher.core.RecentsStore
+import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.RotationLogic
 import com.mizan.launcher.core.RowOrder
 import com.mizan.launcher.core.Themes
@@ -46,6 +47,8 @@ import com.mizan.launcher.data.AppLoader
 import com.mizan.launcher.data.BingFetcher
 import com.mizan.launcher.data.NowPlayingData
 import com.mizan.launcher.data.Prefs
+import com.mizan.launcher.data.TmdbImages
+import com.mizan.launcher.data.TrackerClient
 import com.mizan.launcher.data.TvData
 import com.mizan.launcher.data.WallpaperRotator
 import com.mizan.launcher.data.WatchItem
@@ -320,6 +323,18 @@ class MainActivity : Activity() {
             return root
         }
 
+        // v1.8: the Tracker home style — same frame (wallpaper, scrim,
+        // corner gear/pill), a third root render. The TV and iPad
+        // renders above/below are untouched and tracker-free.
+        if (isTrackerStyle()) {
+            buildTrackerHome(content)
+            homeRoot = root
+            if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
+                attachMoveHint(root)
+            }
+            return root
+        }
+
         content.addView(buildTopBar())
 
         // v1.4: stored orders from older versions lack the new rows;
@@ -363,6 +378,9 @@ class MainActivity : Activity() {
 
     private fun isIpadStyle(): Boolean =
         com.mizan.launcher.core.HomeStyle.isIpad(homeStyleKey())
+
+    private fun isTrackerStyle(): Boolean =
+        com.mizan.launcher.core.HomeStyle.isTracker(homeStyleKey())
 
     /** The icon shape home tiles render with (iPad forces squircle). */
     private fun effectiveIconShape(): String =
@@ -1321,6 +1339,441 @@ class MainActivity : Activity() {
         val box = section("Continue Watching")
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
         for (item in items) row.addView(watchTile(item))
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    // ---------------------------------------------------------------
+    // v1.8 Tracker home style — a Netflix-style view of the user's
+    // shows & movies from TVShowsMoviesTracker (data/TrackerClient,
+    // core/TrackerLogic; contract in the tracker repo's
+    // LAUNCHER_SYNC.md). Composition: the TV status bar, the hero
+    // panel (or the no-data fallback), Up Next, merged Continue
+    // Watching, Movie Night, then Favorites + All Apps EXACTLY as
+    // the TV view builds them. Recently Used / Now Playing rows are
+    // NOT part of this view. Everything fail-open: no tracker data
+    // simply means no hero and no tracker rows.
+    // ---------------------------------------------------------------
+
+    private fun todayIso(): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+    private fun buildTrackerHome(content: LinearLayout) {
+        content.addView(buildTopBar())
+
+        val snap = TrackerClient.cached(this)
+        // Convergence: entries a fresher snapshot has moved past are
+        // dropped from the local marked-set (the tracker applied the
+        // queued action and its own data took over again).
+        var marked = TrackerLogic.decodeMarked(prefs.trackerMarked)
+        val pruned = TrackerLogic.pruneMarked(marked, snap.upNext, snap.movies, snap.updated)
+        if (pruned != marked) {
+            prefs.trackerMarked = TrackerLogic.encodeMarked(pruned)
+            marked = pruned
+        }
+        val upNext = TrackerLogic.filterUpNext(snap.upNext, marked)
+        val contItems = TrackerLogic.filterContinue(snap.cont, marked)
+
+        // Refresh on resume (throttled inside); a changed snapshot
+        // rebuilds the view once — the new fetchedAt stops any loop.
+        TrackerClient.refreshAsync(this) { if (isTrackerStyle()) rebuild() }
+
+        if (snap.hasData) {
+            try {
+                buildTrackerHero(snap, upNext, contItems)?.let { content.addView(it) }
+            } catch (e: Exception) {
+                Prefs.noteError(this, "trackerHero", e)
+            }
+        } else if (TrackerClient.isInstalled(this) ||
+            appsByPkg.containsKey(TrackerClient.TRACKER_PKG)
+        ) {
+            // No data yet, but the tracker IS here: one quiet line
+            // under the clock/weather hero (buildTopBar above is the
+            // fallback hero). Not installed → no line at all.
+            val line = TextView(this)
+            line.text = "Open TV Shows & Movies Tracker to see your shows here"
+            line.setTextColor(subColour)
+            line.textSize = 16f
+            val llp = LinearLayout.LayoutParams(-2, -2)
+            llp.setMargins(0, Ui.dp(this, 6), 0, Ui.dp(this, 10))
+            line.layoutParams = llp
+            content.addView(line)
+        }
+
+        if (upNext.isNotEmpty()) {
+            try {
+                content.addView(buildUpNextSection(upNext))
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:upnext", e)
+            }
+        }
+        try {
+            buildTrackerContinueSection(contItems)?.let { content.addView(it) }
+        } catch (e: Exception) {
+            Prefs.noteError(this, "row:trackerContinue", e)
+        }
+        val movies = TrackerLogic.orderMovies(snap.movies, marked)
+        if (movies.isNotEmpty()) {
+            try {
+                content.addView(buildMovieNightSection(movies))
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:movienight", e)
+            }
+        }
+        // Favorites + All Apps: the TV builders, the TV gates.
+        if (layout.isRowVisible("favorites")) {
+            try {
+                content.addView(buildFavoritesSection())
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:favorites", e)
+            }
+        }
+        if (layout.isRowVisible("apps")) {
+            try {
+                content.addView(buildAppsSection())
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:apps", e)
+            }
+        }
+    }
+
+    /**
+     * The hero panel: featured item's backdrop (fail-open to the
+     * theme gradient), title, meta (sub + countdown), the tracker
+     * pill, a 2-line overview, and the three D-pad actions. First
+     * focus is NOT here — it lands on the first row card, the same
+     * baseTile mechanism as the iPad style (v1.7).
+     */
+    private fun buildTrackerHero(
+        snap: TrackerClient.Snapshots,
+        upNext: List<TrackerLogic.UpNextItem>,
+        contItems: List<TrackerLogic.ContinueItem>
+    ): View? {
+        val candidates = TrackerLogic.heroCandidates(upNext, contItems)
+        val hero = TrackerLogic.selectHero(candidates, prefs.trackerHeroIndex) ?: return null
+
+        val panel = FrameLayout(this)
+        val plp = LinearLayout.LayoutParams(-1, Ui.dp(this, 330))
+        plp.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S), 0,
+            Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M))
+        panel.layoutParams = plp
+        val preset = Themes.preset(prefs.themeId)
+        val grad = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(preset.bgTop, preset.bgBottom)
+        )
+        grad.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
+        panel.background = grad
+
+        if (hero.backdrop.isNotBlank()) {
+            val iv = ImageView(this)
+            iv.scaleType = ImageView.ScaleType.CENTER_CROP
+            panel.addView(iv, FrameLayout.LayoutParams(-1, -1))
+            TmdbImages.load(TmdbImages.url("w780", hero.backdrop), iv)
+            // Legibility shade over the lower half.
+            val shade = View(this)
+            shade.background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0x00000000, 0xD9000000.toInt())
+            )
+            val slp = FrameLayout.LayoutParams(-1, -1)
+            slp.gravity = Gravity.BOTTOM
+            shade.layoutParams = slp
+            panel.addView(shade)
+        }
+
+        val block = LinearLayout(this)
+        block.orientation = LinearLayout.VERTICAL
+        block.setPadding(
+            Ui.dp(this, 22), Ui.dp(this, 16), Ui.dp(this, 22), Ui.dp(this, 18)
+        )
+        val blp = FrameLayout.LayoutParams(-1, -1)
+        blp.gravity = Gravity.BOTTOM
+        block.layoutParams = blp
+        // Push the text block to the panel's lower area.
+        val spacer = View(this)
+        block.addView(spacer, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val pillText = TrackerLogic.pillText(
+            TrackerLogic.airingTodayCount(upNext, todayIso()), upNext.size
+        )
+        if (pillText.isNotEmpty()) {
+            val pill = TextView(this)
+            pill.text = "📺  $pillText"
+            pill.setTextColor(textColour)
+            pill.textSize = 13f
+            pill.setPadding(Ui.dp(this, 10), Ui.dp(this, 4), Ui.dp(this, 10), Ui.dp(this, 4))
+            pill.background = Ui.tileBackground(
+                accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this
+            )
+            val pilp = LinearLayout.LayoutParams(-2, -2)
+            pilp.setMargins(0, 0, 0, Ui.dp(this, 8))
+            pill.layoutParams = pilp
+            block.addView(pill)
+        }
+
+        val title = TextView(this)
+        title.text = hero.title
+        title.setTextColor(textColour)
+        title.textSize = 34f
+        title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+        title.maxLines = 1
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        title.setShadowLayer(6f, 0f, 2f, 0xCC000000.toInt())
+        block.addView(title)
+
+        val metaParts = ArrayList<String>()
+        if (hero.sub.isNotBlank()) metaParts.add(hero.sub)
+        val countdown = TrackerLogic.countdownLabel(hero.dateIso, todayIso())
+        if (countdown.isNotEmpty()) metaParts.add(countdown)
+        if (metaParts.isNotEmpty()) {
+            val meta = TextView(this)
+            meta.text = metaParts.joinToString("  ·  ")
+            meta.setTextColor(0xFFDDDDDD.toInt())
+            meta.textSize = 17f
+            meta.maxLines = 1
+            meta.ellipsize = android.text.TextUtils.TruncateAt.END
+            meta.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
+            block.addView(meta)
+        }
+
+        if (hero.overview.isNotBlank()) {
+            val overview = TextView(this)
+            overview.text = hero.overview
+            overview.setTextColor(0xFFCCCCCC.toInt())
+            overview.textSize = 15f
+            overview.maxLines = 2
+            overview.ellipsize = android.text.TextUtils.TruncateAt.END
+            overview.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
+            val olp = LinearLayout.LayoutParams(-1, -2)
+            olp.setMargins(0, Ui.dp(this, 4), Ui.dp(this, 120), 0)
+            overview.layoutParams = olp
+            block.addView(overview)
+        }
+
+        val buttons = LinearLayout(this)
+        buttons.orientation = LinearLayout.HORIZONTAL
+        val btnLp = LinearLayout.LayoutParams(-2, -2)
+        btnLp.setMargins(0, Ui.dp(this, 12), 0, 0)
+        buttons.layoutParams = btnLp
+        val trackerHere = TrackerClient.isInstalled(this) ||
+            appsByPkg.containsKey(TrackerClient.TRACKER_PKG)
+        if (trackerHere) {
+            buttons.addView(quickTile("▶ Open Tracker") { openTracker() })
+            // Mark watched needs episode coordinates: Up Next heroes
+            // carry their own; a Continue hero borrows them from the
+            // same show's Up Next item. No coordinates → no button.
+            val coords: Pair<Int, Int>? = if (!hero.fromContinue) {
+                hero.season to hero.episode
+            } else {
+                snap.upNext.firstOrNull { it.tmdbId == hero.tmdbId }
+                    ?.let { it.season to it.episode }
+            }
+            if (coords != null) {
+                buttons.addView(quickTile("✓ Mark watched") {
+                    markWatched(hero.tmdbId, hero.type, coords.first, coords.second)
+                })
+            }
+        }
+        if (candidates.size > 1) {
+            buttons.addView(quickTile("› Next") {
+                prefs.trackerHeroIndex = prefs.trackerHeroIndex + 1
+                rebuild()
+            })
+        }
+        if (buttons.childCount > 0) block.addView(buttons)
+        panel.addView(block)
+        return panel
+    }
+
+    /** Open the tracker app through the shared arrow-lock gate. */
+    private fun openTracker() {
+        val label = appsByPkg[TrackerClient.TRACKER_PKG]?.label ?: TrackerClient.TRACKER_LABEL
+        gateLockedApp(TrackerClient.TRACKER_PKG, label) {
+            try {
+                val intent = AppLoader.launchIntent(packageManager, TrackerClient.TRACKER_PKG)
+                if (intent == null) {
+                    Toast.makeText(
+                        this, "TV Shows & Movies Tracker isn't installed",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@gateLockedApp
+                }
+                startActivity(intent)
+                prefs.recordLaunch(TrackerClient.TRACKER_PKG)
+            } catch (e: Exception) {
+                Prefs.noteError(this, "openTracker", e)
+                Toast.makeText(this, "Couldn't open the tracker", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /**
+     * "Mark watched" from any tracker surface: queue the action with
+     * the tracker AND hide the item locally (marked-set) right away.
+     * The tracker's own data converges at its next boot + refresh,
+     * and pruneMarked then retires the local entry.
+     */
+    private fun markWatched(tmdbId: Long, type: String, season: Int, episode: Int) {
+        val entry = TrackerLogic.MarkedEntry(
+            tmdbId, if (type == "movie") "movie" else "tv",
+            season, episode, System.currentTimeMillis()
+        )
+        val current = TrackerLogic.decodeMarked(prefs.trackerMarked)
+        prefs.trackerMarked = TrackerLogic.encodeMarked(
+            TrackerLogic.withMarked(current, entry)
+        )
+        TrackerClient.markWatched(this, tmdbId, entry.type, season, episode)
+        Toast.makeText(
+            this, "Marked watched — applies next time the tracker opens",
+            Toast.LENGTH_SHORT
+        ).show()
+        rebuild()
+    }
+
+    /** Hold-OK menu for a tracker card: Open Tracker (+ Mark watched when offered). */
+    private fun openTrackerCardMenu(title: String, onMark: (() -> Unit)?) {
+        val labels = mutableListOf("Open Tracker")
+        val actions = mutableListOf<() -> Unit>({ openTracker() })
+        if (onMark != null) {
+            labels.add("Mark watched")
+            actions.add(onMark)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }
+            .show()
+    }
+
+    /**
+     * A poster card (the uniform wide size): poster fills the card,
+     * title + a second line sit on a bottom plate — the Now Playing
+     * card treatment, so the row reads at a glance.
+     */
+    private fun posterCard(
+        title: String,
+        secondLine: String,
+        posterPath: String,
+        glyph: String
+    ): FrameLayout {
+        val tile = baseTile(wide = true)
+        if (posterPath.isNotBlank()) {
+            val iv = ImageView(this)
+            iv.scaleType = ImageView.ScaleType.CENTER_CROP
+            tile.addView(iv, FrameLayout.LayoutParams(-1, -1))
+            TmdbImages.load(TmdbImages.url("w500", posterPath), iv)
+        } else {
+            val g = TextView(this)
+            g.text = glyph
+            g.setTextColor(textColour)
+            g.textSize = 40f
+            g.gravity = Gravity.CENTER
+            tile.addView(g, FrameLayout.LayoutParams(-1, -1))
+        }
+        val plate = LinearLayout(this)
+        plate.orientation = LinearLayout.VERTICAL
+        plate.setBackgroundColor(0xB3000000.toInt())
+        plate.setPadding(Ui.dp(this, 10), Ui.dp(this, 5), Ui.dp(this, 10), Ui.dp(this, 6))
+        val plp = FrameLayout.LayoutParams(-1, -2)
+        plp.gravity = Gravity.BOTTOM
+        plate.layoutParams = plp
+        val t = TextView(this)
+        t.text = title
+        t.setTextColor(textColour)
+        t.textSize = 15f
+        t.maxLines = 1
+        t.ellipsize = android.text.TextUtils.TruncateAt.END
+        plate.addView(t)
+        if (secondLine.isNotBlank()) {
+            val s = TextView(this)
+            s.text = secondLine
+            s.setTextColor(0xFFCCCCCC.toInt())
+            s.textSize = 13f
+            s.maxLines = 1
+            s.ellipsize = android.text.TextUtils.TruncateAt.END
+            plate.addView(s)
+        }
+        tile.addView(plate)
+        Ui.focusLift(tile, accent, 16)
+        return tile
+    }
+
+    private fun buildUpNextSection(items: List<TrackerLogic.UpNextItem>): View {
+        val box = section("Up Next")
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        val today = todayIso()
+        for (item in items) {
+            val card = posterCard(
+                item.title,
+                TrackerLogic.countdownLabel(item.dateIso, today),
+                item.poster, "📺"
+            )
+            card.setOnClickListener { openTracker() }
+            card.setOnLongClickListener {
+                openTrackerCardMenu(item.title) {
+                    markWatched(item.tmdbId, item.type, item.season, item.episode)
+                }
+                true
+            }
+            row.addView(card)
+        }
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    /**
+     * Continue Watching for the Tracker view: tracker cards merged
+     * with the TvContract cards (core merge — tracker wins title
+     * ties). Tracker cards open the tracker; system cards keep the
+     * exact TV behaviour via [watchTile].
+     */
+    private fun buildTrackerContinueSection(
+        contItems: List<TrackerLogic.ContinueItem>
+    ): View? {
+        val system = TvData.watchNext(this)
+        DiagCache.watchNextCount = system.size
+        val cards = TrackerLogic.mergeContinue(contItems, system.map { it.title })
+        if (cards.isEmpty()) return null
+        val box = section("Continue Watching")
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        for (card in cards) {
+            val trackerItem = card.tracker
+            if (trackerItem != null) {
+                val view = posterCard(
+                    trackerItem.title, trackerItem.sub, trackerItem.poster, "📺"
+                )
+                view.setOnClickListener { openTracker() }
+                view.setOnLongClickListener {
+                    openTrackerCardMenu(trackerItem.title, null)
+                    true
+                }
+                row.addView(view)
+            } else {
+                row.addView(watchTile(system[card.systemIndex]))
+            }
+        }
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    private fun buildMovieNightSection(movies: List<TrackerLogic.MovieItem>): View {
+        val box = section("Movie Night")
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        val today = todayIso()
+        for (movie in movies) {
+            val parts = ArrayList<String>()
+            val countdown = TrackerLogic.countdownLabel(movie.releaseDate, today)
+            if (countdown.isNotEmpty()) parts.add(countdown)
+            if (movie.planned) parts.add("Planned")
+            val card = posterCard(movie.title, parts.joinToString(" · "), movie.poster, "🎬")
+            card.setOnClickListener { openTracker() }
+            card.setOnLongClickListener {
+                openTrackerCardMenu(movie.title) {
+                    markWatched(movie.tmdbId, "movie", 0, 0)
+                }
+                true
+            }
+            row.addView(card)
+        }
         box.addView(horizontalScroller(row))
         return box
     }
