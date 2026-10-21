@@ -1,7 +1,7 @@
 # Mizan Launcher — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-21 04:00 UTC
+Date: 2026-10-21 14:43 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -18,10 +18,16 @@ recents store, now-playing mapping, guest gate, row-order
 normalize + status codec v1.4 (spec section 12). All v1.3 tests
 carry over.
 
+Note (v1.6): new sections — design tokens, app catalogue merge
+(lock coverage), Reddit endpoint chain + RSS fallback parser +
+visible fetch status (spec section 14). All v1.5 tests carry
+over; the RSS parser feeds the same RedditImage model as JSON.
+
 Note (v1.5): REMOVED with the Cleanup feature — the 18 cleanup
-classifier checks (the classifier is gone; its never-list data
-survives as core/NeverList, exercised through the speed-up kill
-list checks) and the 2 guest checks for the Settings/Cleanup
+classifier checks, replaced by 7 direct never-list checks (the
+classifier is gone; its never-list data survives as
+core/NeverList, also exercised through the speed-up kill list)
+and the 2 guest checks for the Settings/Cleanup
 actions (Settings entry is now decided by core/SettingsGate;
 Cleanup no longer exists). Folder constructions use the v1.5
 typed-entry model throughout. New sections: folder tree
@@ -323,5 +329,35 @@ PASS  allapps: alphabetical by label
 PASS  allapps: foldered apps badged with the containing folder
 PASS  allapps: unfoldered apps carry no badge
 PASS  allapps: label ties break by package
-RESULT: 291 passed, 0 failed, 291 total
+PASS  design: spacing scale increases S<M<L<XL
+PASS  design: content margin is the TV margin (48dp)
+PASS  design: scrim is bottom-weighted (bottom alpha > top)
+PASS  design: scrim alphas stay in the calm band (10%..45%)
+PASS  design: scrim colors carry exactly the token alphas
+PASS  design: radii positive, panel rounder than tile, tile rounder than chip
+PASS  design: resting tile fill is 8% white, panel fill is 25% black
+PASS  design: focus scale is a slight lift (1.0..1.15)
+PASS  catalogue: dedupes across categories, leanback label wins
+PASS  catalogue: system apps are included, flagged
+PASS  catalogue: Mizan itself is excluded
+PASS  catalogue: hidden and foldered apps are in the catalogue
+PASS  catalogue: sorted by label (case-insensitive)
+PASS  catalogue: label ties break by package
+PASS  redditchain: four endpoints, JSON first, RSS last
+PASS  redditchain: endpoints are www, api, old, then www .rss
+PASS  redditchain: subreddit names are cleaned into the URLs
+PASS  redditchain: usable means at least one candidate
+PASS  redditrss: landscape full-size entry survives
+PASS  redditrss: dimensions come from the title tag
+PASS  redditrss: known-portrait entry is rejected (landscape rule)
+PASS  redditrss: thumbnail is the fallback when no direct file exists
+PASS  redditrss: thumbnail URL is entity-unescaped
+PASS  redditrss: permalink is captured as the post URL
+PASS  redditrss: subreddit is stamped from the caller
+PASS  redditrss: malformed input fails open to empty
+PASS  redditrss: nsfw-tagged titles are rejected unless allowed
+PASS  redditstatus: attempt line names endpoint, code, count
+PASS  redditstatus: success summary shows the photo count
+PASS  redditstatus: failure summary names the last result
+RESULT: 321 passed, 0 failed, 321 total
 ```

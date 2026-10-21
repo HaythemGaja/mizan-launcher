@@ -99,6 +99,27 @@ class SettingsActivity : Activity() {
         "data" to "Data & about"
     )
 
+    /** v1.6: one glyph per category in the nav list (visual anchors). */
+    private val categoryGlyphs: Map<String, String> = mapOf(
+        "home" to "🏠", "look" to "🎨", "homescreen" to "▦", "statusbar" to "🕐",
+        "weather" to "🌦", "lockprofiles" to "🔒", "nowplaying" to "♪", "data" to "💾"
+    )
+
+    /** v1.6: one-line description under the category name in the detail header. */
+    private val categoryDescriptions: Map<String, String> = mapOf(
+        "home" to "Default home screen, the watcher, and Speed up",
+        "look" to "Theme, wallpaper, icons — and the Reddit source",
+        "homescreen" to "Home rows, hidden apps, and folders",
+        "statusbar" to "The top bar: clock, date, weather, quick tiles",
+        "weather" to "Location and units for the home weather",
+        "lockprofiles" to "Arrow pattern, app locks, profiles, Guest",
+        "nowplaying" to "What's playing in other apps, shown at home",
+        "data" to "Backup, safe mode, and diagnostics"
+    )
+
+    /** Tag marking a detail view as a card title (see groupDetailIntoCards). */
+    private companion object { const val CARD_HEADER_TAG = "cardHeader" }
+
     /**
      * True once the v1.5 entry gate has passed for THIS entry. Reset
      * in onDestroy so the next entry prompts again; rebuilds/resumes
@@ -247,10 +268,15 @@ class SettingsActivity : Activity() {
         detailScrollView = detailScroll
         root.addView(detailScroll)
 
+        // v1.6: the detail pane opens with the category name + a
+        // one-line description, then the category's controls grouped
+        // into cards (groupDetailIntoCards, keyed off header() tags).
+        detail.addView(detailHeader(nav.selectedId))
         buildingDetail = true
         detailFocusable = emptyList()
         buildDetail(detail, nav.selectedId)
         buildingDetail = false
+        groupDetailIntoCards(detail, firstContentIndex = 1)
 
         setContentView(root)
         restoreFocus(root)
@@ -326,7 +352,7 @@ class SettingsActivity : Activity() {
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         pane.addView(title)
         val version = TextView(this)
-        version.text = "Mizan Launcher v1.5"
+        version.text = "Mizan Launcher v1.6"
         version.setTextColor(subColour)
         version.textSize = 15f
         version.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, metrics.rowPadVDp + 2))
@@ -361,11 +387,15 @@ class SettingsActivity : Activity() {
      */
     private fun navRow(index: Int, titleText: String): TextView {
         val tv = TextView(this)
-        tv.text = titleText
+        // v1.6: every category row carries its glyph; heights are one
+        // consistent value from the fit metrics (taller when roomy).
+        val glyph = categoryGlyphs[categories[index].first]
+        tv.text = if (glyph != null) "$glyph  $titleText" else titleText
         tv.setTextColor(textColour)
         tv.textSize = metrics.navTextSp
         tv.isFocusable = true
         tv.isClickable = true
+        tv.minHeight = Ui.dp(this, if (metrics.compact) 48 else 56)
         tv.setPadding(Ui.dp(this, 16), Ui.dp(this, metrics.rowPadVDp), Ui.dp(this, 16), Ui.dp(this, metrics.rowPadVDp))
         val lp = LinearLayout.LayoutParams(-1, -2)
         lp.setMargins(0, Ui.dp(this, 3), 0, Ui.dp(this, 3))
@@ -590,6 +620,13 @@ class SettingsActivity : Activity() {
     private fun buildRedditDetail(content: LinearLayout) {
         content.addView(header("Wallpaper source — Reddit"))
                 content.addView(row("Reddit wallpapers", "Top of the week from your subreddits") { redditPicker() })
+                // v1.6: fetch status is VISIBLE — v1.1–v1.5 failed
+                // silently and the feature just looked broken.
+                content.addView(info(
+                    "Last try: " + prefs.redditLastStatus.ifEmpty {
+                        "no fetch yet — tap “Reddit wallpapers” to fetch"
+                    }
+                ))
                 content.addView(row("Subreddits", prefs.redditSubs) { editSubreddits() })
                 content.addView(toggleRow("Allow NSFW results", prefs.redditAllowNsfw, "Off by default — over_18 posts are skipped") {
                     prefs.redditAllowNsfw = it
@@ -752,7 +789,7 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        content.addView(header("Mizan Launcher v1.5"))
+        content.addView(header("Mizan Launcher v1.6"))
         content.addView(info(diagnosticsText()))
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
@@ -886,6 +923,9 @@ class SettingsActivity : Activity() {
         tv.textSize = metrics.headerSp
         tv.setTypeface(tv.typeface, android.graphics.Typeface.BOLD)
         tv.setPadding(0, Ui.dp(this, metrics.rowPadVDp + 6), 0, Ui.dp(this, 6))
+        // v1.6: headers are card titles — groupDetailIntoCards keys
+        // the Settings card grouping off this tag.
+        tv.tag = CARD_HEADER_TAG
         return tv
     }
 
@@ -895,8 +935,82 @@ class SettingsActivity : Activity() {
         tv.setTextColor(subColour)
         tv.textSize = metrics.infoTextSp
         // Info text wraps (no single-line truncation) — v1.3 fit rule.
-        tv.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 4))
+        // v1.6: horizontal padding matches row text, so info lines up
+        // with the controls inside its card.
+        tv.setPadding(Ui.dp(this, 16), Ui.dp(this, 4), Ui.dp(this, 16), Ui.dp(this, 4))
         return tv
+    }
+
+    /** v1.6: the detail pane's opening block — category name + description. */
+    private fun detailHeader(id: String): View {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        val title = TextView(this)
+        title.text = categories.firstOrNull { it.first == id }?.second ?: "Settings"
+        title.setTextColor(textColour)
+        title.textSize = metrics.headerSp + 4f
+        title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+        box.addView(title)
+        val desc = TextView(this)
+        desc.text = categoryDescriptions[id] ?: ""
+        desc.setTextColor(subColour)
+        desc.textSize = metrics.infoTextSp
+        desc.setPadding(0, Ui.dp(this, 4), 0, 0)
+        box.addView(desc)
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, 0, 0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M))
+        box.layoutParams = lp
+        return box
+    }
+
+    /**
+     * v1.6 card grouping: the detail builders still emit a flat
+     * stream (header, rows, infos…); this pass re-parents everything
+     * from [firstContentIndex] on into rounded cards — each header()
+     * starts a new card and becomes its title, the controls that
+     * follow it live inside that card. Pure re-arrangement: tags,
+     * focus hooks and listeners on the children are untouched, so
+     * the nav machine and focus memory behave exactly as before.
+     * Fail-open: any surprise leaves the flat list as built.
+     */
+    private fun groupDetailIntoCards(detail: LinearLayout, firstContentIndex: Int) {
+        try {
+            val children = (0 until detail.childCount).map { detail.getChildAt(it) }
+            val content = children.drop(firstContentIndex)
+            if (content.isEmpty()) return
+            content.forEach { detail.removeView(it) }
+            var card: LinearLayout? = null
+            fun newCard(): LinearLayout {
+                val c = LinearLayout(this)
+                c.orientation = LinearLayout.VERTICAL
+                val bg = android.graphics.drawable.GradientDrawable()
+                bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
+                bg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
+                c.background = bg
+                c.setPadding(
+                    Ui.dp(this, 18), Ui.dp(this, 10),
+                    Ui.dp(this, 18), Ui.dp(this, 14)
+                )
+                val lp = LinearLayout.LayoutParams(-1, -2)
+                lp.setMargins(0, 0, 0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M))
+                c.layoutParams = lp
+                detail.addView(c)
+                card = c
+                return c
+            }
+            for (child in content) {
+                if (child.tag == CARD_HEADER_TAG) {
+                    val host = newCard()
+                    // The header is the card's title now: no big top gap.
+                    child.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 8))
+                    host.addView(child)
+                } else {
+                    (card ?: newCard()).addView(child)
+                }
+            }
+        } catch (e: Exception) {
+            failOpen("settingsCards", e)
+        }
     }
 
     /**
@@ -959,7 +1073,8 @@ class SettingsActivity : Activity() {
             val watcher = com.mizan.launcher.data.HomeStatus.isWatcherEnabled(this@SettingsActivity)
             append("\nHome: ${if (isHome) "Mizan is default" else "not default (current: " +
                 com.mizan.launcher.data.HomeStatus.currentHomePackage(this@SettingsActivity).ifEmpty { "unknown" } + ")"}")
-            append(", watcher: ${if (watcher) "enabled" else "disabled"}")
+            append(", watcher: ${if (watcher) "enabled" else "disabled"}" +
+                if (watcher) "" else " (listed in Accessibility as “Mizan Launcher watcher”)")
             val relaunches = Prefs.watcherRelaunches(this@SettingsActivity)
             if (relaunches > 0) {
                 val lastAt = Prefs.watcherLastAt(this@SettingsActivity)
@@ -983,8 +1098,14 @@ class SettingsActivity : Activity() {
             append("\nSettings lock: ${onOff(prefs.lockSettings)}")
             append("\nWeather: units ${prefs.weatherUnits.tempSymbol}" +
                 ", weather bg: ${prefs.weatherBgStatus}")
+            // v1.6: the reddit: line always appears — last run's
+            // summary plus the recorded per-endpoint attempts.
+            append("\nreddit: ${prefs.redditLastStatus.ifEmpty { "no fetch yet" }}")
             val redditErr = com.mizan.launcher.data.RedditFetcher.lastError
-            if (redditErr.isNotEmpty()) append("\nReddit: $redditErr")
+            if (redditErr.isNotEmpty()) append(" · $redditErr")
+            for (line in Prefs.redditAttemptLog(this@SettingsActivity)) {
+                append("\n  $line")
+            }
             // v1.4 lines: Now Playing state, guest gate, rotation, speed up, Bing.
             append("\nnow playing: ${if (diag.nowPlayingGranted) "granted" else "not-granted"}" +
                 ", sessions: ${diag.nowPlayingCount}")
@@ -1083,11 +1204,19 @@ class SettingsActivity : Activity() {
 
         content.addView(header("Step 2 — Home watcher"))
         content.addView(info(
-            if (watcher) "✓ Done — the watcher is enabled."
+            if (watcher) "✓ Done — “Mizan Launcher watcher” is enabled in Accessibility."
             else "Optional but recommended: the watcher notices when the TV's own home screen " +
                 "appears and reopens Mizan. It only watches which window is showing — " +
                 "it cannot read screen contents."
         ))
+        if (!watcher) {
+            content.addView(info(
+                "Where to find it: TV Settings → Device Preferences → Accessibility → " +
+                    "Installed services → “Mizan Launcher watcher”. If it isn't listed, " +
+                    "allow restricted settings first: Android system Settings → Apps → " +
+                    "Mizan Launcher → ⋮ (top-right) → “Allow restricted settings”, then look again."
+            ))
+        }
         content.addView(row("Enable Home watcher", "Opens Accessibility settings — turn on “Mizan Launcher watcher”") {
             try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             catch (e: Exception) { failOpen("a11ySettings", e) }
@@ -1499,11 +1628,20 @@ class SettingsActivity : Activity() {
     }
 
     private fun lockManager() {
+        // v1.6: AppLoader enumerates the FULL launchable catalogue
+        // (core/AppCatalogue merge) — hidden apps, foldered apps and
+        // system apps are all here, not just the home-visible set.
         val apps = AppLoader.loadApps(packageManager, packageName)
         val labels = apps.map { app ->
             (if (prefs.lockedApps.contains(app.pkg)) "🔒 " else "") + app.label
         }
         AlertDialog.Builder(this).setTitle("Tap an app to lock / unlock it")
+            .setMessage(
+                "Every launchable app on this TV is listed — hidden apps, apps inside " +
+                    "folders, and system apps (like the TV's own Settings) included. " +
+                    "Mizan Launcher itself is the only app not listed. Locking gates " +
+                    "launches made through Mizan; the remote's hardware app buttons bypass it."
+            )
             .setItems(labels.toTypedArray()) { _, which ->
                 val set = prefs.lockedApps.toMutableSet()
                 val pkg = apps[which].pkg
@@ -1554,7 +1692,7 @@ class SettingsActivity : Activity() {
     private fun redditPicker() {
         toast("Fetching Reddit wallpapers…")
         val subs = prefs.redditSubs.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        com.mizan.launcher.data.RedditFetcher.fetch(subs, prefs.redditAllowNsfw) { images ->
+        com.mizan.launcher.data.RedditFetcher.fetch(subs, prefs.redditAllowNsfw, this) { images ->
             runOnUiThread {
                 if (images.isNotEmpty()) {
                     prefs.redditCache = com.mizan.launcher.core.RedditCacheCodec.encode(images)
@@ -1572,9 +1710,21 @@ class SettingsActivity : Activity() {
             fresh
         }
         if (list.isEmpty()) {
+            // v1.6: an empty list explains itself — the recorded run
+            // status plus a Try again that re-fetches immediately,
+            // instead of a bare toast that hid two versions of bugs.
             val err = com.mizan.launcher.data.RedditFetcher.lastError
             Prefs.noteError(this, "redditPicker", Exception(err.ifEmpty { "no images" }))
-            toast("Couldn't get Reddit wallpapers (offline or blocked) — current wallpaper kept")
+            AlertDialog.Builder(this)
+                .setTitle("No Reddit wallpapers yet")
+                .setMessage(
+                    "Last try: " + prefs.redditLastStatus.ifEmpty { "—" } +
+                        "\n\nReddit isn't providing a photo list right now (or the TV is " +
+                        "offline). Your current wallpaper is untouched."
+                )
+                .setPositiveButton("Try again") { _, _ -> redditPicker() }
+                .setNegativeButton("Close", null)
+                .show()
             rebuild()
             return
         }
@@ -1662,8 +1812,15 @@ class SettingsActivity : Activity() {
                     "screen appears and reopens Mizan Launcher instead.\n\n" +
                     "It only watches which window is on screen — it cannot read screen contents, " +
                     "and it sends nothing anywhere.\n\n" +
-                    "It is OFF by default. To use it: open Accessibility settings, find " +
-                    "“Mizan Launcher watcher”, and turn it on yourself. Turn it off there any time."
+                    "It is OFF by default. To turn it on, open the TV's Settings → " +
+                    "Device Preferences → Accessibility → Installed services → " +
+                    "“Mizan Launcher watcher” — that exact name (older builds listed it as " +
+                    "just “Mizan Launcher”, which is why it was hard to find) — and turn it on " +
+                    "yourself. Turn it off there any time.\n\n" +
+                    "Still not listed? Sideloaded apps are hidden from Accessibility on some " +
+                    "Google TV builds until you allow them: Android system Settings → Apps → " +
+                    "Mizan Launcher → ⋮ (top-right) → “Allow restricted settings”, then check " +
+                    "Accessibility again."
             )
             .setPositiveButton("Open Accessibility settings") { _, _ ->
                 try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }

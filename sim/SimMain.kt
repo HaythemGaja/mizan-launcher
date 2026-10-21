@@ -1186,6 +1186,150 @@ fun main() {
             ).map { it.pkg } == listOf("a.pkg", "b.pkg"))
     }
 
+    // ------------------------------------------------ (29) design tokens (v1.6)
+    // The redesign's point is one source of truth; these checks pin
+    // the token invariants (not pixels): an increasing spacing
+    // scale, a bottom-weighted scrim inside a sane band, positive
+    // radii, and the quiet 8%-white resting tile.
+    run {
+        val d = com.mizan.launcher.core.Design
+        check("design: spacing scale increases S<M<L<XL",
+            d.SPACE_S < d.SPACE_M && d.SPACE_M < d.SPACE_L && d.SPACE_L < d.SPACE_XL)
+        check("design: content margin is the TV margin (48dp)",
+            d.CONTENT_MARGIN_DP == 48)
+        check("design: scrim is bottom-weighted (bottom alpha > top)",
+            d.SCRIM_BOTTOM_ALPHA > d.SCRIM_TOP_ALPHA)
+        check("design: scrim alphas stay in the calm band (10%..45%)",
+            d.SCRIM_TOP_ALPHA in 0x1A..0x73 && d.SCRIM_BOTTOM_ALPHA in 0x1A..0x73)
+        check("design: scrim colors carry exactly the token alphas",
+            d.scrimColors().size == 2 &&
+                (d.scrimColors()[0] ushr 24) == d.SCRIM_TOP_ALPHA &&
+                (d.scrimColors()[1] ushr 24) == d.SCRIM_BOTTOM_ALPHA)
+        check("design: radii positive, panel rounder than tile, tile rounder than chip",
+            d.RADIUS_PANEL > d.RADIUS_TILE && d.RADIUS_TILE > d.RADIUS_CHIP && d.RADIUS_CHIP > 0)
+        check("design: resting tile fill is 8% white, panel fill is 25% black",
+            (d.TILE_FILL ushr 24) == 0x14 && (d.TILE_FILL and 0xFFFFFF) == 0xFFFFFF &&
+                (d.PANEL_FILL ushr 24) == 0x40 && (d.PANEL_FILL and 0xFFFFFF) == 0)
+        check("design: focus scale is a slight lift (1.0..1.15)",
+            d.FOCUS_SCALE > 1.0f && d.FOCUS_SCALE <= 1.15f)
+    }
+
+    // ------------------------------------------------ (30) app catalogue (v1.6)
+    // The lock manager's coverage: merging the two intent-category
+    // queries must dedupe by package (leanback wins), include system
+    // apps, exclude Mizan itself, and sort by label.
+    run {
+        val rec = com.mizan.launcher.core.AppCatalogue.Record( "", "", false, false)
+        fun r(pkg: String, label: String, system: Boolean = false, leanback: Boolean = false) =
+            rec.copy(pkg = pkg, label = label, isSystem = system, leanback = leanback)
+        val merged = com.mizan.launcher.core.AppCatalogue.merge(
+            listOf(
+                r("com.tv.settings", "TV Settings (phone label)", system = true),
+                r("com.tv.settings", "TV Settings", system = true, leanback = true),
+                r("com.example.hidden", "Hidden One"),
+                r("com.example.foldered", "Foldered One", leanback = true),
+                r("com.mizan.launcher", "Mizan Launcher", leanback = true)
+            ),
+            ownPkg = "com.mizan.launcher"
+        )
+        check("catalogue: dedupes across categories, leanback label wins",
+            merged.count { it.pkg == "com.tv.settings" } == 1 &&
+                merged.first { it.pkg == "com.tv.settings" }.label == "TV Settings")
+        check("catalogue: system apps are included, flagged",
+            merged.any { it.pkg == "com.tv.settings" && it.isSystem })
+        check("catalogue: Mizan itself is excluded",
+            merged.none { it.pkg == "com.mizan.launcher" })
+        check("catalogue: hidden and foldered apps are in the catalogue",
+            merged.map { it.pkg }.containsAll(listOf("com.example.hidden", "com.example.foldered")))
+        check("catalogue: sorted by label (case-insensitive)",
+            merged.map { it.label } == merged.map { it.label }.sortedBy { it.lowercase() })
+        check("catalogue: label ties break by package",
+            com.mizan.launcher.core.AppCatalogue.merge(
+                listOf(r("b.pkg", "Same"), r("a.pkg", "Same")), "self"
+            ).map { it.pkg } == listOf("a.pkg", "b.pkg"))
+    }
+
+    // ------------------------------------------------ (31) Reddit chain + RSS + status (v1.6)
+    run {
+        val chain = com.mizan.launcher.core.RedditEndpoints.chain("wallpaper")
+        check("redditchain: four endpoints, JSON first, RSS last",
+            chain.size == 4 &&
+                chain.take(3).all { it.kind == com.mizan.launcher.core.RedditEndpoints.Kind.JSON } &&
+                chain.last().kind == com.mizan.launcher.core.RedditEndpoints.Kind.RSS)
+        check("redditchain: endpoints are www, api, old, then www .rss",
+            chain.map { it.id } == listOf("www-json", "api-json", "old-json", "www-rss") &&
+                chain[0].url.contains("www.reddit.com/r/wallpaper/top.json") &&
+                chain[3].url.contains("www.reddit.com/r/wallpaper/top/.rss"))
+        check("redditchain: subreddit names are cleaned into the URLs",
+            com.mizan.launcher.core.RedditEndpoints.chain("r/EarthPorn").first().url
+                .contains("/r/EarthPorn/"))
+        check("redditchain: usable means at least one candidate",
+            !com.mizan.launcher.core.RedditEndpoints.isUsable(0) &&
+                com.mizan.launcher.core.RedditEndpoints.isUsable(1))
+
+        // A trimmed real-shape Atom entry (2026-10-21 shape): escaped
+        // HTML content with a [link] anchor to the full-size file, a
+        // media:thumbnail preview, and the resolution in the title.
+        val feed = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<entry><author><name>/u/tester</name></author>
+<title>Norway Sea [3840x2160]</title>
+<link rel="alternate" href="https://www.reddit.com/r/wallpaper/comments/abc123/norway_sea/"/>
+<content type="html">&lt;a href=&quot;https://www.reddit.com/r/wallpaper/comments/abc123/norway_sea/&quot;&gt;&lt;img src=&quot;https://preview.redd.it/abc123.png?width=640&amp;amp;crop=smart&quot;/&gt;&lt;/a&gt; &lt;span&gt;&lt;a href=&quot;https://i.redd.it/abc123.png&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;</content>
+<media:thumbnail url="https://preview.redd.it/abc123.png?width=640&amp;crop=smart" />
+</entry>
+<entry><author><name>/u/tester2</name></author>
+<title>Vertical Phone Shot [1440x2560]</title>
+<link rel="alternate" href="https://www.reddit.com/r/wallpaper/comments/def456/vertical/"/>
+<content type="html">&lt;span&gt;&lt;a href=&quot;https://i.redd.it/def456.jpg&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;</content>
+<media:thumbnail url="https://preview.redd.it/def456.jpg?width=640" />
+</entry>
+<entry><author><name>/u/tester3</name></author>
+<title>Thumb Only Peak</title>
+<link rel="alternate" href="https://www.reddit.com/r/wallpaper/comments/ghi789/thumb/"/>
+<content type="html">&lt;span&gt;no direct file here&lt;/span&gt;</content>
+<media:thumbnail url="https://preview.redd.it/ghi789.jpg?width=640&amp;crop=smart" />
+</entry>
+</feed>"""
+        val rss = com.mizan.launcher.core.RedditRss.parseFeed(feed, "wallpaper")
+        check("redditrss: landscape full-size entry survives",
+            rss.any { it.url == "https://i.redd.it/abc123.png" })
+        check("redditrss: dimensions come from the title tag",
+            rss.first { it.url.contains("abc123") }.let { it.width == 3840 && it.height == 2160 })
+        check("redditrss: known-portrait entry is rejected (landscape rule)",
+            rss.none { it.url.contains("def456") })
+        check("redditrss: thumbnail is the fallback when no direct file exists",
+            rss.any { it.url.startsWith("https://preview.redd.it/ghi789.jpg") })
+        check("redditrss: thumbnail URL is entity-unescaped",
+            rss.none { it.url.contains("&amp;") })
+        check("redditrss: permalink is captured as the post URL",
+            rss.first { it.url.contains("abc123") }.postUrl.contains("/comments/abc123/"))
+        check("redditrss: subreddit is stamped from the caller",
+            rss.all { it.subreddit == "wallpaper" })
+        check("redditrss: malformed input fails open to empty",
+            com.mizan.launcher.core.RedditRss.parseFeed("not xml at all", "wallpaper").isEmpty() &&
+                com.mizan.launcher.core.RedditRss.parseFeed(null, "wallpaper").isEmpty())
+        check("redditrss: nsfw-tagged titles are rejected unless allowed",
+            com.mizan.launcher.core.RedditRss.parseFeed(
+                feed.replace("Thumb Only Peak", "Thumb Only Peak [NSFW]"), "wallpaper"
+            ).none { it.url.contains("ghi789") } &&
+                com.mizan.launcher.core.RedditRss.parseFeed(
+                    feed.replace("Thumb Only Peak", "Thumb Only Peak [NSFW]"), "wallpaper",
+                    allowNsfw = true
+                ).any { it.url.contains("ghi789") })
+
+        val att = com.mizan.launcher.core.RedditStatus.Attempt("www-json", "wallpaper", "HTTP 403", 0, 0L)
+        check("redditstatus: attempt line names endpoint, code, count",
+            com.mizan.launcher.core.RedditStatus.attemptLine(att) ==
+                "r/wallpaper · www-json · HTTP 403 · 0 photos")
+        check("redditstatus: success summary shows the photo count",
+            com.mizan.launcher.core.RedditStatus.runSummary(listOf(att), 18, 0L)
+                .startsWith("✓ 18 photos"))
+        check("redditstatus: failure summary names the last result",
+            com.mizan.launcher.core.RedditStatus.runSummary(listOf(att), 0, 0L)
+                .startsWith("✗ r/wallpaper HTTP 403 · 0 photos"))
+    }
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }

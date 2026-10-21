@@ -291,7 +291,53 @@ class SearchActivity : Activity() {
             label.visibility = if (TileLayout.labelVisible(hasFocus)) View.VISIBLE else View.INVISIBLE
         }
         frame.setOnClickListener { launchWithGate(entry) }
+        // v1.6: Search results had NO hold-OK menu at all — every
+        // other app surface offers the arrow-lock toggle. This is the
+        // same core menu as the All Apps tab (favorite / lock / info).
+        frame.setOnLongClickListener { openResultMenu(entry); true }
         return frame
+    }
+
+    /** Hold-OK menu for a search result (favorite / arrow lock / app info). */
+    private fun openResultMenu(entry: AppEntry) {
+        val layout = prefs.layout
+        val isFav = layout.favorites.contains(entry.pkg)
+        val isLocked = prefs.lockedApps.contains(entry.pkg)
+        val labels = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        labels.add(if (isFav) "Remove favorite" else "Add favorite")
+        actions.add {
+            if (isFav) layout.favorites.remove(entry.pkg) else layout.favorites.add(entry.pkg)
+            prefs.layout = layout
+            rebuildResults()
+        }
+        labels.add(if (isLocked) "Remove arrow lock" else "Arrow-lock this app")
+        actions.add {
+            val set = prefs.lockedApps.toMutableSet()
+            if (isLocked) set.remove(entry.pkg) else set.add(entry.pkg)
+            prefs.lockedApps = set
+            if (!isLocked && prefs.arrowPin.isEmpty()) {
+                Toast.makeText(
+                    this,
+                    "Locked. You'll set an arrow pattern the first time you open it (or in Settings).",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            rebuildResults()
+        }
+        labels.add("App info")
+        actions.add {
+            try {
+                startActivity(
+                    android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(android.net.Uri.parse("package:${entry.pkg}"))
+                )
+            } catch (e: Exception) { Prefs.noteError(this, "searchAppInfo", e) }
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(entry.label)
+            .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }
+            .show()
     }
 
     // -------------------------------------------------------------- launching

@@ -19,16 +19,19 @@ object Ui {
 
     fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
 
-    /** Tile background: soft translucent panel; focused = accent stroke + lift tint. */
+    /**
+     * Tile background (v1.6 design tokens): quiet at rest — flat 8%
+     * white, NO border; focus = accent outline + a dark lift tint.
+     * One treatment for every tile on every screen.
+     */
     fun tileBackground(accent: Int, focused: Boolean, cornerDp: Int, ctx: Context): GradientDrawable {
         val d = GradientDrawable()
         d.cornerRadius = dp(ctx, cornerDp).toFloat()
         if (focused) {
-            d.setColor((accent and 0x00FFFFFF) or 0x55000000)
-            d.setStroke(dp(ctx, 3), accent)
+            d.setColor(com.mizan.launcher.core.Design.FOCUS_FILL)
+            d.setStroke(dp(ctx, com.mizan.launcher.core.Design.FOCUS_STROKE_DP), accent)
         } else {
-            d.setColor(0x2EFFFFFF)
-            d.setStroke(dp(ctx, 1), 0x33FFFFFF)
+            d.setColor(com.mizan.launcher.core.Design.TILE_FILL)
         }
         return d
     }
@@ -42,15 +45,16 @@ object Ui {
      */
     fun focusLift(view: View, accent: Int, cornerDp: Int, onFocusExtra: ((Boolean) -> Unit)? = null) {
         view.setOnFocusChangeListener { v, hasFocus ->
-            v.scaleX = if (hasFocus) 1.07f else 1f
-            v.scaleY = if (hasFocus) 1.07f else 1f
+            val s = com.mizan.launcher.core.Design.FOCUS_SCALE
+            v.scaleX = if (hasFocus) s else 1f
+            v.scaleY = if (hasFocus) s else 1f
             v.background = tileBackground(accent, hasFocus, cornerDp, v.context)
             v.elevation = if (hasFocus) dp(v.context, 8).toFloat() else 0f
             onFocusExtra?.invoke(hasFocus)
         }
     }
 
-    /** A section title label. */
+    /** A section title label (kept for the secondary screens). */
     fun sectionTitle(ctx: Context, text: String, colour: Int): TextView {
         val tv = TextView(ctx)
         tv.text = text
@@ -59,6 +63,46 @@ object Ui {
         tv.setPadding(0, dp(ctx, 18), 0, dp(ctx, 8))
         return tv
     }
+
+    /**
+     * The v1.6 section header used on the home screen (and available
+     * to the other screens): a small-caps, letter-spaced label with a
+     * thin accent rule filling the rest of the line — identical
+     * everywhere, so rows read as organized groups instead of a pile.
+     */
+    fun sectionHeader(ctx: Context, text: String, colour: Int, accent: Int): View {
+        val row = android.widget.LinearLayout(ctx)
+        row.orientation = android.widget.LinearLayout.HORIZONTAL
+        row.gravity = android.view.Gravity.CENTER_VERTICAL
+        val lp = android.widget.LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, dp(ctx, com.mizan.launcher.core.Design.ROW_GAP_DP), 0, dp(ctx, 10))
+        row.layoutParams = lp
+
+        val tv = TextView(ctx)
+        tv.text = text.uppercase()
+        tv.setTextColor(colour)
+        tv.textSize = com.mizan.launcher.core.Design.SECTION_HEADER_SP
+        tv.letterSpacing = com.mizan.launcher.core.Design.SECTION_HEADER_TRACKING
+        tv.setTypeface(tv.typeface, android.graphics.Typeface.BOLD)
+        row.addView(tv)
+
+        val rule = View(ctx)
+        val rlp = android.widget.LinearLayout.LayoutParams(0, dp(ctx, 2), 1f)
+        rlp.setMargins(dp(ctx, 14), 0, 0, 0)
+        rule.layoutParams = rlp
+        rule.setBackgroundColor(
+            (com.mizan.launcher.core.Design.SECTION_RULE_ALPHA shl 24) or (accent and 0x00FFFFFF)
+        )
+        row.addView(rule)
+        return row
+    }
+
+    /** The unified wallpaper scrim (v1.6): one bottom-weighted gradient. */
+    fun scrimDrawable(): GradientDrawable =
+        GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            com.mizan.launcher.core.Design.scrimColors()
+        )
 
     /**
      * App icon cropped/masked to the chosen shape.

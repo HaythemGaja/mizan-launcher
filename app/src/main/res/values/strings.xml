@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Mizan Launcher</string>
+    <string name="watcher_name">Mizan Launcher watcher</string>
     <string name="watcher_desc">Watches for the TV\'s stock home screen appearing and reopens Mizan Launcher instead. It cannot read screen contents.</string>
     <string name="dream_desc">Mizan Launcher screensaver — a dim clock over your wallpaper.</string>
 </resources>

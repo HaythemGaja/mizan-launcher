@@ -33,13 +33,28 @@ object WallpaperRotator {
             if (next < 0) return
             val wraps = next == 0 && prefs.redditRotationIndex == cached.size - 1
             applyCandidate(ctx, prefs, cached[next], next, onApplied)
-            if (wraps) refreshCacheInBackground(prefs)
+            if (wraps) refreshCacheInBackground(ctx, prefs)
             return
         }
         // Nothing cached yet: fetch a fresh list, then apply its first.
         val subs = prefs.redditSubs.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        RedditFetcher.fetch(subs, prefs.redditAllowNsfw) { images ->
-            if (images.isEmpty()) return@fetch
+        RedditFetcher.fetch(subs, prefs.redditAllowNsfw, ctx) { images ->
+            if (images.isEmpty()) {
+                // v1.6: an empty rotation fetch used to fail silently.
+                // The fetcher already recorded its endpoint attempts;
+                // add the rotation context so diagnostics shows the
+                // advance itself was the thing that found nothing.
+                Prefs.noteRedditAttempt(
+                    ctx,
+                    com.mizan.launcher.core.RedditStatus.attemptLine(
+                        com.mizan.launcher.core.RedditStatus.Attempt(
+                            "rotation", subs.firstOrNull() ?: "", "no candidates", 0,
+                            System.currentTimeMillis()
+                        )
+                    )
+                )
+                return@fetch
+            }
             Handler(Looper.getMainLooper()).post {
                 try {
                     prefs.redditCache = RedditCacheCodec.encode(images)
@@ -78,9 +93,9 @@ object WallpaperRotator {
     }
 
     /** Quietly refresh the candidate cache for the next rotation cycle. */
-    private fun refreshCacheInBackground(prefs: Prefs) {
+    private fun refreshCacheInBackground(ctx: Context, prefs: Prefs) {
         val subs = prefs.redditSubs.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        RedditFetcher.fetch(subs, prefs.redditAllowNsfw) { images ->
+        RedditFetcher.fetch(subs, prefs.redditAllowNsfw, ctx) { images ->
             if (images.isEmpty()) return@fetch
             Handler(Looper.getMainLooper()).post {
                 try {

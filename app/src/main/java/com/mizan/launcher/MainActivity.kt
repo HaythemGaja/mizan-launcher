@@ -210,9 +210,6 @@ class MainActivity : Activity() {
                         iv.setImageBitmap(bmp)
                         iv.scaleType = ImageView.ScaleType.CENTER_CROP
                         root.addView(iv, FrameLayout.LayoutParams(-1, -1))
-                        val scrim = View(this)
-                        scrim.setBackgroundColor(0x40000000)
-                        root.addView(scrim, FrameLayout.LayoutParams(-1, -1))
                         prefs.weatherBgStatus =
                             "active: ${cond.name.lowercase()} (${palette.motif})"
                         imageShown = true
@@ -236,10 +233,6 @@ class MainActivity : Activity() {
                         iv.setImageBitmap(bmp)
                         iv.scaleType = ImageView.ScaleType.CENTER_CROP
                         root.addView(iv, FrameLayout.LayoutParams(-1, -1))
-                        // Scrim so text stays readable over any photo.
-                        val scrim = View(this)
-                        scrim.setBackgroundColor(0x66000000)
-                        root.addView(scrim, FrameLayout.LayoutParams(-1, -1))
                         imageShown = true
                     }
                 }
@@ -250,11 +243,24 @@ class MainActivity : Activity() {
             root.background = grad
         }
 
+        // v1.6: ONE scrim over every background kind (photo, gradient,
+        // weather art) — the unified bottom-weighted gradient from
+        // core/Design, replacing the per-kind flat scrims (0x40/0x66)
+        // that made some wallpapers murky and others unreadable.
+        val scrim = View(this)
+        scrim.background = Ui.scrimDrawable()
+        root.addView(scrim, FrameLayout.LayoutParams(-1, -1))
+
         val scroll = ScrollView(this)
         scroll.isFillViewport = true
         val content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
-        content.setPadding(Ui.dp(this, 48), Ui.dp(this, 26), Ui.dp(this, 48), Ui.dp(this, 40))
+        content.setPadding(
+            Ui.dp(this, com.mizan.launcher.core.Design.CONTENT_MARGIN_DP),
+            Ui.dp(this, com.mizan.launcher.core.Design.SPACE_L),
+            Ui.dp(this, com.mizan.launcher.core.Design.CONTENT_MARGIN_DP),
+            Ui.dp(this, 40)
+        )
         scroll.addView(content)
         root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
 
@@ -346,87 +352,138 @@ class MainActivity : Activity() {
         wrap.orientation = LinearLayout.VERTICAL
 
         if (cfg.showBar) {
-            val bar = LinearLayout(this)
-            bar.orientation = LinearLayout.HORIZONTAL
-            bar.gravity = Gravity.CENTER_VERTICAL
+            // v1.6 HERO zone: one composed block instead of a loose
+            // strip of floating items. LEFT = the big clock + date with
+            // a status line (weather, network, Bluetooth) beneath;
+            // RIGHT = every quick tile + profile + Settings grouped in
+            // ONE translucent rounded panel. The config toggles govern
+            // exactly the same elements as the v1.1–v1.5 bar did.
+            val hero = LinearLayout(this)
+            hero.orientation = LinearLayout.HORIZONTAL
+            hero.gravity = Gravity.TOP
 
-            // Bar background: transparent (wallpaper shows through),
-            // the theme's top colour, or black — solid or translucent.
+            // Hero background follows the bar background config:
+            // transparent (wallpaper + scrim show through), the
+            // theme's top colour, or black — solid or translucent,
+            // now as one rounded zone instead of a hard-edged strip.
             when (cfg.background) {
                 com.mizan.launcher.core.StatusBarConfig.BG_THEME -> {
                     val alpha = com.mizan.launcher.core.StatusBarConfig.backgroundAlpha(cfg.opacity)
-                    bar.setBackgroundColor((alpha shl 24) or (Themes.preset(prefs.themeId).bgTop and 0x00FFFFFF))
+                    val bg = GradientDrawable()
+                    bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
+                    bg.setColor((alpha shl 24) or (Themes.preset(prefs.themeId).bgTop and 0x00FFFFFF))
+                    hero.background = bg
                 }
                 com.mizan.launcher.core.StatusBarConfig.BG_BLACK -> {
                     val alpha = com.mizan.launcher.core.StatusBarConfig.backgroundAlpha(cfg.opacity)
-                    bar.setBackgroundColor(alpha shl 24)
+                    val bg = GradientDrawable()
+                    bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
+                    bg.setColor(alpha shl 24)
+                    hero.background = bg
                 }
                 else -> { /* transparent: no background */ }
             }
             if (cfg.background != com.mizan.launcher.core.StatusBarConfig.BG_TRANSPARENT) {
-                bar.setPadding(Ui.dp(this, 12), Ui.dp(this, 8), Ui.dp(this, 12), Ui.dp(this, 8))
+                hero.setPadding(
+                    Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
+                    Ui.dp(this, 12),
+                    Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
+                    Ui.dp(this, 12)
+                )
             }
 
-            // Clock + date (each independently toggleable).
+            // LEFT: clock + date (each independently toggleable),
+            // then the status line, then the Guest pill.
             val left = LinearLayout(this)
             left.orientation = LinearLayout.VERTICAL
             clockView = null
             dateView = null
             if (cfg.showClock) {
                 clockView = TextView(this).apply {
-                    setTextColor(textColour); textSize = 42f * scale
+                    setTextColor(textColour)
+                    textSize = com.mizan.launcher.core.Design.HERO_CLOCK_SP * scale
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                 }
                 left.addView(clockView)
             }
             if (cfg.showDate) {
-                dateView = TextView(this).apply { setTextColor(subColour); textSize = 18f * scale }
+                dateView = TextView(this).apply {
+                    setTextColor(subColour)
+                    textSize = com.mizan.launcher.core.Design.HERO_DATE_SP * scale
+                }
                 left.addView(dateView)
             }
-            bar.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
 
-            // Guest pill (v1.4): while the Guest profile is active, a
-            // subtle "Guest" tag sits in the bar. (Bar hidden → the
-            // pill moves to the top-left corner; see buildRoot.)
-            if (!prefs.safeMode && guestActive()) {
-                bar.addView(guestPill())
-            }
+            val statusLine = LinearLayout(this)
+            statusLine.orientation = LinearLayout.HORIZONTAL
+            statusLine.gravity = Gravity.CENTER_VERTICAL
+            val slp = LinearLayout.LayoutParams(-2, -2)
+            slp.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S), 0, 0)
+            statusLine.layoutParams = slp
+            left.addView(statusLine)
 
             if (!prefs.safeMode && cfg.showWeather) {
                 // Weather widget — text filled by refreshWeather(); hidden if empty.
                 // v1.4: OK on the widget opens the full forecast screen.
                 val weather = TextView(this).apply {
-                    setTextColor(textColour); textSize = 22f * scale
-                    setPadding(Ui.dp(this@MainActivity, 12), 0, Ui.dp(this@MainActivity, 12), 0)
+                    setTextColor(textColour)
+                    textSize = com.mizan.launcher.core.Design.HERO_WEATHER_SP * scale
+                    setPadding(Ui.dp(this@MainActivity, 12), Ui.dp(this@MainActivity, 4), Ui.dp(this@MainActivity, 12), Ui.dp(this@MainActivity, 4))
                     tag = "weather"
                     isFocusable = true
                     isClickable = true
-                    background = Ui.tileBackground(accent, false, 10, this@MainActivity)
+                    background = Ui.tileBackground(accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this@MainActivity)
                     setOnClickListener {
                         try { startActivity(Intent(this@MainActivity, ForecastActivity::class.java)) }
                         catch (e: Exception) { Prefs.noteError(this@MainActivity, "forecastOpen", e) }
                     }
                 }
-                Ui.focusLift(weather, accent, 10)
-                bar.addView(weather)
+                Ui.focusLift(weather, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
+                statusLine.addView(weather)
             }
             networkView = null
             if (cfg.showNetwork) {
                 networkView = TextView(this).apply {
-                    setTextColor(subColour); textSize = 18f * scale
-                    setPadding(Ui.dp(this@MainActivity, 8), 0, Ui.dp(this@MainActivity, 10), 0)
+                    setTextColor(subColour)
+                    textSize = com.mizan.launcher.core.Design.HERO_STATUS_SP * scale
+                    setPadding(Ui.dp(this@MainActivity, 10), 0, Ui.dp(this@MainActivity, 10), 0)
                 }
-                bar.addView(networkView)
+                statusLine.addView(networkView)
             }
             if (!prefs.safeMode && cfg.showBluetooth) {
                 val bt = TextView(this)
-                bt.setTextColor(subColour); bt.textSize = 18f * scale
+                bt.setTextColor(subColour)
+                bt.textSize = com.mizan.launcher.core.Design.HERO_STATUS_SP * scale
                 bt.setPadding(Ui.dp(this, 4), 0, Ui.dp(this, 12), 0)
                 bt.text = bluetoothLabel()
-                bar.addView(bt)
+                statusLine.addView(bt)
             }
+
+            // Guest pill (v1.4): while the Guest profile is active, a
+            // subtle "Guest" tag sits under the status line. (Bar
+            // hidden → the pill moves to the top-left corner; see
+            // buildRoot.)
+            if (!prefs.safeMode && guestActive()) {
+                val pill = guestPill()
+                (pill.layoutParams as? LinearLayout.LayoutParams)
+                    ?.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S), 0, 0)
+                left.addView(pill)
+            }
+            hero.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
+            // RIGHT: ONE translucent rounded panel grouping the
+            // quick tiles, the profile tile and the Settings tile —
+            // a single organized block instead of loose floating
+            // buttons scattered across the top of the screen.
+            val panel = LinearLayout(this)
+            panel.orientation = LinearLayout.HORIZONTAL
+            panel.gravity = Gravity.CENTER_VERTICAL
+            val panelBg = GradientDrawable()
+            panelBg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
+            panelBg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
+            panel.background = panelBg
+            panel.setPadding(Ui.dp(this, 10), Ui.dp(this, 8), Ui.dp(this, 10), Ui.dp(this, 8))
             if (!prefs.safeMode && cfg.showQuickTiles) {
-                bar.addView(buildQuickTiles())
+                panel.addView(buildQuickTiles())
             }
 
             // Profile tile (v1.4): the one consistent place profile
@@ -439,7 +496,7 @@ class MainActivity : Activity() {
                     showProfileSwitchMenu()
                 }
                 profileTile.setOnLongClickListener { showProfileSwitchMenu(); true }
-                bar.addView(profileTile)
+                panel.addView(profileTile)
             }
 
             // The bar's Settings tile: always present in Safe mode;
@@ -448,9 +505,10 @@ class MainActivity : Activity() {
             // as the way into Settings.
             if (prefs.safeMode || cfg.showTileSettings) {
                 val settingsTile = quickTile("⚙  Settings") { openSettings() }
-                bar.addView(settingsTile)
+                panel.addView(settingsTile)
             }
-            wrap.addView(bar)
+            hero.addView(panel)
+            wrap.addView(hero)
         }
 
         buildHomeHint()?.let { wrap.addView(it) }
@@ -651,8 +709,8 @@ class MainActivity : Activity() {
         val lp = LinearLayout.LayoutParams(-2, -2)
         lp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0)
         tv.layoutParams = lp
-        Ui.focusLift(tv, accent, 14)
-        tv.background = Ui.tileBackground(accent, false, 14, this)
+        Ui.focusLift(tv, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
+        tv.background = Ui.tileBackground(accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this)
         tv.setOnClickListener { onClick() }
         return tv
     }
@@ -662,7 +720,8 @@ class MainActivity : Activity() {
     private fun section(title: String): LinearLayout {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
-        box.addView(Ui.sectionTitle(this, title, textColour))
+        // v1.6: the unified small-caps + accent-rule header.
+        box.addView(Ui.sectionHeader(this, title, textColour, accent))
         return box
     }
 
@@ -921,8 +980,20 @@ class MainActivity : Activity() {
         for (info in inputs) {
             val tile = glyphTile("📺", TvData.inputLabel(this, info))
             tile.setOnClickListener {
-                if (!TvData.launchInput(this, info)) {
-                    Toast.makeText(this, "Couldn't open that input on this device", Toast.LENGTH_SHORT).show()
+                // v1.6 gate audit: switching to an input starts an
+                // activity inside the input's own package (e.g. the
+                // TV/tuner app) — if that package is arrow-locked,
+                // the lock applies here too.
+                val pkg = try { info.serviceInfo.packageName } catch (e: Exception) { null }
+                val launch = {
+                    if (!TvData.launchInput(this, info)) {
+                        Toast.makeText(this, "Couldn't open that input on this device", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                if (!pkg.isNullOrEmpty() && pkg in prefs.lockedApps) {
+                    gateLockedApp(pkg, TvData.inputLabel(this, info), launch)
+                } else {
+                    launch()
                 }
             }
             row.addView(tile)
@@ -1056,27 +1127,83 @@ class MainActivity : Activity() {
         // (TileLayout.cardMetrics) and the same focus-label rule.
         val tile = glyphTile("▶", item.title, wide = true)
         tile.setOnClickListener {
-            if (!TvData.launchWatchItem(this, item)) {
-                Toast.makeText(this, "Couldn't open that title", Toast.LENGTH_SHORT).show()
-            } else {
-                // Recently Used records Continue Watching launches
-                // where applicable: only when the item's intent names
-                // a package (many WatchNext intents don't).
-                try {
-                    val pkg = item.intentUri?.let {
-                        Intent.parseUri(it, Intent.URI_INTENT_SCHEME).`package`
-                    }
-                    if (!pkg.isNullOrEmpty()) prefs.recordLaunch(pkg)
-                } catch (e: Exception) {
-                    // Best-effort bookkeeping only.
+            // v1.6 gate audit: this used to launch directly. When the
+            // item's intent names a package, that package's arrow lock
+            // applies here exactly like a home launch; items without a
+            // package can't be attributed to an app and just launch.
+            val pkg = try {
+                item.intentUri?.let {
+                    Intent.parseUri(it, Intent.URI_INTENT_SCHEME).`package`
+                }
+            } catch (e: Exception) { null }
+            val launch = {
+                if (!TvData.launchWatchItem(this, item)) {
+                    Toast.makeText(this, "Couldn't open that title", Toast.LENGTH_SHORT).show()
+                } else if (!pkg.isNullOrEmpty()) {
+                    // Recently Used records Continue Watching launches
+                    // where applicable (package-named intents only).
+                    prefs.recordLaunch(pkg)
                 }
             }
+            if (!pkg.isNullOrEmpty()) gateLockedApp(pkg, item.title, launch) else launch()
         }
         return tile
     }
 
+    /**
+     * v1.6: a folder tile's face is a tidy 2×2 mini-grid of its first
+     * four apps' icons (the Apple/Roku look) instead of a lone glyph;
+     * a folder with no direct apps keeps the glyph. The mini-grid is
+     * presentation only — name, badge, menus and moves are unchanged.
+     */
     private fun folderTile(folder: Folder): View {
-        val tile = glyphTile("🗂", "${folder.name} · ${folderContentsLabel(folder)}")
+        val tile = baseTile()
+        val contained = folder.appPackages.mapNotNull { appsByPkg[it] }
+        if (contained.isEmpty()) {
+            val centre = TextView(this)
+            centre.text = "🗂"
+            centre.setTextColor(textColour)
+            centre.textSize = 32f
+            centre.gravity = Gravity.CENTER
+            val clp = FrameLayout.LayoutParams(-2, -2)
+            clp.gravity = Gravity.CENTER
+            centre.layoutParams = clp
+            tile.addView(centre)
+        } else {
+            val m = currentTileMetrics()
+            val gap = Ui.dp(this, 4)
+            val mini = ((m.iconPx - gap) / 2).coerceAtLeast(8)
+            val grid = android.widget.GridLayout(this)
+            grid.columnCount = 2
+            grid.rowCount = 2
+            val glp = FrameLayout.LayoutParams(-2, -2)
+            glp.gravity = Gravity.CENTER
+            grid.layoutParams = glp
+            for (i in 0 until 4) {
+                val cell = FrameLayout(this)
+                val clp = android.widget.GridLayout.LayoutParams()
+                clp.width = mini
+                clp.height = mini
+                clp.setMargins(gap / 2, gap / 2, gap / 2, gap / 2)
+                cell.layoutParams = clp
+                val entry = contained.getOrNull(i)
+                if (entry != null) {
+                    val iv = ImageView(this)
+                    iv.setImageBitmap(Ui.shapedIcon(entry.icon, mini, prefs.iconShape))
+                    cell.addView(iv, FrameLayout.LayoutParams(mini, mini))
+                } else {
+                    val dot = View(this)
+                    val bg = GradientDrawable()
+                    bg.cornerRadius = Ui.dp(this, 6).toFloat()
+                    bg.setColor(com.mizan.launcher.core.Design.TILE_FILL)
+                    dot.background = bg
+                    cell.addView(dot, FrameLayout.LayoutParams(mini, mini))
+                }
+                grid.addView(cell)
+            }
+            tile.addView(grid)
+        }
+        finishTile(tile, "${folder.name} · ${folderContentsLabel(folder)}")
         // v1.3: locked folders carry the same 🔒 badge as locked apps.
         if (folder.locked) {
             val lock = TextView(this)
@@ -1864,35 +1991,48 @@ class MainActivity : Activity() {
     private fun launchWithPin(entry: AppEntry) {
         currentFolderDialog?.dismiss()
         currentFolderDialog = null
-        if (!prefs.lockedApps.contains(entry.pkg)) {
-            doLaunch(entry)
+        gateLockedApp(entry.pkg, entry.label) { doLaunch(entry) }
+    }
+
+    /**
+     * THE arrow-lock gate (v1.6: one shared funnel). Every launch path
+     * that ends in some package goes through here — home/folder/
+     * recents tiles (via launchWithPin), Continue Watching items whose
+     * intent names a package, and HDMI input tiles (an input switch
+     * starts an activity inside the input's own package). Until v1.6
+     * the last two launched directly and bypassed the lock entirely.
+     *
+     * Not locked -> [onPass] runs immediately. Locked + no pattern
+     * set -> FAIL-OPEN (v1.2 rule): prompt to SET a pattern first,
+     * then run — the launcher never locks Haythem out of his own TV.
+     * Locked + pattern -> the unlock prompt; success runs [onPass].
+     */
+    private fun gateLockedApp(pkg: String, label: String, onPass: () -> Unit) {
+        if (!prefs.lockedApps.contains(pkg)) {
+            onPass()
             return
         }
         val stored = prefs.arrowPin
         if (stored.isEmpty()) {
-            // FAIL-OPEN (v1.2): the app is marked locked but no arrow
-            // pattern exists (fresh set, or the v1.1 numeric PIN was
-            // discarded by the update). Never lock Haythem out of his
-            // own app — prompt to SET a pattern first, then launch.
             ArrowPinDialog.showSetup(
                 activity = this,
-                title = "Set an arrow pattern to lock ${entry.label}",
+                title = "Set an arrow pattern to lock $label",
                 accent = accent,
                 onDone = { seq ->
                     prefs.arrowPin = seq
                     Toast.makeText(this, "Arrow lock set", Toast.LENGTH_SHORT).show()
-                    doLaunch(entry)
+                    onPass()
                 }
             )
             return
         }
-        // v1.2: arrow-sequence unlock — dots only, no digits anywhere.
+        // Arrow-sequence unlock — dots only, no digits anywhere.
         ArrowPinDialog.showUnlock(
             activity = this,
-            title = "${entry.label} is locked",
+            title = "$label is locked",
             accent = accent,
             storedEncoded = stored,
-            onSuccess = { doLaunch(entry) },
+            onSuccess = { onPass() },
             onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
         )
     }

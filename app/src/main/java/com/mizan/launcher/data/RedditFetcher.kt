@@ -1,7 +1,10 @@
 package com.mizan.launcher.data
 
 import android.content.Context
+import com.mizan.launcher.core.RedditEndpoints
 import com.mizan.launcher.core.RedditImage
+import com.mizan.launcher.core.RedditRss
+import com.mizan.launcher.core.RedditStatus
 import com.mizan.launcher.core.RedditWallpapers
 import java.io.File
 import java.net.HttpURLConnection
@@ -11,60 +14,136 @@ import kotlin.concurrent.thread
 /**
  * Reddit wallpaper networking + download, Android side.
  * Parsing/validation lives in core (pure, sim-tested); this class only
- * moves bytes. Everything is fail-open: any failure returns null / an
- * empty result plus a human-readable error for diagnostics, and the
- * current wallpaper is never touched by a failed fetch.
+ * moves bytes.
+ *
+ * v1.6: Reddit refuses unauthenticated `.json` listings from many
+ * networks now (HTTP 403 — live evidence in spec §14.3), so each
+ * subreddit walks the core/RedditEndpoints fallback chain (three
+ * .json hosts, then the RSS/Atom feed, which still answers) and stops
+ * at the first endpoint yielding candidates. EVERY attempt is
+ * recorded (Prefs.noteRedditAttempt) and each run ends with a
+ * one-line status in Prefs.redditLastStatus: failures are visible in
+ * Settings and diagnostics instead of failing silently like v1.1–v1.5.
+ * The current wallpaper is still never touched by a failed fetch.
  */
 object RedditFetcher {
 
-    private const val USER_AGENT = "MizanLauncher/1.1 (Android TV launcher; wallpaper fetcher)"
+    /**
+     * Browser-like User-Agent. (Live tests showed the .json 403 is
+     * IP-based, not UA-based — but a realistic UA costs nothing and
+     * the RSS feed + image CDN both accept it.)
+     */
+    private const val USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 12; TV) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 MizanLauncher/1.6"
     const val MAX_IMAGE_BYTES: Long = 8L * 1024 * 1024
 
     /** Last fetch error, shown in diagnostics. Empty when the last fetch worked. */
     @Volatile var lastError: String = ""
 
     /**
-     * Fetch top-of-week listings for [subreddits] on a background thread.
-     * [onDone] runs on that background thread with the merged candidates
-     * (possibly empty) — callers hop to the UI thread themselves.
+     * Fetch top-of-week listings for [subreddits] on a background
+     * thread, walking the fallback chain per subreddit. [ctx] (when
+     * provided) receives the recorded attempts + run status.
+     * [onDone] runs on that background thread with the merged
+     * candidates (possibly empty) — callers hop to the UI thread.
      */
-    fun fetch(subreddits: List<String>, allowNsfw: Boolean, onDone: (List<RedditImage>) -> Unit) {
+    fun fetch(
+        subreddits: List<String>,
+        allowNsfw: Boolean,
+        ctx: Context? = null,
+        onDone: (List<RedditImage>) -> Unit
+    ) {
         thread(name = "mizan-reddit-fetch") {
             val all = ArrayList<RedditImage>()
-            var firstError = ""
+            val attempts = ArrayList<RedditStatus.Attempt>()
             for (sub in subreddits) {
-                try {
-                    val text = httpGet(RedditWallpapers.listingUrl(sub))
-                    val images = RedditWallpapers.parseListing(text, RedditWallpapers.cleanSubreddit(sub), allowNsfw)
-                    if (images.isEmpty() && firstError.isEmpty()) {
-                        firstError = "r/$sub: no usable images in listing"
+                val clean = RedditWallpapers.cleanSubreddit(sub)
+                for (endpoint in RedditEndpoints.chain(clean)) {
+                    val outcome = tryFetchEndpoint(endpoint, clean, allowNsfw)
+                    attempts.add(outcome.attempt)
+                    ctx?.let {
+                        Prefs.noteRedditAttempt(it, RedditStatus.attemptLine(outcome.attempt))
                     }
-                    all.addAll(images)
-                } catch (e: Exception) {
-                    if (firstError.isEmpty()) firstError = "r/$sub: ${e.javaClass.simpleName}: ${e.message ?: ""}"
+                    if (RedditEndpoints.isUsable(outcome.attempt.candidates)) {
+                        all.addAll(outcome.images)
+                        break
+                    }
                 }
             }
             // De-duplicate by URL, keep first occurrence order.
             val seen = HashSet<String>()
             val merged = all.filter { seen.add(it.url) }
-            lastError = if (merged.isEmpty()) firstError else ""
+            val summary = RedditStatus.runSummary(attempts, merged.size, System.currentTimeMillis())
+            ctx?.let {
+                try { Prefs(it).redditLastStatus = summary } catch (e: Exception) {
+                    // Status is diagnostics; never let it kill a fetch.
+                }
+            }
+            lastError = if (merged.isEmpty()) {
+                attempts.lastOrNull()?.let { "r/${it.subreddit}: ${it.result}" }
+                    ?: "no subreddits configured"
+            } else ""
             try { onDone(merged) } catch (e: Exception) {
                 // Caller's callback must never kill the fetch thread noisily.
             }
         }
     }
 
-    private fun httpGet(urlString: String): String {
-        val conn = URL(urlString).openConnection() as HttpURLConnection
+    /** One endpoint try: the recorded attempt plus whatever it yielded. */
+    private class FetchOutcome(
+        val attempt: RedditStatus.Attempt,
+        val images: List<RedditImage>
+    )
+
+    private fun tryFetchEndpoint(
+        endpoint: RedditEndpoints.Endpoint,
+        sub: String,
+        allowNsfw: Boolean
+    ): FetchOutcome {
+        val now = System.currentTimeMillis()
+        return try {
+            val (code, body) = httpGet(endpoint)
+            val images = when (endpoint.kind) {
+                RedditEndpoints.Kind.JSON ->
+                    RedditWallpapers.parseListing(body, sub, allowNsfw)
+                RedditEndpoints.Kind.RSS ->
+                    RedditRss.parseFeed(body, sub, allowNsfw)
+            }
+            FetchOutcome(
+                RedditStatus.Attempt(endpoint.id, sub, "HTTP $code", images.size, now),
+                images
+            )
+        } catch (e: Exception) {
+            FetchOutcome(
+                RedditStatus.Attempt(
+                    endpoint.id, sub,
+                    "${e.javaClass.simpleName}: ${e.message ?: "error"}", 0, now
+                ),
+                emptyList()
+            )
+        }
+    }
+
+    /**
+     * GET one endpoint; returns (HTTP code, body text). Non-2xx codes
+     * come back as data (the caller records them and the chain moves
+     * on) — only transport failures throw.
+     */
+    private fun httpGet(endpoint: RedditEndpoints.Endpoint): Pair<Int, String> {
+        val conn = URL(endpoint.url).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 10_000
             conn.readTimeout = 15_000
             conn.instanceFollowRedirects = true
             conn.setRequestProperty("User-Agent", USER_AGENT)
-            conn.setRequestProperty("Accept", "application/json")
+            conn.setRequestProperty("Accept", RedditEndpoints.acceptHeader(endpoint.kind))
             val code = conn.responseCode
-            if (code !in 200..299) throw IllegalStateException("HTTP $code")
-            return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val body = try {
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            } catch (e: Exception) { "" }
+            return code to body
         } finally {
             conn.disconnect()
         }

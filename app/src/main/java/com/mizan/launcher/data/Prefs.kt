@@ -103,6 +103,17 @@ class Prefs(ctx: Context) {
         get() = sp.getString(k("reddit_cache"), "") ?: ""
         set(v) { sp.edit().putString(k("reddit_cache"), v).apply() }
 
+    /**
+     * v1.6: one-line summary of the most recent Reddit fetch run for
+     * this profile ("✓ 18 photos · 2:41 PM" / "✗ r/wallpaper
+     * HTTP 403 · 0 photos · 2:41 PM"), built by core/RedditStatus.
+     * Shown in Settings › Look & wallpaper › Reddit and the picker —
+     * fetch failures are visible now, not silent.
+     */
+    var redditLastStatus: String
+        get() = sp.getString(k("reddit_last_status"), "") ?: ""
+        set(v) { sp.edit().putString(k("reddit_last_status"), v).apply() }
+
     /** "Mizan isn't your home screen yet" hint bar dismissed for this profile. */
     var homeHintDismissed: Boolean
         get() = sp.getBoolean(k("home_hint_dismissed"), false)
@@ -268,6 +279,34 @@ class Prefs(ctx: Context) {
         fun lastError(ctx: Context): String =
             ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
                 .getString("last_error", "") ?: ""
+
+        // ---- Reddit attempt log (global, v1.6) ----
+
+        private const val REDDIT_LOG_MAX = 12
+
+        /**
+         * Append one formatted attempt line (core/RedditStatus.
+         * attemptLine) to the global log, capped at the most recent
+         * [REDDIT_LOG_MAX] lines. Copied out via diagnostics.
+         */
+        fun noteRedditAttempt(ctx: Context, line: String) {
+            try {
+                val p = sp(ctx)
+                val lines = (p.getString("reddit_attempt_log", "") ?: "")
+                    .lines().filter { it.isNotBlank() }
+                val kept = (lines + line).takeLast(REDDIT_LOG_MAX)
+                p.edit().putString("reddit_attempt_log", kept.joinToString("\n")).apply()
+            } catch (ignored: Throwable) {
+                // Diagnostics must never crash a fetch.
+            }
+        }
+
+        /** The recorded Reddit attempt lines, oldest first. */
+        fun redditAttemptLog(ctx: Context): List<String> =
+            try {
+                (sp(ctx).getString("reddit_attempt_log", "") ?: "")
+                    .lines().filter { it.isNotBlank() }
+            } catch (e: Throwable) { emptyList() }
 
         // ---- Home watcher diagnostics (global: the service is global) ----
         private fun sp(ctx: Context): SharedPreferences =

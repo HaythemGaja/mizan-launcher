@@ -160,9 +160,12 @@ class ForecastActivity : Activity() {
     }
 
     private fun sectionLabel(text: String, colour: Int): TextView {
+        // v1.6: same small-caps section style as the home screen.
         val tv = TextView(this)
-        tv.text = text
-        tv.setTextColor(colour); tv.textSize = 21f
+        tv.text = text.uppercase()
+        tv.setTextColor(colour)
+        tv.textSize = com.mizan.launcher.core.Design.SECTION_HEADER_SP
+        tv.letterSpacing = com.mizan.launcher.core.Design.SECTION_HEADER_TRACKING
         tv.setTypeface(tv.typeface, android.graphics.Typeface.BOLD)
         tv.setPadding(0, Ui.dp(this, 16), 0, Ui.dp(this, 8))
         return tv

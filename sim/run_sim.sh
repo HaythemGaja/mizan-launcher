@@ -31,6 +31,8 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   app/src/main/java/com/mizan/launcher/core/GuestGate.kt \
   app/src/main/java/com/mizan/launcher/core/SettingsGate.kt \
   app/src/main/java/com/mizan/launcher/core/AllApps.kt \
+  app/src/main/java/com/mizan/launcher/core/Design.kt \
+  app/src/main/java/com/mizan/launcher/core/AppCatalogue.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -53,6 +55,11 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   echo "recents store, now-playing mapping, guest gate, row-order"
   echo "normalize + status codec v1.4 (spec section 12). All v1.3 tests"
   echo "carry over."
+  echo
+  echo "Note (v1.6): new sections — design tokens, app catalogue merge"
+  echo "(lock coverage), Reddit endpoint chain + RSS fallback parser +"
+  echo "visible fetch status (spec section 14). All v1.5 tests carry"
+  echo "over; the RSS parser feeds the same RedditImage model as JSON."
   echo
   echo "Note (v1.5): REMOVED with the Cleanup feature — the 18 cleanup"
   echo "classifier checks, replaced by 7 direct never-list checks (the"
