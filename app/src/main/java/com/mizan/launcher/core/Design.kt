@@ -62,6 +62,24 @@ object Design {
         (SCRIM_BOTTOM_ALPHA shl 24)
     )
 
+    // ---- iPad home style (v1.7) --------------------------------------
+    /** Grid cells in iPad style render this much larger than the
+     * profile's app-size scale alone would make them. */
+    const val IPAD_TILE_BOOST = 1.25f
+    /** The always-on name under every iPad grid tile. */
+    const val IPAD_LABEL_SP = 13f
+    /** Slim-strip text (date, clock, weather, network). */
+    const val IPAD_STRIP_SP = 16f
+    /** The floating dock's corner radius. */
+    const val DOCK_RADIUS_DP = 28
+    /** The iPad folder panel's corner radius. */
+    const val IPAD_FOLDER_PANEL_RADIUS_DP = 28
+    /** Mostly-opaque dark fill for the iPad folder panel. */
+    val IPAD_PANEL_FILL: Int = 0xE6222222.toInt()
+    /** Squircle mask radius as a fraction of the icon size (the
+     * "rounded" mask uses 0.22 — the squircle is visibly rounder). */
+    const val SQUIRCLE_RADIUS_FRACTION = 0.32f
+
     // ---- hero (home top zone) ------------------------------------------
     const val HERO_CLOCK_SP = 54f
     const val HERO_DATE_SP = 18f

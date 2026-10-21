@@ -1,7 +1,7 @@
 # Mizan Launcher — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-21 14:43 UTC
+Date: 2026-10-21 19:15 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -22,6 +22,12 @@ Note (v1.6): new sections — design tokens, app catalogue merge
 (lock coverage), Reddit endpoint chain + RSS fallback parser +
 visible fetch status (spec section 14). All v1.5 tests carry
 over; the RSS parser feeds the same RedditImage model as JSON.
+
+Note (v1.7): new section — home style (codec/default, label
+rule, squircle override), iPad grid composition (apps + root
+folders + inputs segments), dock composition (favorites cap,
+divider, fixed buttons), root-folder reorder, tile boost
+(spec section 15). All v1.6 tests carry over.
 
 Note (v1.5): REMOVED with the Cleanup feature — the 18 cleanup
 classifier checks, replaced by 7 direct never-list checks (the
@@ -359,5 +365,26 @@ PASS  redditrss: nsfw-tagged titles are rejected unless allowed
 PASS  redditstatus: attempt line names endpoint, code, count
 PASS  redditstatus: success summary shows the photo count
 PASS  redditstatus: failure summary names the last result
-RESULT: 321 passed, 0 failed, 321 total
+PASS  homestyle: missing/garbage decodes to tv
+PASS  homestyle: ipad survives the codec
+PASS  homestyle: value list is tv then ipad
+PASS  homestyle: label rule ? tv needs focus, ipad always shows
+PASS  homestyle: ipad forces squircle, tv keeps the preference
+PASS  homestyle: grid apps exclude hidden and foldered (any depth), order kept
+PASS  homestyle: grid folders are the ROOTS in row order
+PASS  homestyle: grid inputs appended when enabled and present
+PASS  homestyle: grid apps keep the caller's order
+PASS  homestyle: grid inputs empty when the row is disabled
+PASS  homestyle: grid inputs empty when the device reports none
+PASS  homestyle: root reorder permutes only the root slots
+PASS  homestyle: root reorder keeps nesting intact
+PASS  homestyle: root reorder with the current order is a no-op
+PASS  homestyle: dock caps favorites at 10, in order
+PASS  homestyle: dock divider sits after the favorites
+PASS  homestyle: dock fixed buttons follow, profile + settings last
+PASS  homestyle: dock drops search/all-apps when their switches are off
+PASS  homestyle: dock with no favorites has no divider
+PASS  homestyle: tile boost enlarges width and icon
+PASS  homestyle: default boost leaves metrics unchanged
+RESULT: 342 passed, 0 failed, 342 total
 ```

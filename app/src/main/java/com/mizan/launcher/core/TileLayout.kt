@@ -45,14 +45,25 @@ object TileLayout {
      * margins). The setting's scale is applied to that fit; tile height
      * is icon + fixed vertical padding (the focus name overlays the
      * bottom — it needs no reserved space).
+     *
+     * [boost] (v1.7) is an extra uniform multiplier layered on the
+     * setting's scale — the iPad home grid passes
+     * [Design.IPAD_TILE_BOOST] so its cells render ~25% larger than
+     * the same profile's TV tiles. Default 1f = no change anywhere.
      */
-    fun tileMetrics(screenWidthPx: Int, density: Float, sizeKey: String, columns: Int): Metrics {
+    fun tileMetrics(
+        screenWidthPx: Int,
+        density: Float,
+        sizeKey: String,
+        columns: Int,
+        boost: Float = 1f
+    ): Metrics {
         val cols = columns.coerceIn(3, 10)
         val insetsPx = ((SIDE_PADDING_DP + ROW_PADDING_DP) * 2 * density).toInt()
         val perColumnPx = ((screenWidthPx - insetsPx).coerceAtLeast(0)) / cols
         val fitWidthPx = (perColumnPx - (TILE_MARGIN_DP * 2 * density).toInt())
             .coerceAtLeast((40 * density).toInt())
-        val tileWidthPx = (fitWidthPx * sizeScale(sizeKey)).toInt()
+        val tileWidthPx = (fitWidthPx * sizeScale(sizeKey) * boost).toInt()
             .coerceAtLeast((40 * density).toInt())
         val iconPx = (tileWidthPx * 0.58f).toInt().coerceAtLeast((24 * density).toInt())
         val tileHeightPx = iconPx + (30 * density).toInt()
@@ -62,10 +73,17 @@ object TileLayout {
     /**
      * Continue Watching cards: ONE uniform wide card size for the row —
      * two tile widths plus the gutter, at the standard tile height —
-     * and the same focus-label rule as every other tile.
+     * and the same focus-label rule as every other tile. [boost]
+     * (v1.7 iPad grid) scales the card with its tiles.
      */
-    fun cardMetrics(screenWidthPx: Int, density: Float, sizeKey: String, columns: Int): Metrics {
-        val t = tileMetrics(screenWidthPx, density, sizeKey, columns)
+    fun cardMetrics(
+        screenWidthPx: Int,
+        density: Float,
+        sizeKey: String,
+        columns: Int,
+        boost: Float = 1f
+    ): Metrics {
+        val t = tileMetrics(screenWidthPx, density, sizeKey, columns, boost)
         val gutterPx = (TILE_MARGIN_DP * 2 * density).toInt()
         return Metrics(t.tileWidthPx * 2 + gutterPx, t.tileHeightPx, t.iconPx)
     }

@@ -26,8 +26,12 @@ package com.mizan.launcher.core
  * asserts the final persisted store order.
  */
 
-/** Which home container a move session edits. */
-enum class MoveContainer { FAVORITES, ALL_APPS, FOLDER }
+/**
+ * Which home container a move session edits. ROOT_FOLDERS (v1.7)
+ * orders the folder tree's ROOT ids — the iPad grid's folders
+ * segment; write-back goes through FolderTree.reorderRoots.
+ */
+enum class MoveContainer { FAVORITES, ALL_APPS, FOLDER, ROOT_FOLDERS }
 
 class MoveSessionMachine(
     /** The grabbed app's package name. */

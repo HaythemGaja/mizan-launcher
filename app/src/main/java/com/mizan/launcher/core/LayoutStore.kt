@@ -240,6 +240,34 @@ object FolderTree {
     }
 
     /**
+     * Reorder the ROOT folders to [rootOrder] (v1.7: the iPad grid's
+     * folders segment is move-mode reorderable). Only the slots the
+     * roots currently occupy in the flat list are permuted — nested
+     * folders keep their exact positions and parentage, so a root
+     * reorder can never disturb the tree. Ids in [rootOrder] that
+     * aren't roots are ignored; roots missing from [rootOrder] keep
+     * their relative order after the named ones (defensive — a
+     * session order always names every root).
+     */
+    fun reorderRoots(folders: MutableList<Folder>, rootOrder: List<String>) {
+        val roots = rootFolders(folders)
+        if (roots.size < 2) return
+        val byId = roots.associateBy { it.id }
+        val seen = HashSet<String>()
+        val ordered = ArrayList<Folder>()
+        for (id in rootOrder) {
+            val f = byId[id]
+            if (f != null && seen.add(id)) ordered.add(f)
+        }
+        for (f in roots) if (seen.add(f.id)) ordered.add(f)
+        val rootIds = roots.mapTo(HashSet()) { it.id }
+        var next = 0
+        for (i in folders.indices) {
+            if (folders[i].id in rootIds) folders[i] = ordered[next++]
+        }
+    }
+
+    /**
      * Delete folder [id] ONLY: references to it are removed from its
      * parent, and its own sub-folders are NOT deleted — their only
      * parent reference lived in the deleted folder's entries, so they

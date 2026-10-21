@@ -352,7 +352,7 @@ class SettingsActivity : Activity() {
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         pane.addView(title)
         val version = TextView(this)
-        version.text = "Mizan Launcher v1.6"
+        version.text = "Mizan Launcher v1.7"
         version.setTextColor(subColour)
         version.textSize = 15f
         version.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, metrics.rowPadVDp + 2))
@@ -789,7 +789,7 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        content.addView(header("Mizan Launcher v1.6"))
+        content.addView(header("Mizan Launcher v1.7"))
         content.addView(info(diagnosticsText()))
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
@@ -856,12 +856,45 @@ class SettingsActivity : Activity() {
         content.addView(header("Theme & wallpaper"))
         content.addView(row("Theme", Themes.preset(prefs.themeId).name) { pickTheme() })
         content.addView(row("Wallpaper", wallpaperLabel()) { pickWallpaper() })
+        content.addView(row("Home style", homeStyleLabel()) { pickHomeStyle() })
         content.addView(row("Icon shape", prefs.iconShape) { pickFrom(listOf("rounded", "circle", "square"), prefs.iconShape) { prefs.iconShape = it; rebuild() } })
         content.addView(row("App size", prefs.appSize + " — scales every tile equally") { pickFrom(listOf("compact", "standard", "large"), prefs.appSize) { prefs.appSize = it; rebuild() } })
         content.addView(row("Grid columns", prefs.columns.toString()) {
             pickFrom(listOf("4", "5", "6", "7", "8"), prefs.columns.toString()) { prefs.columns = it.toInt(); rebuild() }
         })
 
+    }
+
+    /** The current home style with its one-line description (v1.7). */
+    private fun homeStyleLabel(): String =
+        if (com.mizan.launcher.core.HomeStyle.isIpad(prefs.homeStyle)) {
+            "iPad — big icon grid with a Favorites dock"
+        } else {
+            "TV — rows of apps under the hero bar"
+        }
+
+    /**
+     * Home style picker (v1.7): two described choices, per profile.
+     * Switching is presentation-only — favorites, folders, order and
+     * locks are shared, so nothing is lost either way.
+     */
+    private fun pickHomeStyle() {
+        val keys = listOf(
+            com.mizan.launcher.core.HomeStyle.TV,
+            com.mizan.launcher.core.HomeStyle.IPAD
+        )
+        val labels = arrayOf(
+            "TV — rows of apps under the hero bar",
+            "iPad — big icon grid with a Favorites dock"
+        )
+        val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
+        AlertDialog.Builder(this).setTitle("Home style")
+            .setSingleChoiceItems(labels, current) { dlg, which ->
+                prefs.homeStyle = keys[which]
+                dlg.dismiss()
+                rebuild()
+            }
+            .setNegativeButton("Cancel", null).show()
     }
 
     /**
@@ -1086,6 +1119,10 @@ class SettingsActivity : Activity() {
             }
             append("\nStatus bar: ${if (layout.statusBar.showBar) "shown" else "hidden"}" +
                 ", wallpaper: ${wallpaperLabel()}")
+            // v1.7: the profile's home style (safe mode renders TV
+            // regardless — noted so a report isn't misread).
+            append("\nhome style: ${prefs.homeStyle}" +
+                if (prefs.safeMode) " (safe mode: tv)" else "")
             val sbCfg = layout.statusBar
             append("\nQuick tiles: master ${if (sbCfg.showQuickTiles) "on" else "off"}" +
                 ", wifi ${onOff(sbCfg.showTileWifi)}, bt ${onOff(sbCfg.showTileBluetooth)}" +
@@ -1870,6 +1907,8 @@ class SettingsActivity : Activity() {
             o.put("home_hint_dismissed", prefs.homeHintDismissed)
             // v1.2 per-profile extra.
             o.put("weather_units", prefs.weatherUnitsKey)
+            // v1.7 per-profile extra: the home style.
+            o.put("home_style", prefs.homeStyle)
             profiles.put(p.toString(), o)
         }
         prefs.currentProfile = current
@@ -1917,6 +1956,10 @@ class SettingsActivity : Activity() {
                 if (o.has("reddit_rotation")) prefs.redditRotation = o.optString("reddit_rotation", prefs.redditRotation)
                 if (o.has("home_hint_dismissed")) prefs.homeHintDismissed = o.optBoolean("home_hint_dismissed", false)
                 if (o.has("weather_units")) prefs.weatherUnitsKey = o.optString("weather_units", prefs.weatherUnitsKey)
+                // v1.7: absent in pre-v1.7 backups → keep the
+                // profile's current style (the Prefs setter also
+                // normalizes any garbled value to "tv").
+                if (o.has("home_style")) prefs.homeStyle = o.optString("home_style", prefs.homeStyle)
             }
             prefs.currentProfile = root.optInt("current_profile", current).coerceIn(1, 2)
             true

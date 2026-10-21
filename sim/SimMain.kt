@@ -39,6 +39,7 @@ import com.mizan.launcher.core.WeatherLogic
 import com.mizan.launcher.core.WeatherUnits
 import com.mizan.launcher.core.RedditCacheCodec
 import com.mizan.launcher.core.RedditWallpapers
+import com.mizan.launcher.core.HomeStyle
 import com.mizan.launcher.core.StatusBarCodec
 import com.mizan.launcher.core.StatusBarConfig
 import com.mizan.launcher.core.Themes
@@ -950,6 +951,11 @@ fun main() {
                     folder.entries.clear()
                     folder.entries.addAll(order.map { FolderEntry.fromKey(it) })
                 }
+                // v1.7: root-folder sessions write back as a root
+                // permutation of the flat folder list.
+                MoveContainer.ROOT_FOLDERS -> {
+                    FolderTree.reorderRoots(layout.folders, order)
+                }
             }
         }
 
@@ -1328,6 +1334,130 @@ fun main() {
         check("redditstatus: failure summary names the last result",
             com.mizan.launcher.core.RedditStatus.runSummary(listOf(att), 0, 0L)
                 .startsWith("✗ r/wallpaper HTTP 403 · 0 photos"))
+    }
+
+    // ---------- (32) Home style: codec, label rule, grid + dock composition (v1.7) ----------
+    run {
+        // Codec: only the exact "ipad" key selects iPad — missing,
+        // empty or garbled values (and old backups) resolve to TV.
+        check("homestyle: missing/garbage decodes to tv",
+            HomeStyle.normalize(null) == "tv" && HomeStyle.normalize("") == "tv" &&
+                HomeStyle.normalize("TV") == "tv" && HomeStyle.normalize("bogus") == "tv")
+        check("homestyle: ipad survives the codec",
+            HomeStyle.normalize("ipad") == "ipad" && HomeStyle.isIpad("ipad") &&
+                !HomeStyle.isIpad("tv"))
+        check("homestyle: value list is tv then ipad",
+            HomeStyle.VALUES == listOf("tv", "ipad"))
+
+        // Label rule truth table: TV = focus-only (the v1.2 rule),
+        // iPad = always under the icon.
+        check("homestyle: label rule — tv needs focus, ipad always shows",
+            !HomeStyle.labelVisible("tv", false) && HomeStyle.labelVisible("tv", true) &&
+                HomeStyle.labelVisible("ipad", false) && HomeStyle.labelVisible("ipad", true))
+
+        // Icon shape: iPad forces the squircle for ANY preference;
+        // TV passes the preference through untouched.
+        check("homestyle: ipad forces squircle, tv keeps the preference",
+            HomeStyle.effectiveIconShape("ipad", "circle") == "squircle" &&
+                HomeStyle.effectiveIconShape("ipad", "square") == "squircle" &&
+                HomeStyle.effectiveIconShape("tv", "circle") == "circle" &&
+                HomeStyle.effectiveIconShape("tv", "rounded") == "rounded")
+
+        // Grid composition: f1 Media (root, holds com.c + nested f3),
+        // f2 Games (root), f3 Clips (nested, holds com.e).
+        val gridFolders = listOf(
+            testFolder("f1", "Media", "com.c", "@f:f3"),
+            testFolder("f2", "Games", "com.g"),
+            testFolder("f3", "Clips", "com.e")
+        )
+        val gridAll = listOf("com.a", "com.b", "com.c", "com.d", "com.e", "com.g")
+        val grid = HomeStyle.composeGrid(
+            installedOrder = gridAll,
+            hidden = setOf("com.b"),
+            folders = gridFolders,
+            inputsEnabled = true,
+            inputIds = listOf("hdmi1", "hdmi2")
+        )
+        check("homestyle: grid apps exclude hidden and foldered (any depth), order kept",
+            grid.appPkgs == listOf("com.a", "com.d"))
+        check("homestyle: grid folders are the ROOTS in row order",
+            grid.folderIds == listOf("f1", "f2"))
+        check("homestyle: grid inputs appended when enabled and present",
+            grid.inputIds == listOf("hdmi1", "hdmi2") && grid.size == 6)
+        check("homestyle: grid apps keep the caller's order",
+            HomeStyle.composeGrid(
+                listOf("com.d", "com.a", "com.b", "com.c", "com.e", "com.g"),
+                setOf("com.b"), gridFolders, false, emptyList()
+            ).appPkgs == listOf("com.d", "com.a"))
+        check("homestyle: grid inputs empty when the row is disabled",
+            HomeStyle.composeGrid(gridAll, emptySet(), gridFolders, false, listOf("hdmi1"))
+                .inputIds.isEmpty())
+        check("homestyle: grid inputs empty when the device reports none",
+            HomeStyle.composeGrid(gridAll, emptySet(), gridFolders, true, emptyList())
+                .inputIds.isEmpty())
+
+        // Root reorder (the grid folders-segment move write-back):
+        // flat [A root, B root, C nested in A, D root], roots -> D,B,A.
+        val reorderFolders = mutableListOf(
+            testFolder("fa", "A", "@f:fc"),
+            testFolder("fb", "B"),
+            testFolder("fc", "C", "com.deep"),
+            testFolder("fd", "D")
+        )
+        FolderTree.reorderRoots(reorderFolders, listOf("fd", "fb", "fa"))
+        check("homestyle: root reorder permutes only the root slots",
+            reorderFolders.map { it.id } == listOf("fd", "fb", "fc", "fa"))
+        check("homestyle: root reorder keeps nesting intact",
+            FolderTree.parentOf(reorderFolders, "fc")?.id == "fa" &&
+                FolderTree.rootFolders(reorderFolders).map { it.id } ==
+                listOf("fd", "fb", "fa"))
+        val noopFolders = mutableListOf(
+            testFolder("fa", "A", "@f:fc"),
+            testFolder("fb", "B"),
+            testFolder("fc", "C")
+        )
+        FolderTree.reorderRoots(noopFolders, listOf("fa", "fb"))
+        check("homestyle: root reorder with the current order is a no-op",
+            noopFolders.map { it.id } == listOf("fa", "fb", "fc"))
+
+        // Dock composition: cap, divider, fixed buttons.
+        val favs12 = (1..12).map { "com.fav$it" }
+        val dock = HomeStyle.composeDock(favs12, showSearch = true, showAllApps = true)
+        check("homestyle: dock caps favorites at 10, in order",
+            dock.take(10).all { it.kind == HomeStyle.DockKind.FAVORITE } &&
+                dock.take(10).map { it.pkg } == favs12.take(10) &&
+                dock.count { it.kind == HomeStyle.DockKind.FAVORITE } == 10)
+        check("homestyle: dock divider sits after the favorites",
+            dock[10].kind == HomeStyle.DockKind.DIVIDER)
+        check("homestyle: dock fixed buttons follow, profile + settings last",
+            dock.drop(11).map { it.kind } == listOf(
+                HomeStyle.DockKind.SEARCH, HomeStyle.DockKind.ALL_APPS,
+                HomeStyle.DockKind.PROFILE, HomeStyle.DockKind.SETTINGS
+            ))
+        check("homestyle: dock drops search/all-apps when their switches are off",
+            HomeStyle.composeDock(listOf("com.a"), showSearch = false, showAllApps = false)
+                .map { it.kind } == listOf(
+                    HomeStyle.DockKind.FAVORITE, HomeStyle.DockKind.DIVIDER,
+                    HomeStyle.DockKind.PROFILE, HomeStyle.DockKind.SETTINGS
+                ))
+        check("homestyle: dock with no favorites has no divider",
+            HomeStyle.composeDock(emptyList(), showSearch = true, showAllApps = true)
+                .map { it.kind } == listOf(
+                    HomeStyle.DockKind.SEARCH, HomeStyle.DockKind.ALL_APPS,
+                    HomeStyle.DockKind.PROFILE, HomeStyle.DockKind.SETTINGS
+                ))
+
+        // Tile boost: the iPad grid's cells render larger than the
+        // same profile's TV tiles at the same size setting.
+        val boostStd = TileLayout.tileMetrics(1920, 2f, "standard", 6)
+        val boostBig = TileLayout.tileMetrics(1920, 2f, "standard", 6,
+            com.mizan.launcher.core.Design.IPAD_TILE_BOOST)
+        check("homestyle: tile boost enlarges width and icon",
+            boostBig.tileWidthPx > boostStd.tileWidthPx &&
+                boostBig.iconPx > boostStd.iconPx)
+        check("homestyle: default boost leaves metrics unchanged",
+            TileLayout.tileMetrics(1920, 2f, "standard", 6) ==
+                TileLayout.tileMetrics(1920, 2f, "standard", 6, 1f))
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

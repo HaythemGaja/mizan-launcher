@@ -78,6 +78,20 @@ class Prefs(ctx: Context) {
         get() = sp.getInt(k("columns"), 6).coerceIn(3, 10)
         set(v) { sp.edit().putInt(k("columns"), v.coerceIn(3, 10)).apply() }
 
+    /**
+     * Home-screen style (v1.7): "tv" (default) | "ipad". Per profile —
+     * one profile can be iPad while the other stays TV. Reads and
+     * writes both pass through the HomeStyle codec, so a missing or
+     * garbled stored value always resolves to TV (never a crash, and
+     * old backups restore as TV).
+     */
+    var homeStyle: String
+        get() = com.mizan.launcher.core.HomeStyle.normalize(sp.getString(k("home_style"), null))
+        set(v) {
+            sp.edit().putString(k("home_style"),
+                com.mizan.launcher.core.HomeStyle.normalize(v)).apply()
+        }
+
     var layout: LayoutData
         get() = LayoutCodec.decode(sp.getString(k("layout"), null))
         set(v) { sp.edit().putString(k("layout"), LayoutCodec.encode(v)).apply() }

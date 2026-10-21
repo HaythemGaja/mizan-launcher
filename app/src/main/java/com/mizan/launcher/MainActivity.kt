@@ -298,6 +298,28 @@ class MainActivity : Activity() {
             root.addView(pill)
         }
 
+        // v1.7: the iPad home style renders an alternate root from the
+        // SAME wallpaper/scrim/corner-gear/corner-pill frame above —
+        // presentation only; every datum, menu, lock, gate and move
+        // session is shared with the TV style. Safe mode forces TV.
+        if (isIpadStyle()) {
+            // The floating dock overlays the bottom of the scroll
+            // content; pad the content so the grid's last row can
+            // scroll fully clear of it.
+            content.setPadding(
+                Ui.dp(this, com.mizan.launcher.core.Design.CONTENT_MARGIN_DP),
+                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_L),
+                Ui.dp(this, com.mizan.launcher.core.Design.CONTENT_MARGIN_DP),
+                Ui.dp(this, 200)
+            )
+            buildIpadHome(root, content)
+            homeRoot = root
+            if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
+                attachMoveHint(root)
+            }
+            return root
+        }
+
         content.addView(buildTopBar())
 
         // v1.4: stored orders from older versions lack the new rows;
@@ -329,6 +351,338 @@ class MainActivity : Activity() {
         if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) attachMoveHint(root)
         return root
     }
+
+    // ---------------------------------------------------------------
+    // v1.7 iPad home style — presentation + composition only. All
+    // data, menus, locks, gates and move machinery are the TV style's.
+    // ---------------------------------------------------------------
+
+    /** The effective home style: safe mode always forces TV. */
+    private fun homeStyleKey(): String =
+        if (prefs.safeMode) com.mizan.launcher.core.HomeStyle.TV else prefs.homeStyle
+
+    private fun isIpadStyle(): Boolean =
+        com.mizan.launcher.core.HomeStyle.isIpad(homeStyleKey())
+
+    /** The icon shape home tiles render with (iPad forces squircle). */
+    private fun effectiveIconShape(): String =
+        com.mizan.launcher.core.HomeStyle.effectiveIconShape(homeStyleKey(), prefs.iconShape)
+
+    /**
+     * The iPad home, top to bottom: slim strip, first-run hint,
+     * widget rows (Continue Watching then Recently Used — fixed order
+     * in this style), the main grid, and the floating dock pinned to
+     * the root's bottom. Favorites live in the dock here (not a row);
+     * HDMI inputs join the grid (not a row); folders are grid tiles.
+     */
+    private fun buildIpadHome(root: FrameLayout, content: LinearLayout) {
+        content.addView(buildIpadStrip())
+        buildHomeHint()?.let { content.addView(it) }
+        if (layout.isRowVisible("continue")) {
+            try {
+                buildContinueSection()?.let { content.addView(it) }
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:continue", e)
+            }
+        }
+        if (layout.isRowVisible("recents")) {
+            try {
+                buildRecentsSection()?.let { content.addView(it) }
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:recents", e)
+            }
+        }
+        content.addView(buildIpadGrid())
+        root.addView(buildIpadDock())
+        updateClock()
+    }
+
+    /**
+     * The slim iPadOS-like top strip: date + clock on the left,
+     * weather / network / Bluetooth / Guest on the right — every
+     * element gated by the SAME StatusBarConfig switches the TV hero
+     * honours, so hiding the clock in Settings hides it here too.
+     * With the whole bar hidden the strip collapses to nothing (the
+     * corner gear + corner Guest pill in the frame still apply).
+     */
+    private fun buildIpadStrip(): View {
+        val cfg = layout.statusBar
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        if (!cfg.showBar) return wrap
+        val scale = cfg.textScale()
+        val strip = LinearLayout(this)
+        strip.orientation = LinearLayout.HORIZONTAL
+        strip.gravity = Gravity.CENTER_VERTICAL
+        if (cfg.background != "transparent") {
+            val bg = GradientDrawable()
+            bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
+            bg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
+            strip.background = bg
+            strip.setPadding(
+                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
+                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S),
+                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
+                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S)
+            )
+        }
+
+        val left = LinearLayout(this)
+        left.orientation = LinearLayout.HORIZONTAL
+        left.gravity = Gravity.CENTER_VERTICAL
+        strip.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
+
+        dateView = null
+        clockView = null
+        if (cfg.showDate) {
+            val d = TextView(this)
+            d.setTextColor(subColour)
+            d.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+            dateView = d
+            left.addView(d)
+        }
+        if (cfg.showClock) {
+            val c = TextView(this)
+            c.setTextColor(textColour)
+            c.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+            c.typeface = android.graphics.Typeface.DEFAULT_BOLD
+            if (cfg.showDate) {
+                val lp = LinearLayout.LayoutParams(-2, -2)
+                lp.setMargins(Ui.dp(this, 12), 0, 0, 0)
+                c.layoutParams = lp
+            }
+            clockView = c
+            left.addView(c)
+        }
+
+        val right = LinearLayout(this)
+        right.orientation = LinearLayout.HORIZONTAL
+        right.gravity = Gravity.CENTER_VERTICAL
+        if (cfg.showWeather) {
+            val w = TextView(this)
+            w.tag = "weather"
+            w.setTextColor(textColour)
+            w.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+            w.isFocusable = true
+            w.isClickable = true
+            w.background = Ui.tileBackground(accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this)
+            w.setPadding(Ui.dp(this, 10), Ui.dp(this, 4), Ui.dp(this, 10), Ui.dp(this, 4))
+            Ui.focusLift(w, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
+            w.setOnClickListener {
+                startActivity(Intent(this, ForecastActivity::class.java))
+            }
+            val lp = LinearLayout.LayoutParams(-2, -2)
+            lp.setMargins(0, 0, Ui.dp(this, 12), 0)
+            w.layoutParams = lp
+            right.addView(w)
+        }
+        networkView = null
+        if (cfg.showNetwork) {
+            val n = TextView(this)
+            n.setTextColor(subColour)
+            n.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+            networkView = n
+            right.addView(n)
+        }
+        if (cfg.showBluetooth) {
+            val btText = bluetoothLabel()
+            if (btText.isNotEmpty()) {
+                val bt = TextView(this)
+                bt.text = btText
+                bt.setTextColor(subColour)
+                bt.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+                val lp = LinearLayout.LayoutParams(-2, -2)
+                lp.setMargins(Ui.dp(this, 12), 0, 0, 0)
+                bt.layoutParams = lp
+                right.addView(bt)
+            }
+        }
+        if (guestActive()) {
+            val pill = guestPill()
+            val lp = LinearLayout.LayoutParams(-2, -2)
+            lp.setMargins(Ui.dp(this, 12), 0, 0, 0)
+            pill.layoutParams = lp
+            right.addView(pill)
+        }
+        strip.addView(right)
+        wrap.addView(strip)
+        return wrap
+    }
+
+    /**
+     * The iPad main grid: centered rows of boosted cells in three
+     * composed segments (apps, root folders, inputs — see
+     * [com.mizan.launcher.core.HomeStyle.composeGrid]). Every tile
+     * carries its label under the icon, always.
+     */
+    private fun buildIpadGrid(): View {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        val glp = LinearLayout.LayoutParams(-1, -2)
+        glp.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.HERO_TO_ROWS_GAP_DP), 0, 0)
+        box.layoutParams = glp
+
+        val inputs = try { TvData.listInputs(this) } catch (e: Exception) { emptyList() }
+        DiagCache.inputsCount = inputs.size
+        val inputsById = inputs.associateBy { it.id }
+        val comp = com.mizan.launcher.core.HomeStyle.composeGrid(
+            installedOrder = orderedApps(apps).map { it.pkg },
+            hidden = layout.hidden.toSet(),
+            folders = layout.folders,
+            inputsEnabled = layout.isRowVisible("inputs"),
+            inputIds = inputs.map { it.id }
+        )
+        val cells = ArrayList<View>()
+        for (pkg in comp.appPkgs) {
+            appsByPkg[pkg]?.let { cells.add(appTile(it, Source.AllApps, ipad = true, large = true)) }
+        }
+        for (fid in comp.folderIds) {
+            com.mizan.launcher.core.FolderTree.byId(layout.folders, fid)?.let {
+                cells.add(folderTile(it, ipad = true, large = true, movable = true))
+            }
+        }
+        for (iid in comp.inputIds) {
+            inputsById[iid]?.let { cells.add(inputTile(it, ipad = true, large = true)) }
+        }
+        if (cells.isEmpty()) {
+            val hint = TextView(this)
+            hint.text = "No apps yet — open Settings to set up your home screen."
+            hint.setTextColor(subColour)
+            hint.textSize = 16f
+            hint.gravity = Gravity.CENTER
+            box.addView(hint)
+            return box
+        }
+        for (chunk in cells.chunked(prefs.columns)) {
+            val rowLayout = LinearLayout(this)
+            rowLayout.orientation = LinearLayout.HORIZONTAL
+            rowLayout.gravity = Gravity.CENTER
+            for (cell in chunk) rowLayout.addView(cell)
+            box.addView(rowLayout)
+        }
+        return box
+    }
+
+    /**
+     * The floating dock: a translucent rounded panel pinned
+     * bottom-center of the root — favorites (icons only), a divider,
+     * then the fixed glyph buttons (see
+     * [com.mizan.launcher.core.HomeStyle.composeDock]). Horizontally
+     * scrollable when its contents overflow the screen.
+     */
+    private fun buildIpadDock(): View {
+        val cfg = layout.statusBar
+        val favEntries = layout.favorites
+            .mapNotNull { appsByPkg[it] }
+            .filter { it.pkg !in layout.hidden }
+        val items = com.mizan.launcher.core.HomeStyle.composeDock(
+            favorites = favEntries.map { it.pkg },
+            showSearch = cfg.showTileSearch,
+            showAllApps = cfg.showTileAllApps
+        )
+        val byPkg = favEntries.associateBy { it.pkg }
+        val panel = LinearLayout(this)
+        panel.orientation = LinearLayout.HORIZONTAL
+        panel.gravity = Gravity.CENTER_VERTICAL
+        val bg = GradientDrawable()
+        bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.DOCK_RADIUS_DP).toFloat()
+        bg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
+        panel.background = bg
+        panel.elevation = Ui.dp(this, 8).toFloat()
+        panel.setPadding(
+            Ui.dp(this, 12), Ui.dp(this, 12), Ui.dp(this, 12), Ui.dp(this, 12)
+        )
+        for (item in items) {
+            when (item.kind) {
+                com.mizan.launcher.core.HomeStyle.DockKind.FAVORITE ->
+                    byPkg[item.pkg]?.let {
+                        panel.addView(appTile(it, Source.Favorites, ipad = true, ipadLabel = false))
+                    }
+                com.mizan.launcher.core.HomeStyle.DockKind.DIVIDER -> {
+                    val m = currentTileMetrics()
+                    val div = View(this)
+                    div.setBackgroundColor(0x59FFFFFF)
+                    val dlp = LinearLayout.LayoutParams(
+                        Ui.dp(this, 1), m.tileHeightPx - Ui.dp(this, 36)
+                    )
+                    dlp.setMargins(Ui.dp(this, 8), 0, Ui.dp(this, 8), 0)
+                    div.layoutParams = dlp
+                    panel.addView(div)
+                }
+                com.mizan.launcher.core.HomeStyle.DockKind.SEARCH ->
+                    panel.addView(dockButton("🔍") {
+                        startActivity(Intent(this, SearchActivity::class.java))
+                    })
+                com.mizan.launcher.core.HomeStyle.DockKind.ALL_APPS ->
+                    panel.addView(dockButton("▦") {
+                        startActivity(Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java))
+                    })
+                com.mizan.launcher.core.HomeStyle.DockKind.PROFILE ->
+                    panel.addView(dockButton("👤", onLongClick = {
+                        showProfileSwitchMenu()
+                        true
+                    }) { showProfileSwitchMenu() })
+                com.mizan.launcher.core.HomeStyle.DockKind.SETTINGS ->
+                    panel.addView(dockButton("⚙") { openSettings() })
+            }
+        }
+        val scroller = HorizontalScrollView(this)
+        scroller.isHorizontalScrollBarEnabled = false
+        scroller.addView(panel)
+        val slp = FrameLayout.LayoutParams(-2, -2)
+        slp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        slp.setMargins(Ui.dp(this, 24), 0, Ui.dp(this, 24), Ui.dp(this, 18))
+        scroller.layoutParams = slp
+        return scroller
+    }
+
+    /** One fixed dock button: a glyph cell the height of a dock tile. */
+    private fun dockButton(
+        glyph: String,
+        onLongClick: (() -> Boolean)? = null,
+        onClick: () -> Unit
+    ): View {
+        val m = currentTileMetrics()
+        val b = TextView(this)
+        b.text = glyph
+        b.setTextColor(textColour)
+        b.textSize = 30f
+        b.gravity = Gravity.CENTER
+        b.isFocusable = true
+        b.isClickable = true
+        val lp = LinearLayout.LayoutParams(Ui.dp(this, 68), m.tileHeightPx)
+        lp.setMargins(Ui.dp(this, 2), 0, Ui.dp(this, 2), 0)
+        b.layoutParams = lp
+        b.background = Ui.tileBackground(accent, false, com.mizan.launcher.core.Design.RADIUS_PANEL, this)
+        Ui.focusLift(b, accent, com.mizan.launcher.core.Design.RADIUS_PANEL)
+        b.setOnClickListener { onClick() }
+        if (onLongClick != null) b.setOnLongClickListener { onLongClick() }
+        return b
+    }
+
+    /**
+     * The always-on name under an iPad-style tile: single line,
+     * ellipsized, with a soft shadow so it stays readable over any
+     * wallpaper. Sits at the tile's bottom edge.
+     */
+    private fun ipadLabelView(name: String): TextView {
+        val label = TextView(this)
+        label.text = name
+        label.setTextColor(textColour)
+        label.textSize = com.mizan.launcher.core.Design.IPAD_LABEL_SP
+        label.gravity = Gravity.CENTER
+        label.maxLines = 1
+        label.ellipsize = android.text.TextUtils.TruncateAt.END
+        label.setShadowLayer(
+            Ui.dp(this, 2).toFloat(), 0f, Ui.dp(this, 1).toFloat(), 0x99000000.toInt()
+        )
+        val llp = FrameLayout.LayoutParams(-1, -2)
+        llp.gravity = Gravity.BOTTOM
+        llp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), Ui.dp(this, 5))
+        label.layoutParams = llp
+        return label
+    }
+
 
     /** The current home root (for the move-mode hint bar). */
     private var homeRoot: FrameLayout? = null
@@ -977,29 +1331,41 @@ class MainActivity : Activity() {
         if (inputs.isEmpty()) return null
         val box = section("HDMI & Inputs")
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
-        for (info in inputs) {
-            val tile = glyphTile("📺", TvData.inputLabel(this, info))
-            tile.setOnClickListener {
-                // v1.6 gate audit: switching to an input starts an
-                // activity inside the input's own package (e.g. the
-                // TV/tuner app) — if that package is arrow-locked,
-                // the lock applies here too.
-                val pkg = try { info.serviceInfo.packageName } catch (e: Exception) { null }
-                val launch = {
-                    if (!TvData.launchInput(this, info)) {
-                        Toast.makeText(this, "Couldn't open that input on this device", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                if (!pkg.isNullOrEmpty() && pkg in prefs.lockedApps) {
-                    gateLockedApp(pkg, TvData.inputLabel(this, info), launch)
-                } else {
-                    launch()
-                }
-            }
-            row.addView(tile)
-        }
+        for (info in inputs) row.addView(inputTile(info))
         box.addView(horizontalScroller(row))
         return box
+    }
+
+    /**
+     * One HDMI/TV input tile — shared by the TV-style inputs row and
+     * the iPad grid's inputs segment, so the v1.6 lock gate below
+     * applies identically in both styles. Inputs are never move-mode
+     * reorderable: their tile has no menu at all.
+     */
+    private fun inputTile(
+        info: android.media.tv.TvInputInfo,
+        ipad: Boolean = false,
+        large: Boolean = false
+    ): View {
+        val tile = glyphTile("📺", TvData.inputLabel(this, info), ipad = ipad, large = large)
+        tile.setOnClickListener {
+            // v1.6 gate audit: switching to an input starts an
+            // activity inside the input's own package (e.g. the
+            // TV/tuner app) — if that package is arrow-locked,
+            // the lock applies here too.
+            val pkg = try { info.serviceInfo.packageName } catch (e: Exception) { null }
+            val launch = {
+                if (!TvData.launchInput(this, info)) {
+                    Toast.makeText(this, "Couldn't open that input on this device", Toast.LENGTH_SHORT).show()
+                }
+            }
+            if (!pkg.isNullOrEmpty() && pkg in prefs.lockedApps) {
+                gateLockedApp(pkg, TvData.inputLabel(this, info), launch)
+            } else {
+                launch()
+            }
+        }
+        return tile
     }
 
     private fun horizontalScroller(row: LinearLayout): HorizontalScrollView {
@@ -1017,13 +1383,18 @@ class MainActivity : Activity() {
 
     private enum class Source { Favorites, AllApps, Folder, Recents }
 
-    /** The ONE tile size for the whole home screen (v1.2: core/TileLayout). */
-    private fun currentTileMetrics(wide: Boolean = false): TileLayout.Metrics {
+    /**
+     * The ONE tile size for the whole home screen (v1.2: core/TileLayout).
+     * [large] (v1.7) applies the iPad grid's boost on top of the
+     * profile's app-size scale; every other tile leaves it off.
+     */
+    private fun currentTileMetrics(wide: Boolean = false, large: Boolean = false): TileLayout.Metrics {
         val dm = resources.displayMetrics
+        val boost = if (large) com.mizan.launcher.core.Design.IPAD_TILE_BOOST else 1f
         return if (wide) {
-            TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+            TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns, boost)
         } else {
-            TileLayout.tileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+            TileLayout.tileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns, boost)
         }
     }
 
@@ -1032,8 +1403,8 @@ class MainActivity : Activity() {
      * background. The name label is added by [finishTile] as an overlay,
      * so it never affects the tile's size or the row's layout.
      */
-    private fun baseTile(wide: Boolean = false): FrameLayout {
-        val m = currentTileMetrics(wide)
+    private fun baseTile(wide: Boolean = false, large: Boolean = false): FrameLayout {
+        val m = currentTileMetrics(wide, large)
         val frame = FrameLayout(this)
         frame.isFocusable = true
         frame.isClickable = true
@@ -1073,15 +1444,34 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun appTile(entry: AppEntry, source: Source, folderId: String? = null): View {
-        val m = currentTileMetrics()
-        val tile = baseTile()
+    /**
+     * One app tile. TV style: centered icon + focus-only name pill.
+     * iPad style ([ipad]): squircle icon in the tile's upper area +
+     * the name ALWAYS under it ([ipadLabel] off only in the dock,
+     * whose favorites are icons-only). Click/long-click (launch +
+     * the shared menu incl. Move) are identical in both styles.
+     */
+    private fun appTile(
+        entry: AppEntry,
+        source: Source,
+        folderId: String? = null,
+        ipad: Boolean = false,
+        large: Boolean = false,
+        ipadLabel: Boolean = true
+    ): View {
+        val m = currentTileMetrics(large = large)
+        val tile = baseTile(large = large)
         // Move mode finds the grabbed tile by package after a rebuild.
         tile.tag = entry.pkg
         val iv = ImageView(this)
-        iv.setImageBitmap(Ui.shapedIcon(entry.icon, m.iconPx, prefs.iconShape))
+        iv.setImageBitmap(Ui.shapedIcon(entry.icon, m.iconPx, effectiveIconShape()))
         val ilp = FrameLayout.LayoutParams(m.iconPx, m.iconPx)
-        ilp.gravity = Gravity.CENTER
+        if (ipad) {
+            ilp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            ilp.setMargins(0, Ui.dp(this, 8), 0, 0)
+        } else {
+            ilp.gravity = Gravity.CENTER
+        }
         iv.layoutParams = ilp
         tile.addView(iv)
         if (prefs.lockedApps.contains(entry.pkg)) {
@@ -1098,27 +1488,48 @@ class MainActivity : Activity() {
             lock.layoutParams = llp
             tile.addView(lock)
         }
-        finishTile(tile, entry.label)
+        if (ipad) {
+            if (ipadLabel) tile.addView(ipadLabelView(entry.label))
+            Ui.focusLift(tile, accent, 16)
+        } else {
+            finishTile(tile, entry.label)
+        }
         tile.setOnClickListener { launchWithPin(entry) }
         tile.setOnLongClickListener { openAppMenu(entry, source, folderId); true }
         return tile
     }
 
     /** A tile whose centre is a glyph/symbol and whose name shows on focus. */
-    private fun glyphTile(glyph: String, name: String, wide: Boolean = false): FrameLayout {
-        val tile = baseTile(wide)
+    private fun glyphTile(
+        glyph: String,
+        name: String,
+        wide: Boolean = false,
+        ipad: Boolean = false,
+        large: Boolean = false
+    ): FrameLayout {
+        val tile = baseTile(wide, large)
         val centre = TextView(this)
         centre.text = glyph
         centre.setTextColor(textColour)
-        centre.textSize = 32f
+        centre.textSize = if (ipad) 40f else 32f
         centre.gravity = Gravity.CENTER
         val clp = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT
         )
-        clp.gravity = Gravity.CENTER
+        if (ipad) {
+            clp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            clp.setMargins(0, Ui.dp(this, 14), 0, 0)
+        } else {
+            clp.gravity = Gravity.CENTER
+        }
         centre.layoutParams = clp
         tile.addView(centre)
-        finishTile(tile, name)
+        if (ipad) {
+            tile.addView(ipadLabelView(name))
+            Ui.focusLift(tile, accent, 16)
+        } else {
+            finishTile(tile, name)
+        }
         return tile
     }
 
@@ -1156,8 +1567,15 @@ class MainActivity : Activity() {
      * a folder with no direct apps keeps the glyph. The mini-grid is
      * presentation only — name, badge, menus and moves are unchanged.
      */
-    private fun folderTile(folder: Folder): View {
-        val tile = baseTile()
+    /**
+     * A folder tile's face: the 2×2 mini-grid of its first apps'
+     * icons (v1.6), or the 🗂 glyph when it holds no apps. [top]
+     * (v1.7 iPad style) parks the face in the tile's upper area so
+     * the always-on name can sit under it; otherwise it's centered.
+     * The mini icons use the effective shape, so in iPad style they
+     * are squircles too.
+     */
+    private fun folderFace(folder: Folder, large: Boolean = false, top: Boolean = false): View {
         val contained = folder.appPackages.mapNotNull { appsByPkg[it] }
         if (contained.isEmpty()) {
             val centre = TextView(this)
@@ -1166,44 +1584,76 @@ class MainActivity : Activity() {
             centre.textSize = 32f
             centre.gravity = Gravity.CENTER
             val clp = FrameLayout.LayoutParams(-2, -2)
-            clp.gravity = Gravity.CENTER
-            centre.layoutParams = clp
-            tile.addView(centre)
-        } else {
-            val m = currentTileMetrics()
-            val gap = Ui.dp(this, 4)
-            val mini = ((m.iconPx - gap) / 2).coerceAtLeast(8)
-            val grid = android.widget.GridLayout(this)
-            grid.columnCount = 2
-            grid.rowCount = 2
-            val glp = FrameLayout.LayoutParams(-2, -2)
-            glp.gravity = Gravity.CENTER
-            grid.layoutParams = glp
-            for (i in 0 until 4) {
-                val cell = FrameLayout(this)
-                val clp = android.widget.GridLayout.LayoutParams()
-                clp.width = mini
-                clp.height = mini
-                clp.setMargins(gap / 2, gap / 2, gap / 2, gap / 2)
-                cell.layoutParams = clp
-                val entry = contained.getOrNull(i)
-                if (entry != null) {
-                    val iv = ImageView(this)
-                    iv.setImageBitmap(Ui.shapedIcon(entry.icon, mini, prefs.iconShape))
-                    cell.addView(iv, FrameLayout.LayoutParams(mini, mini))
-                } else {
-                    val dot = View(this)
-                    val bg = GradientDrawable()
-                    bg.cornerRadius = Ui.dp(this, 6).toFloat()
-                    bg.setColor(com.mizan.launcher.core.Design.TILE_FILL)
-                    dot.background = bg
-                    cell.addView(dot, FrameLayout.LayoutParams(mini, mini))
-                }
-                grid.addView(cell)
+            if (top) {
+                clp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                clp.setMargins(0, Ui.dp(this, 14), 0, 0)
+            } else {
+                clp.gravity = Gravity.CENTER
             }
-            tile.addView(grid)
+            centre.layoutParams = clp
+            return centre
         }
-        finishTile(tile, "${folder.name} · ${folderContentsLabel(folder)}")
+        val m = currentTileMetrics(large = large)
+        val gap = Ui.dp(this, 4)
+        val mini = ((m.iconPx - gap) / 2).coerceAtLeast(8)
+        val grid = android.widget.GridLayout(this)
+        grid.columnCount = 2
+        grid.rowCount = 2
+        val glp = FrameLayout.LayoutParams(-2, -2)
+        if (top) {
+            glp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            glp.setMargins(0, Ui.dp(this, 8), 0, 0)
+        } else {
+            glp.gravity = Gravity.CENTER
+        }
+        grid.layoutParams = glp
+        for (i in 0 until 4) {
+            val cell = FrameLayout(this)
+            val clp = android.widget.GridLayout.LayoutParams()
+            clp.width = mini
+            clp.height = mini
+            clp.setMargins(gap / 2, gap / 2, gap / 2, gap / 2)
+            cell.layoutParams = clp
+            val entry = contained.getOrNull(i)
+            if (entry != null) {
+                val iv = ImageView(this)
+                iv.setImageBitmap(Ui.shapedIcon(entry.icon, mini, effectiveIconShape()))
+                cell.addView(iv, FrameLayout.LayoutParams(mini, mini))
+            } else {
+                val dot = View(this)
+                val bg = GradientDrawable()
+                bg.cornerRadius = Ui.dp(this, 6).toFloat()
+                bg.setColor(com.mizan.launcher.core.Design.TILE_FILL)
+                dot.background = bg
+                cell.addView(dot, FrameLayout.LayoutParams(mini, mini))
+            }
+            grid.addView(cell)
+        }
+        return grid
+    }
+
+    /**
+     * One folder tile. iPad style ([ipad]): face on top + name always
+     * under it. [movable] (the iPad grid's folders segment only) tags
+     * the tile with the folder id and adds the reorder Move entry —
+     * in TV style the Folders row deliberately has no reorder Move
+     * (folders there are ordered by creation/nesting, v1.3 rule).
+     */
+    private fun folderTile(
+        folder: Folder,
+        ipad: Boolean = false,
+        large: Boolean = false,
+        movable: Boolean = false
+    ): View {
+        val tile = baseTile(large = large)
+        if (movable) tile.tag = folder.id
+        tile.addView(folderFace(folder, large = large, top = ipad))
+        if (ipad) {
+            tile.addView(ipadLabelView(folder.name))
+            Ui.focusLift(tile, accent, 16)
+        } else {
+            finishTile(tile, "${folder.name} · ${folderContentsLabel(folder)}")
+        }
         // v1.3: locked folders carry the same 🔒 badge as locked apps.
         if (folder.locked) {
             val lock = TextView(this)
@@ -1221,6 +1671,9 @@ class MainActivity : Activity() {
         tile.setOnLongClickListener {
             val labels = mutableListOf<String>()
             val actions = mutableListOf<() -> Unit>()
+            if (movable) {
+                labels.add("Move"); actions.add { startRootFolderMove(folder) }
+            }
             labels.add("Rename folder"); actions.add { renameFolder(folder) }
             labels.add(if (folder.locked) "Unlock folder" else "Lock folder")
             actions.add { toggleFolderLock(folder) }
@@ -1431,8 +1884,45 @@ class MainActivity : Activity() {
         }
         currentFolderDialog = dlg
         currentFolderBox = box
+        // v1.7: in iPad style the overlay gets roomier padding, so
+        // the panel reads as a sheet rather than a cramped list.
+        if (isIpadStyle()) {
+            box.setPadding(
+                Ui.dp(this, 24), Ui.dp(this, 16), Ui.dp(this, 24), Ui.dp(this, 24)
+            )
+        }
         renderFolderOverlay()
         dlg.show()
+        if (isIpadStyle()) styleIpadFolderPanel(dlg)
+    }
+
+    /**
+     * iPad-style folder panel dressing (v1.7): the dialog window
+     * shrinks to ~70% of the screen width, gains the large-radius
+     * rounded panel background, and its title (the breadcrumb)
+     * centers. Purely cosmetic and fail-open — any failure leaves
+     * the stock dialog, which still works.
+     */
+    private fun styleIpadFolderPanel(dlg: AlertDialog) {
+        try {
+            val dm = resources.displayMetrics
+            val win = dlg.window ?: return
+            win.setLayout(
+                (dm.widthPixels * 0.70f).toInt(),
+                android.view.WindowManager.LayoutParams.WRAP_CONTENT
+            )
+            val bg = GradientDrawable()
+            bg.cornerRadius =
+                Ui.dp(this, com.mizan.launcher.core.Design.IPAD_FOLDER_PANEL_RADIUS_DP).toFloat()
+            bg.setColor(com.mizan.launcher.core.Design.IPAD_PANEL_FILL)
+            win.setBackgroundDrawable(bg)
+            val titleId = resources.getIdentifier("alertTitle", "id", "android")
+            if (titleId != 0) {
+                (dlg.findViewById(titleId) as? TextView)?.gravity = Gravity.CENTER
+            }
+        } catch (e: Exception) {
+            Prefs.noteError(this, "ipad-folder-panel", e)
+        }
     }
 
     private var currentFolderDialog: AlertDialog? = null
@@ -1465,13 +1955,17 @@ class MainActivity : Activity() {
         box.removeAllViews()
         // Tiles in entry order: apps resolve to app entries, folder
         // references to sub-folder tiles. Hidden apps stay hidden.
+        // In iPad style the tiles take the style's treatment
+        // (squircle + label under the icon) and rows center in the
+        // panel; the contents/order/gates are unchanged.
+        val ipad = isIpadStyle()
         val tiles = mutableListOf<View>()
         for (entry in folder.entries) {
             when (entry) {
                 is FolderEntry.App -> {
                     val app = appsByPkg[entry.pkg]
                     if (app != null && app.pkg !in layout.hidden) {
-                        tiles.add(appTile(app, Source.Folder, folder.id))
+                        tiles.add(appTile(app, Source.Folder, folder.id, ipad = ipad))
                     }
                 }
                 is FolderEntry.FolderRef -> {
@@ -1490,6 +1984,7 @@ class MainActivity : Activity() {
         var i = 0
         while (i < tiles.size) {
             val rowLayout = LinearLayout(this); rowLayout.orientation = LinearLayout.HORIZONTAL
+            if (ipad) rowLayout.gravity = Gravity.CENTER
             for (tile in tiles.subList(i, minOf(i + cols, tiles.size))) {
                 rowLayout.addView(tile)
             }
@@ -1508,7 +2003,18 @@ class MainActivity : Activity() {
      * contents intact), Lock/Unlock.
      */
     private fun subFolderTile(folder: Folder, parentId: String): View {
-        val tile = glyphTile("🗂", "${folder.name} · ${folderContentsLabel(folder)}")
+        // v1.7: in iPad style a sub-folder tile matches the panel's
+        // other tiles (folder face + name always under it); in TV
+        // style it stays the glyph tile with the focus-only name.
+        val tile: FrameLayout = if (isIpadStyle()) {
+            val t = baseTile()
+            t.addView(folderFace(folder, top = true))
+            t.addView(ipadLabelView(folder.name))
+            Ui.focusLift(t, accent, 16)
+            t
+        } else {
+            glyphTile("🗂", "${folder.name} · ${folderContentsLabel(folder)}")
+        }
         // The grabbed-tile search (move mode) finds tiles by entry key.
         tile.tag = FolderEntry.FolderRef(folder.id).key()
         if (folder.locked) {
@@ -1764,6 +2270,19 @@ class MainActivity : Activity() {
         beginMoveSession(entryKey, MoveContainer.FOLDER, folder.entryKeys(), parentFolderId)
     }
 
+    /**
+     * Enter move mode for a ROOT folder tile (v1.7, iPad grid only):
+     * the grabbed "item" is the folder's stable id and the session
+     * orders the root ids; write-back permutes the roots' slots in
+     * the flat folder list via FolderTree.reorderRoots, leaving
+     * nesting untouched. The grid tile carries the id as its tag, so
+     * the shared grabbed-tile search finds it like any app tile.
+     */
+    private fun startRootFolderMove(folder: Folder) {
+        val roots = FolderTree.rootFolders(layout.folders).map { it.id }
+        beginMoveSession(folder.id, MoveContainer.ROOT_FOLDERS, roots, null)
+    }
+
     /** Shared session start for app moves and folder-entry moves. */
     private fun beginMoveSession(
         grabbedKey: String,
@@ -1807,6 +2326,11 @@ class MainActivity : Activity() {
                     folder.entries.clear()
                     folder.entries.addAll(order.map { FolderEntry.fromKey(it) })
                 }
+            }
+            MoveContainer.ROOT_FOLDERS -> {
+                // v1.7: permute only the roots' own slots in the
+                // flat list — nested folders keep their positions.
+                FolderTree.reorderRoots(layout.folders, order)
             }
         }
         saveLayout()
@@ -2148,7 +2672,12 @@ class MainActivity : Activity() {
             } else {
                 layout.statusBar
             }
-            dateView?.text = SimpleDateFormat(cfg.datePattern(), Locale.getDefault()).format(now)
+            // v1.7: the iPad strip's date is fixed iPadOS-style
+            // ("Tuesday, October 21") — the profile's date-format
+            // preference belongs to the TV hero. The clock keeps the
+            // profile's format in both styles.
+            val datePattern = if (isIpadStyle()) "EEEE, MMMM d" else cfg.datePattern()
+            dateView?.text = SimpleDateFormat(datePattern, Locale.getDefault()).format(now)
             clockView?.text = SimpleDateFormat(cfg.clockPattern(), Locale.getDefault()).format(now)
             networkView?.text = networkLabel()
         } catch (e: Exception) {

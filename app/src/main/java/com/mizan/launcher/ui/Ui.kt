@@ -106,8 +106,10 @@ object Ui {
 
     /**
      * App icon cropped/masked to the chosen shape.
-     * shape: "circle" | "rounded" | "square". Returns a plain bitmap of the
-     * icon if anything goes wrong (fail-open).
+     * shape: "circle" | "rounded" | "square" | "squircle" (v1.7: the
+     * iPad style's mask — the rounded mask with the Design radius
+     * scaled up). Returns a plain bitmap of the icon if anything goes
+     * wrong (fail-open).
      */
     fun shapedIcon(icon: Drawable?, sizePx: Int, shape: String): Bitmap {
         val src = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
@@ -128,7 +130,8 @@ object Ui {
         if (shape == "circle") {
             path.addCircle(sizePx / 2f, sizePx / 2f, sizePx / 2f, Path.Direction.CCW)
         } else {
-            val r = sizePx * 0.22f
+            val r = sizePx * if (shape == "squircle")
+                com.mizan.launcher.core.Design.SQUIRCLE_RADIUS_FRACTION else 0.22f
             path.addRoundRect(RectF(0f, 0f, sizePx.toFloat(), sizePx.toFloat()), r, r, Path.Direction.CCW)
         }
         canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG))

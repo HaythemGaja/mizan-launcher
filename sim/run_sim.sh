@@ -33,6 +33,7 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   app/src/main/java/com/mizan/launcher/core/AllApps.kt \
   app/src/main/java/com/mizan/launcher/core/Design.kt \
   app/src/main/java/com/mizan/launcher/core/AppCatalogue.kt \
+  app/src/main/java/com/mizan/launcher/core/HomeStyle.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -60,6 +61,12 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   echo "(lock coverage), Reddit endpoint chain + RSS fallback parser +"
   echo "visible fetch status (spec section 14). All v1.5 tests carry"
   echo "over; the RSS parser feeds the same RedditImage model as JSON."
+  echo
+  echo "Note (v1.7): new section — home style (codec/default, label"
+  echo "rule, squircle override), iPad grid composition (apps + root"
+  echo "folders + inputs segments), dock composition (favorites cap,"
+  echo "divider, fixed buttons), root-folder reorder, tile boost"
+  echo "(spec section 15). All v1.6 tests carry over."
   echo
   echo "Note (v1.5): REMOVED with the Cleanup feature — the 18 cleanup"
   echo "classifier checks, replaced by 7 direct never-list checks (the"
