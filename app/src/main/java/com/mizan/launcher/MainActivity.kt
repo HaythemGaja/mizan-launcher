@@ -45,6 +45,7 @@ import com.mizan.launcher.core.QuickSettings
 import com.mizan.launcher.core.RecentsStore
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.TrackerSections
+import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.core.RotationLogic
 import com.mizan.launcher.core.RowOrder
 import com.mizan.launcher.core.Themes
@@ -65,6 +66,7 @@ import com.mizan.launcher.data.TrackerActions
 import com.mizan.launcher.data.IptvClient
 import com.mizan.launcher.data.PlayItem
 import com.mizan.launcher.data.PlayQueue
+import com.mizan.launcher.data.WatchPlay
 import com.mizan.launcher.data.TrackerClient
 import com.mizan.launcher.data.TvData
 import com.mizan.launcher.data.WallpaperRotator
@@ -122,6 +124,13 @@ class MainActivity : Activity() {
     private var tPicks: List<TrackerLogic.ForYouPick> = emptyList()
     private var tHeroCandidates: List<TrackerLogic.HeroItem> = emptyList()
 
+    // v2.3 Watch working set (Watch style only), computed alongside
+    // the tracker set in buildRoot: the IPTV catalogues (for match
+    // targets) and the tracker↔IPTV match table (data/WatchPlay,
+    // keyed "type|tmdbId"). Empty in every other style.
+    private var wCats: IptvLogic.Catalogues = IptvLogic.Catalogues()
+    private var wMatches: Map<String, WatchMatch.Match> = emptyMap()
+
     // Hero rotation (core/HeroRotator owns the rules; the Handler
     // lives here — activity-scoped, no service).
     private var heroRotator: HeroRotator.State? = null
@@ -137,7 +146,7 @@ class MainActivity : Activity() {
         override fun run() {
             if (!heroTicking) return
             val state = heroRotator
-            if (state != null && isTrackerStyle()) {
+            if (state != null && isTrackerFamily()) {
                 HeroRotator.tick(state, System.currentTimeMillis())?.let { next ->
                     heroRotator = next
                     applyHero(next.index)
@@ -194,14 +203,14 @@ class MainActivity : Activity() {
         if (::prefs.isInitialized && !prefs.safeMode) {
             val beforeLive = LiveTv.cached()
             LiveTv.refreshAsync(this) { result ->
-                if (result != beforeLive && !isTrackerStyle()) rebuild()
+                if (result != beforeLive && !isTrackerFamily()) rebuild()
             }
             // Same pattern for Most Used: the usage tallies refresh
             // off-thread; a change rebuilds once with the row updated.
             if (MostUsed.isGranted(this)) {
                 val beforeStats = MostUsed.cachedStats()
                 MostUsed.refreshAsync(this, appsByPkg.mapValues { it.value.label }) { stats ->
-                    if (stats != beforeStats && !isTrackerStyle() && !isIptvStyle()) rebuild()
+                    if (stats != beforeStats && !isTrackerFamily() && !isIptvStyle()) rebuild()
                 }
             }
         }
@@ -306,8 +315,11 @@ class MainActivity : Activity() {
         // v2.0: the Tracker view computes its working set FIRST — the
         // root background below IS the hero backdrop, so the hero
         // selection must exist before any view is added.
-        val trackerStyle = isTrackerStyle()
+        // v2.3: the Watch style is the same composition + the IPTV
+        // link, so every "trackerStyle" gate below is family-wide.
+        val trackerStyle = isTrackerFamily()
         if (trackerStyle) prepareTrackerData()
+        if (isWatchStyle()) prepareWatchData()
         pendingWallpaper = null
 
         // Background: drawn once. Image wallpaper wins; otherwise a gradient.
@@ -469,7 +481,7 @@ class MainActivity : Activity() {
         // v1.8: the Tracker home style — same frame (wallpaper, scrim,
         // corner gear/pill), an alternate root render. The TV render
         // below is untouched and tracker-free.
-        if (isTrackerStyle()) {
+        if (isTrackerFamily()) {
             buildTrackerHome(content, barHost)
             homeRoot = root
             if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
@@ -570,6 +582,69 @@ class MainActivity : Activity() {
     }
 
     /**
+     * v2.3: the Watch working set — the IPTV catalogues and the
+     * match table (cached by data/WatchPlay; recomputed only when
+     * a catalogue or the tracker snapshot moves). Then warm the
+     * series-info cache for matched Up Next shows so their Play
+     * buttons resolve without a tap-time wait; a warm landing
+     * rebuilds once with the resolved hero/cards.
+     */
+    private fun prepareWatchData() {
+        wCats = IptvClient.cached(this)
+        wMatches = WatchPlay.matches(this)
+        val upNext = tUpNext
+        val matches = wMatches
+        WatchPlay.warmUp(this, upNext, matches) {
+            // The warm-up reports from its own thread; rebuilds are UI work.
+            runOnUiThread { if (isWatchStyle()) rebuild() }
+        }
+    }
+
+    /** The Watch match for one tracker title (null = unmatched / not Watch style). */
+    private fun watchMatch(type: String, tmdbId: Long): WatchMatch.Match? =
+        if (isWatchStyle()) wMatches["$type|$tmdbId"] else null
+
+    /**
+     * Play one Up Next episode from the Watch home: resolve via
+     * data/WatchPlay; ANY resolution failure fails open to the
+     * v2.1 behaviour (the title's details) with a toast.
+     */
+    private fun playUpNextItem(item: TrackerLogic.UpNextItem, inSnapshot: Boolean) {
+        val match = watchMatch("tv", item.tmdbId)
+        val series = match?.let { WatchPlay.seriesFor(this, it) }
+        if (match == null || series == null) {
+            openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+            return
+        }
+        WatchPlay.playEpisode(
+            this, series, item.tmdbId, item.season, item.episode,
+            item.title, item.poster, withToken = inSnapshot
+        ) {
+            Toast.makeText(
+                this, "That episode isn't on your IPTV — showing details instead",
+                Toast.LENGTH_LONG
+            ).show()
+            openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+        }
+    }
+
+    /** Play a matched movie from the Watch home (Movie Night / hero / For You). */
+    private fun playMovieItem(movie: TrackerLogic.MovieItem) {
+        val match = watchMatch("movie", movie.tmdbId)
+        val vod = match?.let { WatchPlay.vodFor(this, it) }
+        if (match == null || vod == null) {
+            openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
+            return
+        }
+        val token = if (TrackerClient.cached(this).movies.any { it.tmdbId == movie.tmdbId }) {
+            WatchPlay.Token(movie.tmdbId, "movie", 0, 0)
+        } else {
+            null
+        }
+        WatchPlay.playMovie(this, vod, token)
+    }
+
+    /**
      * The Tracker view's background stack (v2.0 Netflix look), added
      * to the root BEFORE the scroll frame: the hero backdrop as a
      * full-bleed image — two layered ImageViews so rotation can
@@ -647,6 +722,12 @@ class MainActivity : Activity() {
 
     private fun isIptvStyle(): Boolean =
         com.mizan.launcher.core.HomeStyle.isIptv(homeStyleKey())
+
+    private fun isWatchStyle(): Boolean =
+        com.mizan.launcher.core.HomeStyle.isWatch(homeStyleKey())
+
+    /** Tracker + Watch share one composition (v2.3: Watch adds behaviour, not a layout). */
+    private fun isTrackerFamily(): Boolean = isTrackerStyle() || isWatchStyle()
 
     /** The icon shape home tiles render with (the profile's preference, unmodified). */
     private fun effectiveIconShape(): String = prefs.iconShape
@@ -1742,6 +1823,34 @@ class MainActivity : Activity() {
     private fun todayIso(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
+    /**
+     * The v2.3 Watch hint row: one line, OK dismisses it for this
+     * profile. Focusable like the Library entry row; shown only
+     * while NO IPTV source is configured (spec §21.5).
+     */
+    private fun buildWatchHintRow(): View {
+        val row = TextView(this)
+        row.text = "📺  Add your IPTV account in Settings › IPTV and titles here play in place — OK dismisses this hint"
+        row.setTextColor(0xFFFFFFFF.toInt())
+        row.textSize = 17f
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.isFocusable = true
+        row.isClickable = true
+        row.setPadding(Ui.dp(this, 18), Ui.dp(this, 13), Ui.dp(this, 18), Ui.dp(this, 13))
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 4), Ui.dp(this, 60), Ui.dp(this, 12))
+        row.layoutParams = lp
+        row.background = Ui.tileBackground(
+            accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this
+        )
+        Ui.focusLift(row, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
+        row.setOnClickListener {
+            prefs.watchHintDismissed = true
+            rebuild()
+        }
+        return row
+    }
+
     private fun buildTrackerHome(content: LinearLayout, barHost: LinearLayout) {
         // The working set was computed in buildRoot (prepareTrackerData)
         // because the root background IS the hero backdrop.
@@ -1755,7 +1864,19 @@ class MainActivity : Activity() {
 
         // Refresh on resume (throttled inside); a changed snapshot
         // rebuilds the view once — the new fetchedAt stops any loop.
-        TrackerClient.refreshAsync(this) { if (isTrackerStyle()) rebuild() }
+        TrackerClient.refreshAsync(this) { if (isTrackerFamily()) rebuild() }
+        if (isWatchStyle()) {
+            // Watch (v2.3): the IPTV catalogues ride along — a late
+            // catalogue rebuilds with fresh badges and match state.
+            // Hint row (§21.5): no IPTV source at all → the Watch
+            // home renders EXACTLY as Tracker, plus ONE dismissible
+            // hint. A configured-but-empty/failed catalogue gets NO
+            // hint — the `iptv:` diagnostics line covers it.
+            IptvClient.refreshAsync(this) { if (isWatchStyle()) rebuild() }
+            if (!IptvClient.anyConfigured(this) && !prefs.watchHintDismissed) {
+                content.addView(buildWatchHintRow())
+            }
+        }
 
         // The merged Continue cards decide that section's availability
         // (and are then built from, below) — system cards included.
@@ -2013,8 +2134,27 @@ class MainActivity : Activity() {
             // v2.1 For You hero: a pick has nothing to mark watched —
             // primary opens its in-launcher details, secondary adds
             // it to the list (queued + overlays, like the row's menu).
+            // v2.3 Watch: a matched MOVIE pick gains ▶ Play as the
+            // primary (Details drops to secondary); a matched show
+            // pick keeps Details/Add — a pick carries no episode
+            // coordinates to play.
+            val fyMovie = if (isWatchStyle() && hero.type == "movie") {
+                tMovies.firstOrNull { it.tmdbId == hero.tmdbId }
+                    ?: TrackerLogic.MovieItem(
+                        hero.tmdbId, hero.title, hero.dateIso, false, hero.poster, false
+                    )
+            } else {
+                null
+            }
+            val fyPlayable = fyMovie != null &&
+                watchMatch("movie", hero.tmdbId)?.let { WatchPlay.vodFor(this, it) } != null
+            if (fyPlayable && fyMovie != null) {
+                buttons.addView(
+                    heroButton("▶ Play", "play", primary = true) { playMovieItem(fyMovie) }
+                )
+            }
             buttons.addView(
-                heroButton("ⓘ Details", "details", primary = true) {
+                heroButton("ⓘ Details", "details", primary = !fyPlayable) {
                     openTitleDetails(hero.tmdbId, hero.type, hero.title, hero.poster)
                 }
             )
@@ -2031,9 +2171,6 @@ class MainActivity : Activity() {
                 }
             )
         } else if (trackerHere) {
-            buttons.addView(
-                heroButton("▶ Open Tracker", "open", primary = true) { openTracker() }
-            )
             // Mark watched needs episode coordinates: Up Next heroes
             // carry their own; a Continue hero borrows them from the
             // same show's Up Next item; a Movie Night hero uses the
@@ -2043,6 +2180,68 @@ class MainActivity : Activity() {
                 !hero.fromContinue -> hero.season to hero.episode
                 else -> tSnap.upNext.firstOrNull { it.tmdbId == hero.tmdbId }
                     ?.let { it.season to it.episode }
+            }
+            // v2.3 Watch: the hero's primary becomes ▶ Play when the
+            // title is matched AND resolved — a movie resolves from
+            // its VOD entry; a show additionally needs its episode
+            // present in the cached series info (the warm-up in
+            // prepareWatchData fetches it ahead of time; a
+            // not-yet-cached show keeps today's buttons and gains
+            // Play on the rebuild the warm-up triggers).
+            var playLabel: String? = null
+            var playAction: (() -> Unit)? = null
+            if (isWatchStyle() && coords != null) {
+                if (hero.type == "movie") {
+                    val m = watchMatch("movie", hero.tmdbId)
+                    val vod = m?.let { WatchPlay.vodFor(this, it) }
+                    if (m != null && vod != null) {
+                        val movieItem = tMovies.firstOrNull { it.tmdbId == hero.tmdbId }
+                            ?: TrackerLogic.MovieItem(
+                                hero.tmdbId, hero.title, hero.dateIso,
+                                false, hero.poster, false
+                            )
+                        playLabel = WatchMatch.heroPlayLabel("movie", 0, 0)
+                        playAction = { playMovieItem(movieItem) }
+                    }
+                } else {
+                    val m = watchMatch("tv", hero.tmdbId)
+                    val series = m?.let { WatchPlay.seriesFor(this, it) }
+                    val info = series?.let { IptvClient.cachedSeriesInfo(this, it.id) }
+                    val ep = info?.let {
+                        WatchMatch.resolveEpisode(it, coords.first, coords.second)
+                    }
+                    if (m != null && series != null && ep != null) {
+                        val inSnap = tSnap.upNext.any {
+                            it.tmdbId == hero.tmdbId &&
+                                it.season == coords.first && it.episode == coords.second
+                        }
+                        playLabel = WatchMatch.heroPlayLabel("tv", coords.first, coords.second)
+                        playAction = {
+                            WatchPlay.playEpisode(
+                                this, series, hero.tmdbId, coords.first, coords.second,
+                                hero.title, hero.poster, withToken = inSnap
+                            ) {
+                                Toast.makeText(
+                                    this,
+                                    "That episode isn't on your IPTV — showing details instead",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                openTitleDetails(
+                                    hero.tmdbId, hero.type, hero.title, hero.poster
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (playAction != null) {
+                buttons.addView(
+                    heroButton(playLabel ?: "▶ Play", "play", primary = true) { playAction.invoke() }
+                )
+            } else {
+                buttons.addView(
+                    heroButton("▶ Open Tracker", "open", primary = true) { openTracker() }
+                )
             }
             if (coords != null) {
                 buttons.addView(
@@ -2296,7 +2495,8 @@ class MainActivity : Activity() {
         line3: String? = null,
         glyph: String,
         onClick: () -> Unit,
-        onLong: (() -> Unit)? = null
+        onLong: (() -> Unit)? = null,
+        badge: String? = null
     ): View {
         val dm = resources.displayMetrics
         val pm = TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
@@ -2326,6 +2526,24 @@ class MainActivity : Activity() {
             g.textSize = 44f
             g.gravity = Gravity.CENTER
             frame.addView(g, FrameLayout.LayoutParams(-1, -1))
+        }
+        if (badge != null) {
+            // v2.3 Watch: the "▶ IPTV" chip on a matched title —
+            // poster corner, Netflix red, never focusable.
+            val chip = TextView(this)
+            chip.text = badge
+            chip.setTextColor(0xFFFFFFFF.toInt())
+            chip.textSize = 11f
+            chip.setTypeface(chip.typeface, android.graphics.Typeface.BOLD)
+            val chipBg = GradientDrawable()
+            chipBg.cornerRadius = Ui.dp(this, 6).toFloat()
+            chipBg.setColor(com.mizan.launcher.core.Design.NETFLIX_RED)
+            chip.background = chipBg
+            chip.setPadding(Ui.dp(this, 7), Ui.dp(this, 3), Ui.dp(this, 7), Ui.dp(this, 3))
+            val chipLp = FrameLayout.LayoutParams(-2, -2)
+            chipLp.gravity = Gravity.TOP or Gravity.START
+            chipLp.setMargins(Ui.dp(this, 6), Ui.dp(this, 6), 0, 0)
+            frame.addView(chip, chipLp)
         }
         Ui.focusLift(frame, accent, 16)
         frame.setOnClickListener { onClick() }
@@ -2377,12 +2595,19 @@ class MainActivity : Activity() {
         val today = todayIso()
         for (item in items) {
             val countdown = TrackerLogic.countdownLabel(item.dateIso, today)
+            // v2.3 Watch: a matched card wears the ▶ IPTV badge and
+            // OK plays the episode in place (failing open to details);
+            // the Tracker style and unmatched cards are untouched.
+            val wMatch = watchMatch("tv", item.tmdbId)
             val card = portraitCard(
                 posterPath = item.poster,
                 title = item.title,
                 meta = countdown.ifBlank { item.sub },
                 glyph = "📺",
-                onClick = { openTracker() },
+                onClick = {
+                    if (wMatch != null) playUpNextItem(item, inSnapshot = true)
+                    else openTracker()
+                },
                 onLong = {
                     openTrackerCardMenu(
                         item.title,
@@ -2393,7 +2618,8 @@ class MainActivity : Activity() {
                             openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
                         }
                     )
-                }
+                },
+                badge = WatchMatch.cardBadge(wMatch != null)
             )
             row.addView(card)
         }
@@ -2419,12 +2645,31 @@ class MainActivity : Activity() {
         for (card in cards) {
             val trackerItem = card.tracker
             if (trackerItem != null) {
+                // v2.3 Watch: matched Continue cards play the same
+                // episode the Up Next row targets (coordinates
+                // borrowed from the snapshot item, as the hero does);
+                // without coordinates they open details, as v2.1.
+                val wMatch = watchMatch("tv", trackerItem.tmdbId)
+                val upNextTwin = if (wMatch != null) {
+                    tSnap.upNext.firstOrNull { it.tmdbId == trackerItem.tmdbId }
+                } else {
+                    null
+                }
                 val view = portraitCard(
                     posterPath = trackerItem.poster,
                     title = trackerItem.title,
                     meta = trackerItem.sub,
                     glyph = "📺",
-                    onClick = { openTracker() },
+                    onClick = {
+                        when {
+                            upNextTwin != null -> playUpNextItem(upNextTwin, inSnapshot = true)
+                            isWatchStyle() -> openTitleDetails(
+                                trackerItem.tmdbId, trackerItem.type,
+                                trackerItem.title, trackerItem.poster
+                            )
+                            else -> openTracker()
+                        }
+                    },
                     onLong = {
                         openTrackerCardMenu(
                             trackerItem.title,
@@ -2436,7 +2681,8 @@ class MainActivity : Activity() {
                                 )
                             }
                         )
-                    }
+                    },
+                    badge = WatchMatch.cardBadge(wMatch != null)
                 )
                 row.addView(view)
             } else {
@@ -2456,12 +2702,15 @@ class MainActivity : Activity() {
             val countdown = TrackerLogic.countdownLabel(movie.releaseDate, today)
             if (countdown.isNotEmpty()) parts.add(countdown)
             if (movie.planned) parts.add("Planned")
+            val wMatch = watchMatch("movie", movie.tmdbId)
             val card = portraitCard(
                 posterPath = movie.poster,
                 title = movie.title,
                 meta = parts.joinToString(" · "),
                 glyph = "🎬",
-                onClick = { openTracker() },
+                onClick = {
+                    if (wMatch != null) playMovieItem(movie) else openTracker()
+                },
                 onLong = {
                     openTrackerCardMenu(
                         movie.title,
@@ -2470,7 +2719,8 @@ class MainActivity : Activity() {
                             openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
                         }
                     )
-                }
+                },
+                badge = WatchMatch.cardBadge(wMatch != null)
             )
             row.addView(card)
         }
@@ -2490,6 +2740,10 @@ class MainActivity : Activity() {
         val box = section("For You")
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
         for (pick in picks) {
+            // v2.3 Watch: a matched pick also wears the badge; OK
+            // still opens details (v2.1 behaviour) and hold-OK gains
+            // "▶ Play" — see openForYouMenu.
+            val wMatch = watchMatch(pick.type, pick.id)
             val card = portraitCard(
                 posterPath = pick.poster,
                 title = pick.title,
@@ -2498,7 +2752,8 @@ class MainActivity : Activity() {
                 line3 = pick.whyGenres.joinToString(" · ").ifBlank { null },
                 glyph = if (pick.type == "movie") "🎬" else "📺",
                 onClick = { openTracker() },
-                onLong = { openForYouMenu(pick) }
+                onLong = { openForYouMenu(pick) },
+                badge = WatchMatch.cardBadge(wMatch != null)
             )
             row.addView(card)
         }
@@ -2533,11 +2788,29 @@ class MainActivity : Activity() {
 
     /** Hold-OK on a For You card: open / add to list / not interested. */
     private fun openForYouMenu(pick: TrackerLogic.ForYouPick) {
-        val labels = listOf("Open Tracker", "Add to my list", "Not interested")
+        // v2.3 Watch: a matched MOVIE pick gains "▶ Play" first —
+        // shows have no episode coordinates here, so they keep the
+        // plain menu (the spec's For You play entry is movie-only).
+        val labels = mutableListOf<String>()
+        val prefix = mutableListOf<() -> Unit>()
+        if (isWatchStyle() && pick.type == "movie" && watchMatch("movie", pick.id) != null) {
+            labels.add("▶ Play")
+            prefix.add {
+                playMovieItem(
+                    TrackerLogic.MovieItem(pick.id, pick.title, "", false, pick.poster, false)
+                )
+            }
+        }
+        labels.addAll(listOf("Open Tracker", "Add to my list", "Not interested"))
+        val base = prefix.size
         AlertDialog.Builder(this)
             .setTitle(pick.title)
             .setItems(labels.toTypedArray()) { _, which ->
-                when (which) {
+                if (which < base) {
+                    prefix[which].invoke()
+                    return@setItems
+                }
+                when (which - base) {
                     0 -> openTracker()
                     1 -> {
                         val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)

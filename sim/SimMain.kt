@@ -44,6 +44,7 @@ import com.mizan.launcher.core.IptvLogic
 import com.mizan.launcher.core.IptvEpg
 import com.mizan.launcher.core.IptvLocks
 import com.mizan.launcher.core.IptvStatus
+import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.AppCategories
@@ -1410,8 +1411,14 @@ fun main() {
             HomeStyle.normalize("tracker") == "tracker" && HomeStyle.isTracker("tracker") &&
                 HomeStyle.normalize("iptv") == "iptv" && HomeStyle.isIptv("iptv") &&
                 !HomeStyle.isIptv("tv") && !HomeStyle.isTracker("iptv"))
-        check("homestyle: value list is tv, tracker, iptv (the Settings picker order)",
-            HomeStyle.VALUES == listOf("tv", "tracker", "iptv"))
+        // v2.3 in-place update: the Watch style joins the picker,
+        // so the value list legitimately grows a fourth entry.
+        check("homestyle: value list is tv, tracker, iptv, watch (the Settings picker order)",
+            HomeStyle.VALUES == listOf("tv", "tracker", "iptv", "watch"))
+        check("homestyle: watch survives the codec (v2.3)",
+            HomeStyle.normalize("watch") == "watch" && HomeStyle.isWatch("watch") &&
+                !HomeStyle.isWatch("tracker") && !HomeStyle.isTracker("watch") &&
+                !HomeStyle.isIptv("watch"))
 
         // Root reorder (core/FolderTree write-back machinery —
         // retained: the folder tree is shared by every style even
@@ -2625,6 +2632,134 @@ fun main() {
                 "Add your IPTV account in Settings › IPTV" &&
                 IptvStatus.emptyLine(IptvStatus.Kind.OK) == null &&
                 IptvStatus.emptyLine(IptvStatus.Kind.NONE) == null)
+    }
+
+    // ---------- (38) v2.3 Watch: title matching, episode resolution, match cache, auto-mark, UI model ----------
+    run {
+        
+        // Normalization: punctuation, articles, case, whitespace.
+        check("watch: normalization strips punctuation/articles/case and collapses space",
+            WatchMatch.normalizeKey("The Office!") == "office" &&
+                WatchMatch.normalizeKey("  BREAKING   BAD ") == "breaking bad" &&
+                WatchMatch.normalizeKey("A  Few   Good Men") == "few good men" &&
+                WatchMatch.normalizeKey("An American Tail") == "american tail" &&
+                WatchMatch.normalizeKey("Grey's Anatomy") == "grey s anatomy")
+        // Year extraction: bracketed, trailing, leading; mid-title numbers stay.
+        check("watch: splitYear takes bracketed / trailing / leading years only",
+            WatchMatch.splitYear("Reacher (2022)") == Pair("Reacher", 2022) &&
+                WatchMatch.splitYear("Dune 2021").second == 2021 &&
+                WatchMatch.splitYear("2021 Dune").second == 2021 &&
+                WatchMatch.splitYear("Apollo 13").second == 0 &&
+                WatchMatch.splitYear("The 100").second == 0)
+        check("watch: keyOf prefers a known year over the title token",
+            WatchMatch.keyOf("Dune (1984)", 2021) == Pair("dune", 2021) &&
+                WatchMatch.keyOf("Dune (1984)", 0) == Pair("dune", 1984) &&
+                WatchMatch.keyOf("Dune", 0) == Pair("dune", 0))
+
+        val office = WatchMatch.TrackerTitle(2316, "tv", "The Office", 2005)
+        val officeCands = listOf(WatchMatch.Candidate(10, "The Office", 2005), WatchMatch.Candidate(11, "Office Space", 1999))
+        check("watch: exact normalized match wins, unique + year agree = exact",
+            WatchMatch.matchOne(office, officeCands)?.let { it.iptvId == 10L && it.exact && !it.possible } == true)
+        check("watch: punctuation/case variant still exact-matches",
+            WatchMatch.matchOne(
+                WatchMatch.TrackerTitle(1, "tv", "GREY'S ANATOMY!", 2005),
+                listOf(WatchMatch.Candidate(5, "Grey's Anatomy", 2005))
+            )?.let { it.iptvId == 5L && it.exact } == true)
+        check("watch: year breaks a same-name tie (remakes)",
+            WatchMatch.matchOne(
+                WatchMatch.TrackerTitle(2, "movie", "Dune", 2021),
+                listOf(WatchMatch.Candidate(20, "Dune", 1984), WatchMatch.Candidate(21, "Dune", 2021))
+            )?.let { it.iptvId == 21L && it.exact } == true)
+        check("watch: ambiguous same-name (no usable year) picks first, flagged possible",
+            WatchMatch.matchOne(
+                WatchMatch.TrackerTitle(3, "movie", "Dune", 0),
+                listOf(WatchMatch.Candidate(20, "Dune", 1984), WatchMatch.Candidate(21, "Dune", 2021))
+            )?.let { it.iptvId == 20L && !it.exact && it.possible } == true)
+        check("watch: year conflict (both known, different) is possible, not exact",
+            WatchMatch.matchOne(
+                WatchMatch.TrackerTitle(4, "movie", "Dune", 2000),
+                listOf(WatchMatch.Candidate(20, "Dune", 1984))
+            )?.let { it.iptvId == 20L && !it.exact && it.possible } == true)
+        check("watch: fuzzy tier (word-boundary prefix) matches but is only possible",
+            WatchMatch.matchOne(
+                WatchMatch.TrackerTitle(5, "tv", "Star Trek", 1966),
+                listOf(WatchMatch.Candidate(30, "Star Trek: The Next Generation", 1987))
+            )?.let { it.iptvId == 30L && !it.exact && it.possible } == true)
+        check("watch: exact tier beats the fuzzy tier outright",
+            WatchMatch.matchOne(
+                WatchMatch.TrackerTitle(6, "tv", "Star Trek", 1966),
+                listOf(
+                    WatchMatch.Candidate(30, "Star Trek: The Next Generation", 1987),
+                    WatchMatch.Candidate(31, "Star Trek", 1966)
+                )
+            )?.let { it.iptvId == 31L && it.exact } == true)
+        check("watch: no close title -> no match (never a forced guess)",
+            WatchMatch.matchOne(
+                WatchMatch.TrackerTitle(7, "tv", "Reacher", 2022),
+                listOf(WatchMatch.Candidate(40, "Preacher", 2016), WatchMatch.Candidate(41, "Teachers", 2016))
+            ) == null &&
+                WatchMatch.matchOne(office, emptyList()) == null)
+        check("watch: matchAll keys by tmdbId and skips unmatched",
+            WatchMatch.matchAll(listOf(office, WatchMatch.TrackerTitle(8, "tv", "Reacher", 2022)), officeCands)
+                .let { it.size == 1 && it[2316]?.iptvId == 10L })
+
+        // Episode resolution against a parsed series-info fixture.
+        val infoJson = """{"info":{"name":"Reacher"},"seasons":[1,2],"episodes":{
+            "1":[{"id":"9001","season":1,"episode_num":1,"title":"Welcome","container_extension":"mkv"}],
+            "2":[{"id":"9002","season":2,"episode_num":3,"title":"Picture","container_extension":"mp4"}]}}"""
+        val info = IptvLogic.parseSeriesInfo(infoJson, 77)
+        check("watch: episode resolution finds id + extension",
+            info != null &&
+                WatchMatch.resolveEpisode(info, 2, 3)?.let { it.id == "9002" && it.ext == "mp4" } == true &&
+                WatchMatch.resolveEpisode(info, 1, 1)?.id == "9001")
+        check("watch: missing season / missing episode resolve to null (fail-open)",
+            info != null && WatchMatch.resolveEpisode(info, 3, 1) == null &&
+                WatchMatch.resolveEpisode(info, 2, 9) == null)
+
+        // Match cache: fingerprint invalidation + codec.
+        check("watch: fingerprint is stable for same inputs, moves on catalogue or tracker change",
+            WatchMatch.fingerprint(10, 20, 111L, 222L, 7) == WatchMatch.fingerprint(10, 20, 111L, 222L, 7) &&
+                WatchMatch.fingerprint(11, 20, 111L, 222L, 7) != WatchMatch.fingerprint(10, 20, 111L, 222L, 7) &&
+                WatchMatch.fingerprint(10, 20, 112L, 222L, 7) != WatchMatch.fingerprint(10, 20, 111L, 222L, 7) &&
+                WatchMatch.fingerprint(10, 20, 111L, 223L, 7) != WatchMatch.fingerprint(10, 20, 111L, 222L, 7) &&
+                WatchMatch.fingerprint(10, 20, 111L, 222L, 8) != WatchMatch.fingerprint(10, 20, 111L, 222L, 7))
+        check("watch: match codec round-trips ids + flags, skips garbage, stores no titles",
+            WatchMatch.decodeMatches(
+                WatchMatch.encodeMatches(
+                    listOf(
+                        WatchMatch.Match(2316, "tv", 10, exact = true, possible = false),
+                        WatchMatch.Match(99, "movie", 21, exact = false, possible = true)
+                    )
+                )
+            ).let {
+                it.size == 2 && it[0].tmdbId == 2316L && it[0].exact && !it[0].possible &&
+                    it[1].iptvId == 21L && it[1].possible
+            } &&
+                WatchMatch.decodeMatches("garbage\n1|tv|x|1|0\n5|tv|6|1").isEmpty() &&
+                !WatchMatch.encodeMatches(listOf(WatchMatch.Match(1, "tv", 2, true, false))).contains("Office"))
+
+        // Auto-mark decision.
+        check("watch: auto-mark fires on ended (even at low position)",
+            WatchMatch.shouldAutoMark(true, false, ended = true, posMs = 1_000, durMs = 100_000))
+        check("watch: auto-mark fires at exactly 90%, not at 89%",
+            WatchMatch.shouldAutoMark(true, false, ended = false, posMs = 90_000, durMs = 100_000) &&
+                !WatchMatch.shouldAutoMark(true, false, ended = false, posMs = 89_000, durMs = 100_000))
+        check("watch: auto-mark never fires twice, never tokenless, never on a partial watch",
+            !WatchMatch.shouldAutoMark(true, true, ended = true, posMs = 100_000, durMs = 100_000) &&
+                !WatchMatch.shouldAutoMark(false, false, ended = true, posMs = 100_000, durMs = 100_000) &&
+                !WatchMatch.shouldAutoMark(false, false, ended = false, posMs = 95_000, durMs = 100_000) &&
+                !WatchMatch.shouldAutoMark(true, false, ended = false, posMs = 40_000, durMs = 100_000) &&
+                !WatchMatch.shouldAutoMark(true, false, ended = false, posMs = 0, durMs = 0))
+
+        // UI model: badge + hero labels + diagnostics.
+        check("watch: badge only when matched; hero labels name the episode, movies plain",
+            WatchMatch.cardBadge(true) == "▶ IPTV" && WatchMatch.cardBadge(false) == null &&
+                WatchMatch.heroPlayLabel("tv", 2, 3) == "▶ Play S2 E3" &&
+                WatchMatch.heroPlayLabel("movie", 0, 0) == "▶ Play" &&
+                WatchMatch.heroPlayLabel("tv", 0, 0) == "▶ Play")
+        check("watch: diag line is counts-only",
+            WatchMatch.diagText(WatchMatch.Stats(3, 5, 2, 4, 7)) ==
+                "shows 3/5 · movies 2/4 · episodes resolved 7")
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

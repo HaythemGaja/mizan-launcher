@@ -143,7 +143,9 @@ object IptvLogic {
     data class VodItem(
         val id: Long, val name: String, val icon: String,
         val categoryId: String, val categoryName: String,
-        val ext: String, val rating: String
+        val ext: String, val rating: String,
+        /** v2.3: release year when the panel volunteers one (0 = unknown) — a Watch-match tie-breaker. */
+        val year: Int = 0
     ) {
         val catKey: String get() = "$SRC_XTREAM:${KIND_VOD}:$categoryId"
         val key: String get() = "$SRC_XTREAM:${KIND_VOD}:$id"
@@ -152,7 +154,9 @@ object IptvLogic {
     data class SeriesItem(
         val id: Long, val name: String, val cover: String,
         val categoryId: String, val categoryName: String,
-        val rating: String, val plot: String
+        val rating: String, val plot: String,
+        /** v2.3: first-air year when the panel volunteers one (0 = unknown) — a Watch-match tie-breaker. */
+        val year: Int = 0
     ) {
         val catKey: String get() = "$SRC_XTREAM:${KIND_SERIES}:$categoryId"
         val key: String get() = "$SRC_XTREAM:${KIND_SERIES}:$id"
@@ -209,6 +213,14 @@ object IptvLogic {
     }
 
     fun intOf(v: Any?): Int = longOf(v).toInt()
+
+    private val YEAR_RE = Regex("""(19|20)\d{2}""")
+
+    /** The first plausible year in a free-form field ("2026-09-03", "2026"), 0 when none. */
+    fun yearOf(raw: String): Int {
+        val m = YEAR_RE.find(raw) ?: return 0
+        return m.value.toIntOrNull() ?: 0
+    }
 
     @Suppress("UNCHECKED_CAST")
     private fun asList(v: Any?): List<Map<String, Any?>> =
@@ -274,7 +286,11 @@ object IptvLogic {
                     id = id, name = name, icon = strOf(row["stream_icon"]).trim(),
                     categoryId = catId, categoryName = catNames[catId] ?: "",
                     ext = strOf(row["container_extension"]).trim(),
-                    rating = strOf(row["rating"]).trim()
+                    rating = strOf(row["rating"]).trim(),
+                    year = yearOf(
+                        strOf(row["release_date"]).ifEmpty { strOf(row["releaseDate"]) }
+                            .ifEmpty { strOf(row["year"]) }
+                    )
                 )
             )
         }
@@ -293,7 +309,11 @@ object IptvLogic {
                     id = id, name = name, cover = strOf(row["cover"]).trim(),
                     categoryId = catId, categoryName = catNames[catId] ?: "",
                     rating = strOf(row["rating"]).trim(),
-                    plot = strOf(row["plot"]).trim()
+                    plot = strOf(row["plot"]).trim(),
+                    year = yearOf(
+                        strOf(row["releaseDate"]).ifEmpty { strOf(row["release_date"]) }
+                            .ifEmpty { strOf(row["year"]) }
+                    )
                 )
             )
         }

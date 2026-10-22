@@ -54,6 +54,7 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/IptvEpg.kt \
   app/src/main/java/com/mizan/launcher/core/IptvLocks.kt \
   app/src/main/java/com/mizan/launcher/core/IptvStatus.kt \
+  app/src/main/java/com/mizan/launcher/core/WatchMatch.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -144,6 +145,19 @@ export JAVA_OPTS
   echo "progress at a fixed clock, short-EPG base64 titles, category"
   echo "pattern-locks (adult markers, stamp/grace rules), and the"
   echo "iptv status classification + diagnostics line (spec S20)."
+  echo
+  echo "Note (v2.3): the Watch home style joins the picker. Section 32's"
+  echo "value-list check is updated in place to [tv, tracker, iptv,"
+  echo "watch] and gains a watch-codec check — the only v2.2 check"
+  echo "changed, because the picker's contents legitimately grew."
+  echo "New section 38 — Watch matching (core/WatchMatch): title"
+  echo "normalization (punctuation, articles, case, year extraction),"
+  echo "exact-beats-fuzzy, year tie-breaks, ambiguity -> possible,"
+  echo "no-match, episode resolution from series-info fixtures"
+  echo "(missing season/episode -> unresolved), the match-cache"
+  echo "fingerprint + codec, the auto-mark decision (ended/90% fires"
+  echo "once, partial/tokenless never), and the badge/hero-label/"
+  echo "diagnostics models (spec S21)."
   echo
   echo '```'
   java -jar sim/sim.jar

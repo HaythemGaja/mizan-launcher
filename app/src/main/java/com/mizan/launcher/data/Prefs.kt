@@ -110,6 +110,15 @@ class Prefs(ctx: Context) {
         get() = sp.getInt(k("tracker_hero_index"), 0)
         set(v) { sp.edit().putInt(k("tracker_hero_index"), v).apply() }
 
+    /**
+     * v2.3: the Watch style's "add your IPTV account" hint — once
+     * dismissed it stays dismissed for this profile (the hint only
+     * ever shows while NO IPTV source is configured at all).
+     */
+    var watchHintDismissed: Boolean
+        get() = sp.getBoolean(k("watch_hint_dismissed"), false)
+        set(v) { sp.edit().putBoolean(k("watch_hint_dismissed"), v).apply() }
+
     // ---- per-profile v2.0 state ----
 
     /**

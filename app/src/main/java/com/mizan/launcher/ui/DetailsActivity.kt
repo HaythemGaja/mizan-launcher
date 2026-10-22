@@ -1,6 +1,7 @@
 package com.mizan.launcher.ui
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
@@ -15,10 +16,12 @@ import android.widget.Toast
 import com.mizan.launcher.core.Design
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.TrackerLogic
+import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.data.Prefs
 import com.mizan.launcher.data.TmdbImages
 import com.mizan.launcher.data.TrackerActions
 import com.mizan.launcher.data.TrackerClient
+import com.mizan.launcher.data.WatchPlay
 
 /**
  * Title details (v2.1) — one tracked title, in-launcher: backdrop
@@ -63,6 +66,10 @@ class DetailsActivity : Activity() {
     private var snapShow: LibraryLogic.LibShow? = null
     private var snapMovie: TrackerLogic.MovieItem? = null
     private var inSnapshot: Boolean = false
+
+    // v2.3 Watch: this title's IPTV match (recomputed per rebuild
+    // from data/WatchPlay's cache); null = not on the IPTV side.
+    private var wMatch: WatchMatch.Match? = null
 
     // TMDB state.
     private var details: LibraryLogic.TitleDetails? = null
@@ -238,6 +245,12 @@ class DetailsActivity : Activity() {
     private fun rebuild() {
         val box = contentBox ?: return
         readSnapshotState()
+        // v2.3: the Watch match for this title (ids only, cached).
+        wMatch = try {
+            WatchPlay.matches(this)["$type|$tmdbId"]
+        } catch (e: Exception) {
+            null
+        }
         val focusTag = (currentFocus?.tag as? String)
         box.removeAllViews()
 
@@ -358,6 +371,32 @@ class DetailsActivity : Activity() {
                         Toast.LENGTH_SHORT
                     ).show()
                     rebuild()
+                }
+            )
+        }
+        // v2.3 Watch: a matched movie plays in place. The auto-mark
+        // token rides only for in-snapshot titles (a For You /
+        // search-opened movie that isn't tracked yet just plays).
+        val movieMatch = if (type == "movie") wMatch else null
+        if (movieMatch != null) {
+            buttons.add(
+                actionButton("▶ Play on IPTV", "play_iptv") {
+                    val vod = WatchPlay.vodFor(this, movieMatch)
+                    if (vod == null) {
+                        Toast.makeText(
+                            this, "That movie isn't on your IPTV right now",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        WatchPlay.playMovie(
+                            this, vod,
+                            if (inSnapshot) {
+                                WatchPlay.Token(tmdbId, "movie", 0, 0)
+                            } else {
+                                null
+                            }
+                        )
+                    }
                 }
             )
         }
@@ -501,6 +540,13 @@ class DetailsActivity : Activity() {
                 }
             }
             episodes != null -> {
+                if (wMatch != null) {
+                    // v2.3 Watch: matched show — the ▶ on each row
+                    // plays it; say so once, above the list.
+                    box.addView(
+                        noteLine("▶ This show is on your IPTV — hold OK on an episode to play it.")
+                    )
+                }
                 if (inSnapshot) {
                     val unwatchedLeft = episodes.count {
                         LibraryLogic.epKey(season, it.number) !in effectiveWatched()
@@ -597,6 +643,41 @@ class DetailsActivity : Activity() {
             row.addView(date)
         }
 
+        // v2.3 Watch: a matched show's rows carry the ▶ affordance;
+        // OK still toggles watched (below) — PLAY lives on the
+        // long-press menu, next to the toggle, so both are one
+        // gesture apart and nothing about v2.1's checklist changes.
+        val showMatch = if (type == "tv") wMatch else null
+        if (showMatch != null) {
+            val play = TextView(this)
+            play.text = "▶"
+            play.setTextColor(Design.NETFLIX_RED)
+            play.textSize = 17f
+            play.setTypeface(play.typeface, Typeface.BOLD)
+            val plp = LinearLayout.LayoutParams(-2, -2)
+            plp.setMargins(Ui.dp(this, 14), 0, 0, 0)
+            play.layoutParams = plp
+            row.addView(play)
+            row.isLongClickable = true
+            row.setOnLongClickListener {
+                val labels = arrayOf(
+                    "▶ Play S$season E${ep.number}",
+                    if (isWatched) "↩ Mark unwatched" else "✓ Mark watched"
+                )
+                AlertDialog.Builder(this)
+                    .setTitle(ep.name.ifBlank { "Episode ${ep.number}" })
+                    .setItems(labels) { _, which ->
+                        if (which == 0) {
+                            playEpisodeFromDetails(showMatch, season, ep.number)
+                        } else {
+                            row.performClick()
+                        }
+                    }
+                    .show()
+                true
+            }
+        }
+
         row.setOnClickListener {
             if (!inSnapshot) {
                 Toast.makeText(
@@ -618,6 +699,29 @@ class DetailsActivity : Activity() {
             rebuild()
         }
         return row
+    }
+
+    /**
+     * v2.3: play one episode of this (matched) show from details.
+     * Resolution failure fails open with a toast — the checklist
+     * stays fully usable either way.
+     */
+    private fun playEpisodeFromDetails(match: WatchMatch.Match, season: Int, episode: Int) {
+        val series = WatchPlay.seriesFor(this, match)
+        if (series == null) {
+            Toast.makeText(
+                this, "That show isn't on your IPTV right now", Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        WatchPlay.playEpisode(
+            this, series, tmdbId, season, episode,
+            displayTitle(), displayPoster(), withToken = inSnapshot
+        ) {
+            Toast.makeText(
+                this, "That episode isn't on your IPTV", Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     // ------------------------------------------------------------ small builders

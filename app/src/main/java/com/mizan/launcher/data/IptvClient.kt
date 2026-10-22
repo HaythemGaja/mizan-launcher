@@ -434,6 +434,74 @@ object IptvClient {
         }
     }
 
+    // ------------------------------------------------------------ series info cache (v2.3)
+
+    /**
+     * Cached get_series_info bodies live in prefs under a key that
+     * embeds the source fingerprint — change the account and the
+     * old panel's series info stops resolving immediately (the
+     * same guard the catalogues use). Bodies are the panel's own
+     * JSON (ids/titles/extensions) — no credentials inside.
+     */
+    private fun seriesInfoKey(ctx: Context, seriesId: Long): String =
+        "iptv_series_info_" + fingerprint(ctx) + "_" + seriesId
+
+    /** The cached series info for [seriesId], parsed; null when never fetched. Never touches the network. */
+    fun cachedSeriesInfo(ctx: Context, seriesId: Long): IptvLogic.SeriesInfo? {
+        val raw = try {
+            prefs(ctx).getString(seriesInfoKey(ctx, seriesId), null)
+        } catch (e: Exception) {
+            null
+        }
+        return IptvLogic.parseSeriesInfo(raw, seriesId)
+    }
+
+    /**
+     * get_series_info with the cache in front: cache hit → the
+     * callback fires (on the main thread) at once; miss → a
+     * background fetch, the body is cached, then the callback
+     * fires with the parse (null on any failure — auth, HTTP,
+     * transport, malformed). Duplicate concurrent fetches for the
+     * same series are harmless (the store is idempotent).
+     */
+    fun fetchSeriesInfoAsync(
+        ctx: Context,
+        seriesId: Long,
+        onResult: (IptvLogic.SeriesInfo?) -> Unit
+    ) {
+        val appCtx = ctx.applicationContext
+        cachedSeriesInfo(appCtx, seriesId)?.let { info ->
+            Handler(Looper.getMainLooper()).post {
+                try { onResult(info) } catch (e: Exception) {
+                    // A caller's UI update must never kill the poster.
+                }
+            }
+            return
+        }
+        thread(name = "mizan-iptv-series-info") {
+            var parsed: IptvLogic.SeriesInfo? = null
+            try {
+                val (json, _) = fetchSeriesInfoBlocking(appCtx, seriesId)
+                if (json != null) {
+                    try {
+                        prefs(appCtx).edit()
+                            .putString(seriesInfoKey(appCtx, seriesId), json).apply()
+                    } catch (e: Exception) {
+                        // Caching is best-effort; the fetch result still counts.
+                    }
+                    parsed = IptvLogic.parseSeriesInfo(json, seriesId)
+                }
+            } catch (e: Exception) {
+                Prefs.noteError(appCtx, "iptvSeriesInfo", sanitized(e))
+            }
+            Handler(Looper.getMainLooper()).post {
+                try { onResult(parsed) } catch (e: Exception) {
+                    // A caller's UI update must never kill the poster.
+                }
+            }
+        }
+    }
+
     /** get_short_epg for one channel (background thread): raw JSON or null. */
     fun fetchShortEpgBlocking(ctx: Context, streamId: Long): String? {
         val acct = account(ctx)
@@ -493,8 +561,23 @@ data class PlayItem(
     val shiftDurationMin: Int = 0,
     /** Xtream live only: the channel's tv_archive flag + EPG id (catch-up, §20.10). */
     val tvArchive: Int = 0,
-    val epgId: String = ""
+    val epgId: String = "",
+    /**
+     * v2.3 Watch auto-mark token: the TRACKER coordinates of this
+     * play (TMDB id + type + season/episode), set only by
+     * Watch-initiated plays. When the play completes (ended or
+     * ≥90% watched), the player hands the item to
+     * [PlayQueue.completionHandler], which queues the tracker's
+     * mark_watched. Plain IPTV plays leave these empty and never
+     * auto-mark. Ids only — no credentials, nothing sensitive.
+     */
+    val markTmdbId: Long = 0L,
+    val markType: String = "",
+    val markSeason: Int = 0,
+    val markEpisode: Int = 0
 ) {
+    /** True when this play carries tracker coordinates to auto-mark on completion. */
+    val hasMarkToken: Boolean get() = markTmdbId > 0L
     /** Resume-store identity (live/shift items never resume). */
     val resumeKey: String get() = IptvLogic.resumeKey(kind, source, id)
     val seekable: Boolean
@@ -515,6 +598,16 @@ object PlayQueue {
 
     @Volatile
     var index: Int = 0
+
+    /**
+     * v2.3: invoked by the player (with itself as the Activity)
+     * when a token-carrying play completes — see [PlayItem]'s
+     * mark fields. Set by data/WatchPlay on every Watch launch;
+     * the handler itself ignores tokenless items, so a later plain
+     * IPTV play can never auto-mark by accident.
+     */
+    @Volatile
+    var completionHandler: ((android.app.Activity, PlayItem) -> Unit)? = null
 
     fun set(list: List<PlayItem>, startIndex: Int) {
         items = list

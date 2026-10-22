@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-22 17:28 UTC
+Date: 2026-10-22 18:02 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -85,6 +85,19 @@ XMLTV parser (timezone offsets, entities, CDATA), now/next +
 progress at a fixed clock, short-EPG base64 titles, category
 pattern-locks (adult markers, stamp/grace rules), and the
 iptv status classification + diagnostics line (spec S20).
+
+Note (v2.3): the Watch home style joins the picker. Section 32's
+value-list check is updated in place to [tv, tracker, iptv,
+watch] and gains a watch-codec check — the only v2.2 check
+changed, because the picker's contents legitimately grew.
+New section 38 — Watch matching (core/WatchMatch): title
+normalization (punctuation, articles, case, year extraction),
+exact-beats-fuzzy, year tie-breaks, ambiguity -> possible,
+no-match, episode resolution from series-info fixtures
+(missing season/episode -> unresolved), the match-cache
+fingerprint + codec, the auto-mark decision (ended/90% fires
+once, partial/tokenless never), and the badge/hero-label/
+diagnostics models (spec S21).
 
 ```
 PASS  neverlist: gms is never
@@ -421,7 +434,8 @@ PASS  redditstatus: failure summary names the last result
 PASS  homestyle: missing/garbage decodes to tv
 PASS  homestyle: saved ipad migrates to tv (v2.2 removal)
 PASS  homestyle: tracker and iptv survive the codec
-PASS  homestyle: value list is tv, tracker, iptv (the Settings picker order)
+PASS  homestyle: value list is tv, tracker, iptv, watch (the Settings picker order)
+PASS  homestyle: watch survives the codec (v2.3)
 PASS  homestyle: root reorder permutes only the root slots
 PASS  homestyle: root reorder keeps nesting intact
 PASS  homestyle: root reorder with the current order is a no-op
@@ -618,5 +632,26 @@ PASS  iptv: hiddenKeys composes the decision over a category list
 PASS  iptv: status classify precedence ? unconfigured, data beats auth, auth, empty, error
 PASS  iptv: diag line carries counts + time, never credentials
 PASS  iptv: empty-state lines per kind
-RESULT: 530 passed, 0 failed, 530 total
+PASS  watch: normalization strips punctuation/articles/case and collapses space
+PASS  watch: splitYear takes bracketed / trailing / leading years only
+PASS  watch: keyOf prefers a known year over the title token
+PASS  watch: exact normalized match wins, unique + year agree = exact
+PASS  watch: punctuation/case variant still exact-matches
+PASS  watch: year breaks a same-name tie (remakes)
+PASS  watch: ambiguous same-name (no usable year) picks first, flagged possible
+PASS  watch: year conflict (both known, different) is possible, not exact
+PASS  watch: fuzzy tier (word-boundary prefix) matches but is only possible
+PASS  watch: exact tier beats the fuzzy tier outright
+PASS  watch: no close title -> no match (never a forced guess)
+PASS  watch: matchAll keys by tmdbId and skips unmatched
+PASS  watch: episode resolution finds id + extension
+PASS  watch: missing season / missing episode resolve to null (fail-open)
+PASS  watch: fingerprint is stable for same inputs, moves on catalogue or tracker change
+PASS  watch: match codec round-trips ids + flags, skips garbage, stores no titles
+PASS  watch: auto-mark fires on ended (even at low position)
+PASS  watch: auto-mark fires at exactly 90%, not at 89%
+PASS  watch: auto-mark never fires twice, never tokenless, never on a partial watch
+PASS  watch: badge only when matched; hero labels name the episode, movies plain
+PASS  watch: diag line is counts-only
+RESULT: 552 passed, 0 failed, 552 total
 ```

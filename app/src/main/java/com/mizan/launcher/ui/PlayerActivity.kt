@@ -22,6 +22,7 @@ import android.widget.VideoView
 import com.mizan.launcher.core.Design
 import com.mizan.launcher.core.IptvEpg
 import com.mizan.launcher.core.IptvLogic
+import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.data.IptvClient
 import com.mizan.launcher.data.PlayItem
 import com.mizan.launcher.data.PlayQueue
@@ -68,6 +69,11 @@ class PlayerActivity : Activity() {
         private const val X_SHIFT_DUR = "shift_dur"
         private const val X_ARCHIVE = "tv_archive"
         private const val X_EPGID = "epg_id"
+        // v2.3: the Watch auto-mark token (tracker coordinates).
+        private const val X_MARK_ID = "mark_tmdb_id"
+        private const val X_MARK_TYPE = "mark_type"
+        private const val X_MARK_S = "mark_season"
+        private const val X_MARK_E = "mark_episode"
 
         /** Launch intent for one item; the zap queue is set separately via PlayQueue. */
         fun intent(ctx: Context, item: PlayItem): Intent {
@@ -86,6 +92,10 @@ class PlayerActivity : Activity() {
             i.putExtra(X_SHIFT_DUR, item.shiftDurationMin)
             i.putExtra(X_ARCHIVE, item.tvArchive)
             i.putExtra(X_EPGID, item.epgId)
+            i.putExtra(X_MARK_ID, item.markTmdbId)
+            i.putExtra(X_MARK_TYPE, item.markType)
+            i.putExtra(X_MARK_S, item.markSeason)
+            i.putExtra(X_MARK_E, item.markEpisode)
             return i
         }
 
@@ -103,7 +113,11 @@ class PlayerActivity : Activity() {
             shiftStartMs = intent.getLongExtra(X_SHIFT_START, 0L),
             shiftDurationMin = intent.getIntExtra(X_SHIFT_DUR, 0),
             tvArchive = intent.getIntExtra(X_ARCHIVE, 0),
-            epgId = intent.getStringExtra(X_EPGID) ?: ""
+            epgId = intent.getStringExtra(X_EPGID) ?: "",
+            markTmdbId = intent.getLongExtra(X_MARK_ID, 0L),
+            markType = intent.getStringExtra(X_MARK_TYPE) ?: "",
+            markSeason = intent.getIntExtra(X_MARK_S, 0),
+            markEpisode = intent.getIntExtra(X_MARK_E, 0)
         )
     }
 
@@ -120,11 +134,14 @@ class PlayerActivity : Activity() {
     private var currentUrl: String? = null
     private var pendingSeekMs: Long = 0L
     private var prepared = false
+    /** v2.3: the Watch auto-mark fires at most once per played item. */
+    private var markFired = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val hideOverlay = Runnable { overlay.visibility = View.GONE }
     private val saveTick = object : Runnable {
         override fun run() {
+            maybeAutoMark(ended = false)
             saveResume()
             handler.postDelayed(this, 5_000L)
         }
@@ -176,7 +193,10 @@ class PlayerActivity : Activity() {
             }
             video.start()
         }
-        video.setOnCompletionListener { clearResume() }
+        video.setOnCompletionListener {
+            maybeAutoMark(ended = true)
+            clearResume()
+        }
         video.setOnErrorListener { _, _, _ ->
             showError()
             true
@@ -192,6 +212,7 @@ class PlayerActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        maybeAutoMark(ended = false)
         saveResume()
     }
 
@@ -207,6 +228,7 @@ class PlayerActivity : Activity() {
     private fun startItem(newItem: PlayItem) {
         saveResume() // for the item being replaced (zap), if any
         item = newItem
+        markFired = false
         prepared = false
         hidePanels()
         titleView.text = newItem.title
@@ -255,6 +277,29 @@ class PlayerActivity : Activity() {
             prefs.setIptvResumeList(IptvLogic.withResume(prefs.iptvResumeList(), entry))
         } catch (e: Exception) {
             // Resume is best-effort bookkeeping; never disturb playback.
+        }
+    }
+
+    /**
+     * v2.3 Watch auto-mark: when a token-carrying play ends or
+     * crosses ≥90% (the decision is core/WatchMatch's), hand the
+     * item to the completion handler data/WatchPlay registered —
+     * it queues the tracker's mark_watched. The player itself
+     * knows nothing about the tracker; tokenless (plain IPTV)
+     * plays short-circuit here, and each item fires at most once.
+     */
+    private fun maybeAutoMark(ended: Boolean) {
+        val cur = item ?: return
+        if (markFired || !cur.hasMarkToken) return
+        try {
+            val pos = try { video.currentPosition.toLong() } catch (e: Exception) { 0L }
+            val dur = try { video.duration.toLong() } catch (e: Exception) { 0L }
+            if (WatchMatch.shouldAutoMark(true, false, ended, pos, dur)) {
+                markFired = true
+                PlayQueue.completionHandler?.invoke(this, cur)
+            }
+        } catch (e: Exception) {
+            // Auto-mark is bookkeeping; never disturb playback.
         }
     }
 

@@ -987,7 +987,7 @@ class SettingsActivity : Activity() {
         // sits next to the Home style picker it belongs to. The hero
         // is always first when shown; the other sections reorder.
         content.addView(header("Tracker sections"))
-        content.addView(info("Only applies when Home style is Tracker. A section with nothing in it never appears, even when switched on. For You also needs TV Shows & Movies Tracker 1.14.4 or newer."))
+        content.addView(info("Only applies when Home style is Tracker or Watch. A section with nothing in it never appears, even when switched on. For You also needs TV Shows & Movies Tracker 1.14.4 or newer."))
         val sectionsCfg = prefs.trackerSectionsConfig()
         val ts = com.mizan.launcher.core.TrackerSections
         content.addView(toggleRow(
@@ -1033,9 +1033,11 @@ class SettingsActivity : Activity() {
             .setNegativeButton("Cancel", null).show()
     }
 
-    /** The current home style with its one-line description (v1.7, v1.8, v2.2). */
+    /** The current home style with its one-line description (v1.7, v1.8, v2.2, v2.3). */
     private fun homeStyleLabel(): String =
         when {
+            com.mizan.launcher.core.HomeStyle.isWatch(prefs.homeStyle) ->
+                "Watch — Tracker view + IPTV playback of your titles"
             com.mizan.launcher.core.HomeStyle.isIptv(prefs.homeStyle) ->
                 "IPTV — live TV, movies & series from your IPTV account"
             com.mizan.launcher.core.HomeStyle.isTracker(prefs.homeStyle) ->
@@ -1055,12 +1057,14 @@ class SettingsActivity : Activity() {
         val keys = listOf(
             com.mizan.launcher.core.HomeStyle.TV,
             com.mizan.launcher.core.HomeStyle.TRACKER,
-            com.mizan.launcher.core.HomeStyle.IPTV
+            com.mizan.launcher.core.HomeStyle.IPTV,
+            com.mizan.launcher.core.HomeStyle.WATCH
         )
         val labels = arrayOf(
             "TV — rows of apps under the hero bar",
             "Tracker — Netflix-style view of your shows & movies (needs TV Shows & Movies Tracker)",
-            "IPTV — live TV, movies & series (set up your account in Settings › IPTV)"
+            "IPTV — live TV, movies & series (set up your account in Settings › IPTV)",
+            "Watch — Tracker view + IPTV playback of your titles (needs the tracker AND an IPTV account)"
         )
         val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
         AlertDialog.Builder(this).setTitle("Home style")
@@ -1356,6 +1360,13 @@ class SettingsActivity : Activity() {
                     prefs.iptvFavoriteList().size,
                     com.mizan.launcher.data.IptvClient.epgChannelCount(this@SettingsActivity),
                     iTime
+                )
+            )
+            // v2.3: the watch: line — match coverage + resolved
+            // episodes, counts only (ids/titles never print).
+            append(
+                "\nwatch: " + com.mizan.launcher.core.WatchMatch.diagText(
+                    com.mizan.launcher.data.WatchPlay.stats(this@SettingsActivity)
                 )
             )
             val sbCfg = layout.statusBar
