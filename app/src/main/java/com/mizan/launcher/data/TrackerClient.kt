@@ -46,14 +46,18 @@ object TrackerClient {
 
     private val BASE: Uri = Uri.parse("content://$AUTHORITY")
 
-    /** One consistent read of all four snapshots (+ provider stamps). */
+    /** One consistent read of all the snapshots (+ provider stamps). */
     data class Snapshots(
         val upNext: List<TrackerLogic.UpNextItem>,
         val cont: List<TrackerLogic.ContinueItem>,
         val movies: List<TrackerLogic.MovieItem>,
         val tracked: List<TrackerLogic.TrackedShow>,
+        /** v2.0: the /foryou picks (tracker ≥ 1.14.4; empty on older). */
+        val forYou: List<TrackerLogic.ForYouPick> = emptyList(),
         /** The provider's `updated` stamp (widget-refresh time), 0 if never. */
         val updated: Long,
+        /** The /foryou mirror's own `updated` stamp (overlay pruning), 0 if never. */
+        val forYouUpdated: Long = 0L,
         /** When the launcher last fetched (epoch ms), 0 if never. */
         val fetchedAt: Long
     ) {
@@ -63,7 +67,7 @@ object TrackerClient {
                 movies.isNotEmpty() || tracked.isNotEmpty()
 
         companion object {
-            val EMPTY = Snapshots(emptyList(), emptyList(), emptyList(), emptyList(), 0L, 0L)
+            val EMPTY = Snapshots(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), 0L, 0L, 0L)
         }
     }
 
@@ -75,6 +79,8 @@ object TrackerClient {
     private const val K_CONTINUE = "tracker_cache_continue"
     private const val K_MOVIES = "tracker_cache_movies"
     private const val K_TRACKED = "tracker_cache_tracked"
+    private const val K_FORYOU = "tracker_cache_foryou"
+    private const val K_FORYOU_UPDATED = "tracker_cache_foryou_updated"
     private const val K_UPDATED = "tracker_cache_updated"
     private const val K_FETCHED = "tracker_cache_fetched"
     /** v1.9: the classified outcome of the last fetch (TrackerStatus.Kind name). */
@@ -139,7 +145,9 @@ object TrackerClient {
                 cont = TrackerLogic.parseContinue(p.getString(K_CONTINUE, null)),
                 movies = TrackerLogic.parseMovies(p.getString(K_MOVIES, null)),
                 tracked = TrackerLogic.parseTrackedShows(p.getString(K_TRACKED, null)),
+                forYou = TrackerLogic.parseForYou(p.getString(K_FORYOU, null)),
                 updated = p.getLong(K_UPDATED, 0L),
+                forYouUpdated = p.getLong(K_FORYOU_UPDATED, 0L),
                 fetchedAt = p.getLong(K_FETCHED, 0L)
             )
         } catch (e: Exception) {
@@ -175,7 +183,8 @@ object TrackerClient {
             val p = prefs(appCtx)
             listOf(
                 p.getString(K_UPNEXT, null), p.getString(K_CONTINUE, null),
-                p.getString(K_MOVIES, null), p.getString(K_TRACKED, null)
+                p.getString(K_MOVIES, null), p.getString(K_TRACKED, null),
+                p.getString(K_FORYOU, null)
             )
         } catch (e: Exception) {
             null
@@ -199,12 +208,16 @@ object TrackerClient {
                     queryPath(appCtx, "upnext"),
                     queryPath(appCtx, "continue"),
                     queryPath(appCtx, "movies"),
-                    queryPath(appCtx, "tracked")
+                    queryPath(appCtx, "tracked"),
+                    // v2.0: older trackers (< 1.14.4) have no /foryou
+                    // path — the query just yields nothing and the
+                    // For You section stays absent (fail-open).
+                    queryPath(appCtx, "foryou")
                 )
                 val now = System.currentTimeMillis()
                 val editor = prefs(appCtx).edit()
                 editor.putLong(K_FETCHED, now)
-                val keys = listOf(K_UPNEXT, K_CONTINUE, K_MOVIES, K_TRACKED)
+                val keys = listOf(K_UPNEXT, K_CONTINUE, K_MOVIES, K_TRACKED, K_FORYOU)
                 var updated = 0L
                 var anyAnswered = false
                 var security = false
@@ -214,6 +227,9 @@ object TrackerClient {
                     anyAnswered = true
                     editor.putString(keys[i], json)
                     updated = maxOf(updated, r.updated)
+                    if (keys[i] == K_FORYOU && r.updated > 0) {
+                        editor.putLong(K_FORYOU_UPDATED, r.updated)
+                    }
                 }
                 if (updated > 0) editor.putLong(K_UPDATED, updated)
                 editor.apply()
@@ -235,7 +251,8 @@ object TrackerClient {
                 }
                 val after = listOf(
                     results[0].json ?: before?.get(0), results[1].json ?: before?.get(1),
-                    results[2].json ?: before?.get(2), results[3].json ?: before?.get(3)
+                    results[2].json ?: before?.get(2), results[3].json ?: before?.get(3),
+                    results[4].json ?: before?.get(4)
                 )
                 if (after != before || kind != kindBefore) {
                     Handler(Looper.getMainLooper()).post {
@@ -281,28 +298,65 @@ object TrackerClient {
     }
 
     /**
-     * Queue a mark-watched action with the tracker (fire-and-forget
-     * on a background thread). The tracker applies it at its next
-     * boot; the launcher hides the item locally via its marked-set in
-     * the meantime. Movies pass season/episode 0 (per contract).
+     * Queue an action with the tracker (fire-and-forget on a
+     * background thread). The tracker applies queued actions at its
+     * next boot; the launcher reflects them locally in the meantime
+     * (marked-set / For You overlay). Contract: LAUNCHER_SYNC.md —
+     * call(method, arg = tmdb id as string, extras).
      */
-    fun markWatched(ctx: Context, tmdbId: Long, type: String, season: Int, episode: Int) {
+    private fun callAction(ctx: Context, method: String, tmdbId: Long, extras: Bundle) {
         val appCtx = ctx.applicationContext
-        thread(name = "mizan-tracker-mark") {
+        thread(name = "mizan-tracker-call") {
             try {
-                val extras = Bundle()
-                extras.putString("type", if (type == "movie") "movie" else "tv")
-                extras.putInt("season", season)
-                extras.putInt("episode", episode)
-                appCtx.contentResolver.call(BASE, "mark_watched", tmdbId.toString(), extras)
+                appCtx.contentResolver.call(BASE, method, tmdbId.toString(), extras)
             } catch (e: SecurityException) {
                 // The read permission is missing, so writes are too —
                 // record the state the diagnostics line reports (v1.9).
                 saveKind(appCtx, TrackerStatus.Kind.PERMISSION)
-                Prefs.noteError(appCtx, "trackerMark", e)
+                Prefs.noteError(appCtx, "trackerCall:$method", e)
             } catch (e: Exception) {
-                Prefs.noteError(appCtx, "trackerMark", e)
+                Prefs.noteError(appCtx, "trackerCall:$method", e)
             }
         }
+    }
+
+    /**
+     * Queue a mark-watched action. Movies pass season/episode 0
+     * (per contract).
+     */
+    fun markWatched(ctx: Context, tmdbId: Long, type: String, season: Int, episode: Int) {
+        val extras = Bundle()
+        extras.putString("type", if (type == "movie") "movie" else "tv")
+        extras.putInt("season", season)
+        extras.putInt("episode", episode)
+        callAction(ctx, "mark_watched", tmdbId, extras)
+    }
+
+    /**
+     * v2.0: queue an add_title action from a For You pick ("Add to my
+     * list"). The tracker adds the title as planned at its next boot.
+     * [releaseDate] is "" when unknown — For You picks carry no date.
+     */
+    fun addTitle(
+        ctx: Context,
+        tmdbId: Long,
+        type: String,
+        title: String,
+        poster: String,
+        releaseDate: String
+    ) {
+        val extras = Bundle()
+        extras.putString("type", if (type == "movie") "movie" else "tv")
+        extras.putString("title", title)
+        extras.putString("poster", poster)
+        extras.putString("releaseDate", releaseDate)
+        callAction(ctx, "add_title", tmdbId, extras)
+    }
+
+    /** v2.0: queue a dismiss_foryou action ("Not interested"). */
+    fun dismissForYou(ctx: Context, tmdbId: Long, type: String) {
+        val extras = Bundle()
+        extras.putString("type", if (type == "movie") "movie" else "tv")
+        callAction(ctx, "dismiss_foryou", tmdbId, extras)
     }
 }

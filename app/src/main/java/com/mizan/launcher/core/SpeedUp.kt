@@ -12,7 +12,7 @@ package com.mizan.launcher.core
  *   keep what it needs to run),
  * - system-flagged apps are excluded (killing framework processes is
  *   both useless and disruptive),
- * - Mizan Launcher itself is excluded,
+ * - Sreeb itself is excluded,
  * - the current foreground app (when the caller could determine it)
  *   is excluded — the user may have just come from it.
  * What remains is ordinary user apps' background processes; Android

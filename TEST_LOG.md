@@ -1,7 +1,7 @@
-# Mizan Launcher — headless test log
+# Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-22 02:46 UTC
+Date: 2026-10-22 03:28 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -29,6 +29,15 @@ expects all three), snapshot parsing, hero selection + cycle,
 countdown labels, continue merge/dedupe, movie ordering,
 airing-today + pill, marked-set filter + convergence prune,
 tracker search (spec section 16). All v1.7 tests carry over.
+
+Note (v2.0): the app is rebranded Sreeb (display name only;
+package/signing/internal names unchanged). New section — hero
+rotator, tracker sections codec + compose, For You parse/filter/
+overlay convergence, app categories, most-used ranking, artwork
+codec + presets, quick-settings table, live TV state mapping,
+Netflix design tokens + poster metrics (spec section 18). The
+section-24 row-normalize expectations grew in place: the row
+set gained mostused (after recents) and livetv (after inputs).
 
 Note (v1.7): new section — home style (codec/default, label
 rule, squircle override), iPad grid composition (apps + root
@@ -282,10 +291,10 @@ PASS  guest: lock switch off means no gate
 PASS  guest: not in guest means no gate
 PASS  guest: personal-to-personal switch is free
 PASS  guest: active flag only for the flagged profile
-PASS  rows: v1.3 order gains recents after favorites
+PASS  rows: stored order gains new rows after their anchors
 PASS  rows: normalize is idempotent
 PASS  rows: custom order preserved, insertions follow their anchors
-PASS  rows: empty order gains both rows at the end
+PASS  rows: empty order gains the inserted rows
 PASS  statusbar: search tile flag round-trips
 PASS  statusbar: v1.3 string decodes with search tile on
 PASS  statusbar: v1.4 default round-trips with search on
@@ -454,5 +463,49 @@ PASS  tracker status: diag NONE without data reads as the empty state
 PASS  tracker status: fallback line ? absent tracker shows NO line
 PASS  tracker status: fallback line ? permission state is actionable
 PASS  tracker status: fallback line ? empty/other/none ask for one tracker open
-RESULT: 403 passed, 0 failed, 403 total
+PASS  netflix: page + brand tokens
+PASS  poster metrics: height is two tile heights, width is 2:3
+PASS  poster metrics: portrait, and follows the size scale
+PASS  rotator: first advance is due one interval out
+PASS  rotator: tick at the due time advances and re-times
+PASS  rotator: advance wraps past the last candidate
+PASS  rotator: fewer than 2 candidates never rotates
+PASS  rotator: focus held blocks a late tick
+PASS  rotator: release resumes after the resume delay, not at once
+PASS  rotator: Next advances immediately and resets the timer
+PASS  rotator: a shrunk candidate list clamps the index
+PASS  rotator: initial index is clamped into range
+PASS  sections: default config composes the canonical order
+PASS  sections: codec round-trips a custom config
+PASS  sections: garbage decodes to defaults
+PASS  sections: a hidden hero drops only the hero
+PASS  sections: move up swaps with the previous row
+PASS  sections: moves at the edges and for the hero are no-ops
+PASS  sections: compose follows the configured order, hero first
+PASS  sections: hidden + data-empty sections are both skipped
+PASS  sections: unknown keys are dropped by normalize
+PASS  foryou: picks parse with the contract shape (whyGenres are names)
+PASS  foryou: malformed JSON yields no picks
+PASS  foryou: rating text is one decimal, absent when zero
+PASS  foryou: already-tracked picks (tv + movie) are dropped
+PASS  foryou: overlay-dismissed picks are dropped
+PASS  foryou: the row is capped
+PASS  foryou: overlay codec round-trips
+PASS  foryou: a snapshot older than the mark retires nothing
+PASS  foryou: an add retires once the title is tracked
+PASS  foryou: an add also retires when the pick leaves the snapshot
+PASS  foryou: a dismiss retires only when the pick leaves the snapshot
+PASS  categories: curated packages win over the manifest category
+PASS  categories: manifest category table
+PASS  categories: sections render in order, non-empty only, alpha inside
+PASS  mostused: count desc, recency breaks count ties, name breaks recency ties
+PASS  mostused: hidden + non-launchable excluded, limit respected, zero counts dropped
+PASS  artwork: 12 presets with names + colours, indices coerced
+PASS  artwork: codec round-trips presets and escaped URLs
+PASS  artwork: garbage decodes empty; with() sets and removes
+PASS  quicksettings: six system targets then Sreeb Settings, actions distinct
+PASS  quicksettings: unresolvable targets are filtered, Sreeb Settings stays
+PASS  livetv: state precedence (feature, security, failure, count)
+PASS  livetv: diagnostics wording
+RESULT: 447 passed, 0 failed, 447 total
 ```

@@ -509,4 +509,159 @@ object TrackerLogic {
         }
         return prefix + substring
     }
+
+    // ------------------------------------------------------------ for you (v2.0)
+
+    /**
+     * One /foryou pick (tracker ≥ 1.14.4; contract LAUNCHER_SYNC.md).
+     * The pick shape is {id, type, title, poster_path, vote_average,
+     * reason, whyGenres, score}: NO year and NO genre ids — [whyGenres]
+     * already carries genre NAMES. [poster] is a TMDB path (leading
+     * "/"), resolved through data/TmdbImages like every other poster.
+     */
+    data class ForYouPick(
+        val id: Long,
+        val type: String,
+        val title: String,
+        val poster: String,
+        val voteAverage: Double,
+        val reason: String,
+        val whyGenres: List<String>,
+        val score: Double
+    ) {
+        fun key(): String = "$type|$id"
+    }
+
+    fun parseForYou(json: String?): List<ForYouPick> {
+        val arr = JsonMini.parse(json).asArr() ?: return emptyList()
+        val out = ArrayList<ForYouPick>()
+        for (raw in arr) {
+            val o = raw.asObj() ?: continue
+            val id = num(o["id"])
+            val title = str(o, "title")
+            if (id <= 0 || title.isBlank()) continue
+            val genres = o["whyGenres"].asArr()
+                ?.mapNotNull { it.asStr() }
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
+            out.add(
+                ForYouPick(
+                    id = id,
+                    type = str(o, "type").ifBlank { "tv" },
+                    title = title,
+                    poster = str(o, "poster_path"),
+                    voteAverage = (o["vote_average"] as? Number)?.toDouble() ?: 0.0,
+                    reason = str(o, "reason"),
+                    whyGenres = genres,
+                    score = (o["score"] as? Number)?.toDouble() ?: 0.0
+                )
+            )
+        }
+        return out
+    }
+
+    /** "★ 7.4" for a pick's rating; null when there is no rating to show. */
+    fun ratingText(voteAverage: Double): String? {
+        if (voteAverage <= 0.0) return null
+        val rounded = Math.round(voteAverage * 10) / 10.0
+        return "★ " + String.format(java.util.Locale.US, "%.1f", rounded)
+    }
+
+    /**
+     * One local For You overlay entry: the user tapped "Add to my list"
+     * ([added] = true → an add_title action is queued with the tracker)
+     * or "Not interested" ([added] = false → dismiss_foryou). The card
+     * leaves the row immediately either way; [pruneForYouOverlay] drops
+     * the entry once the tracker's snapshots have converged — the same
+     * eventually-consistent pattern as the marked-set.
+     */
+    data class ForYouMark(
+        val id: Long,
+        val type: String,
+        val added: Boolean,
+        val at: Long
+    ) {
+        fun key(): String = "$type|$id"
+    }
+
+    fun encodeForYouOverlay(marks: List<ForYouMark>): String =
+        marks.joinToString("\n") {
+            "${it.id}|${it.type}|${if (it.added) "add" else "dismiss"}|${it.at}"
+        }
+
+    fun decodeForYouOverlay(raw: String?): List<ForYouMark> {
+        if (raw.isNullOrBlank()) return emptyList()
+        val out = ArrayList<ForYouMark>()
+        for (line in raw.split("\n")) {
+            val p = line.trim().split("|")
+            if (p.size != 4) continue
+            val id = p[0].toLongOrNull() ?: continue
+            val at = p[3].toLongOrNull() ?: continue
+            if (id <= 0) continue
+            out.add(
+                ForYouMark(
+                    id,
+                    if (p[1] == "movie") "movie" else "tv",
+                    p[2] == "add",
+                    at
+                )
+            )
+        }
+        return out
+    }
+
+    /** Add (or refresh) one overlay entry; newest action wins per title. */
+    fun withForYouMark(marks: List<ForYouMark>, mark: ForYouMark): List<ForYouMark> =
+        marks.filter { it.key() != mark.key() } + mark
+
+    /**
+     * The For You row: snapshot picks minus anything already tracked
+     * (by type+id, shows and movies), minus anything the local overlay
+     * has added or dismissed, capped at [cap].
+     */
+    fun filterForYou(
+        picks: List<ForYouPick>,
+        tracked: List<TrackedShow>,
+        movies: List<MovieItem>,
+        overlay: List<ForYouMark>,
+        cap: Int = 20
+    ): List<ForYouPick> {
+        val trackedKeys = HashSet<String>()
+        for (show in tracked) trackedKeys.add("tv|${show.tmdbId}")
+        for (movie in movies) trackedKeys.add("movie|${movie.tmdbId}")
+        val overlayKeys = overlay.map { it.key() }.toHashSet()
+        return picks.filter { it.key() !in trackedKeys && it.key() !in overlayKeys }
+            .take(cap.coerceAtLeast(0))
+    }
+
+    /**
+     * Convergence for the overlay, mirroring [pruneMarked]: only a
+     * snapshot fresher than the mark may retire it.
+     *  - an "add" retires when the title shows up in tracked/movies
+     *    (the tracker applied add_title) OR when the pick leaves the
+     *    /foryou snapshot (the mirror recomputed without it);
+     *  - a "dismiss" retires when the pick leaves the /foryou snapshot.
+     */
+    fun pruneForYouOverlay(
+        marks: List<ForYouMark>,
+        picks: List<ForYouPick>,
+        tracked: List<TrackedShow>,
+        movies: List<MovieItem>,
+        snapshotUpdated: Long
+    ): List<ForYouMark> {
+        if (marks.isEmpty()) return marks
+        val pickKeys = picks.map { it.key() }.toHashSet()
+        val trackedKeys = HashSet<String>()
+        for (show in tracked) trackedKeys.add("tv|${show.tmdbId}")
+        for (movie in movies) trackedKeys.add("movie|${movie.tmdbId}")
+        return marks.filter { mark ->
+            if (snapshotUpdated <= mark.at) {
+                true // snapshot predates the action — nothing has converged yet
+            } else if (mark.added) {
+                mark.key() !in trackedKeys && mark.key() in pickKeys
+            } else {
+                mark.key() in pickKeys
+            }
+        }
+    }
 }

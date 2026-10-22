@@ -69,7 +69,7 @@ object TrackerStatus {
         timeText: String
     ): String = when (kind) {
         Kind.NOT_INSTALLED -> "not installed"
-        Kind.PERMISSION -> "permission blocked — updating or reinstalling Mizan Launcher fixes it"
+        Kind.PERMISSION -> "permission blocked — updating or reinstalling Sreeb fixes it"
         Kind.EMPTY -> "no data yet (open the tracker once)"
         Kind.OTHER -> "not answering — open the tracker once"
         Kind.NONE -> if (hasData) {
@@ -88,7 +88,7 @@ object TrackerStatus {
     fun emptyLine(kind: Kind, installed: Boolean): String? = when {
         !installed || kind == Kind.NOT_INSTALLED -> null
         kind == Kind.PERMISSION ->
-            "Tracker data is blocked — updating or reinstalling Mizan Launcher fixes the permission"
+            "Tracker data is blocked — updating or reinstalling Sreeb fixes the permission"
         else -> "Open TV Shows & Movies Tracker once so it can refresh"
     }
 }

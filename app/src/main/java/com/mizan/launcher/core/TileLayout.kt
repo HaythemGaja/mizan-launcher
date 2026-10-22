@@ -89,6 +89,26 @@ object TileLayout {
     }
 
     /**
+     * v2.0 portrait poster-card metrics (Tracker view): the card stands
+     * [Design.POSTER_HEIGHT_TILES] uniform-tile heights tall and takes
+     * its width from the 2:3 poster ratio, so a TMDB poster fills it
+     * edge-to-edge at CENTER_CROP with no letterbox. Derived from
+     * [tileMetrics] so the profile size key and column count scale
+     * posters exactly like tiles.
+     */
+    fun posterMetrics(
+        screenWidthPx: Int,
+        density: Float,
+        sizeKey: String,
+        columns: Int
+    ): Metrics {
+        val t = tileMetrics(screenWidthPx, density, sizeKey, columns)
+        val heightPx = (t.tileHeightPx * Design.POSTER_HEIGHT_TILES).toInt()
+        val widthPx = heightPx * 2 / 3
+        return Metrics(widthPx, heightPx, t.iconPx)
+    }
+
+    /**
      * The label rule: a tile's name is visible ONLY while that tile has
      * focus. Kept as a named function so the sim can pin the rule and
      * the UI has exactly one place that decides it.

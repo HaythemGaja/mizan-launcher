@@ -38,10 +38,17 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   app/src/main/java/com/mizan/launcher/core/ProfileNames.kt \
   app/src/main/java/com/mizan/launcher/core/UnlockGrace.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerStatus.kt \
+  app/src/main/java/com/mizan/launcher/core/HeroRotator.kt \
+  app/src/main/java/com/mizan/launcher/core/TrackerSections.kt \
+  app/src/main/java/com/mizan/launcher/core/AppCategories.kt \
+  app/src/main/java/com/mizan/launcher/core/MostUsed.kt \
+  app/src/main/java/com/mizan/launcher/core/ArtworkStore.kt \
+  app/src/main/java/com/mizan/launcher/core/QuickSettings.kt \
+  app/src/main/java/com/mizan/launcher/core/LiveTv.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
-  echo "# Mizan Launcher — headless test log"
+  echo "# Sreeb (Mizan Launcher) — headless test log"
   echo
   echo "Command: \`sh sim/run_sim.sh\` (kotlinc -> JVM sim over core/ pure logic)"
   echo "Date: $(date -u '+%Y-%m-%d %H:%M UTC')"
@@ -72,6 +79,15 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   echo "countdown labels, continue merge/dedupe, movie ordering,"
   echo "airing-today + pill, marked-set filter + convergence prune,"
   echo "tracker search (spec section 16). All v1.7 tests carry over."
+  echo
+  echo "Note (v2.0): the app is rebranded Sreeb (display name only;"
+  echo "package/signing/internal names unchanged). New section — hero"
+  echo "rotator, tracker sections codec + compose, For You parse/filter/"
+  echo "overlay convergence, app categories, most-used ranking, artwork"
+  echo "codec + presets, quick-settings table, live TV state mapping,"
+  echo "Netflix design tokens + poster metrics (spec section 18). The"
+  echo "section-24 row-normalize expectations grew in place: the row"
+  echo "set gained mostused (after recents) and livetv (after inputs)."
   echo
   echo "Note (v1.7): new section — home style (codec/default, label"
   echo "rule, squircle override), iPad grid composition (apps + root"

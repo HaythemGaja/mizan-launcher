@@ -41,6 +41,14 @@ import com.mizan.launcher.core.RedditCacheCodec
 import com.mizan.launcher.core.RedditWallpapers
 import com.mizan.launcher.core.HomeStyle
 import com.mizan.launcher.core.TrackerLogic
+import com.mizan.launcher.core.AppCategories
+import com.mizan.launcher.core.ArtworkStore
+import com.mizan.launcher.core.Design
+import com.mizan.launcher.core.HeroRotator
+import com.mizan.launcher.core.LiveTvLogic
+import com.mizan.launcher.core.MostUsedLogic
+import com.mizan.launcher.core.QuickSettings
+import com.mizan.launcher.core.TrackerSections
 import com.mizan.launcher.core.StatusBarCodec
 import com.mizan.launcher.core.StatusBarConfig
 import com.mizan.launcher.core.Themes
@@ -883,17 +891,19 @@ fun main() {
     run {
         val old = listOf("favorites", "folders", "continue", "inputs", "apps")
         val normalized = RowOrder.normalize(old)
-        check("rows: v1.3 order gains recents after favorites",
-            normalized == listOf("favorites", "recents", "folders", "nowplaying", "continue", "inputs", "apps"),
+        // v2.0 (updated in place): the inserted-row set grew — mostused
+        // follows recents, livetv follows inputs (spec §18).
+        check("rows: stored order gains new rows after their anchors",
+            normalized == listOf("favorites", "recents", "mostused", "folders", "nowplaying", "continue", "inputs", "livetv", "apps"),
             normalized.toString())
         check("rows: normalize is idempotent",
             RowOrder.normalize(normalized) == normalized)
         val custom = listOf("apps", "favorites", "folders", "continue", "inputs")
         check("rows: custom order preserved, insertions follow their anchors",
             RowOrder.normalize(custom) ==
-                listOf("apps", "favorites", "recents", "folders", "nowplaying", "continue", "inputs"))
-        check("rows: empty order gains both rows at the end",
-            RowOrder.normalize(emptyList()) == listOf("recents", "nowplaying"))
+                listOf("apps", "favorites", "recents", "mostused", "folders", "nowplaying", "continue", "inputs", "livetv"))
+        check("rows: empty order gains the inserted rows",
+            RowOrder.normalize(emptyList()) == listOf("recents", "mostused", "nowplaying", "livetv"))
         // Status codec: v1.4 writes 6 tile flags; v1.3's 5-flag strings
         // decode with Search ON; the flag itself round-trips.
         val searchOff = StatusBarConfig(showTileSearch = false)
@@ -1766,7 +1776,7 @@ fun main() {
                 ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION, installed = false) == null)
         check("tracker status: fallback line — permission state is actionable",
             ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION, installed = true) ==
-                "Tracker data is blocked — updating or reinstalling Mizan Launcher fixes the permission")
+                "Tracker data is blocked — updating or reinstalling Sreeb fixes the permission")
         check("tracker status: fallback line — empty/other/none ask for one tracker open",
             ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.EMPTY, installed = true) ==
                 "Open TV Shows & Movies Tracker once so it can refresh" &&
@@ -1774,6 +1784,245 @@ fun main() {
                 "Open TV Shows & Movies Tracker once so it can refresh" &&
                 ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.NONE, installed = true) ==
                 "Open TV Shows & Movies Tracker once so it can refresh")
+    }
+
+    // ---------- (35) v2.0: Netflix tokens, hero rotator, tracker sections, For You, categories, most used, artwork, quick settings, live TV ----------
+    run {
+        // --- Design tokens + poster metrics (spec §18) ---
+        check("netflix: page + brand tokens",
+            Design.NETFLIX_BG == 0xFF141414.toInt() && Design.NETFLIX_RED == 0xFFE50914.toInt())
+        val pm1 = TileLayout.posterMetrics(1920, 2f, "standard", 6)
+        val tm1 = TileLayout.tileMetrics(1920, 2f, "standard", 6)
+        check("poster metrics: height is two tile heights, width is 2:3",
+            pm1.tileHeightPx == (tm1.tileHeightPx * Design.POSTER_HEIGHT_TILES).toInt() &&
+                pm1.tileWidthPx == pm1.tileHeightPx * 2 / 3,
+            "poster=${pm1.tileWidthPx}x${pm1.tileHeightPx} tile=${tm1.tileWidthPx}x${tm1.tileHeightPx}")
+        check("poster metrics: portrait, and follows the size scale",
+            pm1.tileHeightPx > pm1.tileWidthPx &&
+                TileLayout.posterMetrics(1920, 2f, "large", 6).tileHeightPx > pm1.tileHeightPx)
+
+        // --- HeroRotator ---
+        val r0 = HeroRotator.initial(0, 3, 1_000L)
+        check("rotator: first advance is due one interval out",
+            r0.dueAt == 1_000L + HeroRotator.INTERVAL_MS && HeroRotator.tick(r0, r0.dueAt - 1) == null)
+        val r1 = HeroRotator.tick(r0, r0.dueAt)
+        check("rotator: tick at the due time advances and re-times",
+            r1 != null && r1.index == 1 && r1.dueAt == r0.dueAt + HeroRotator.INTERVAL_MS)
+        val rWrap = HeroRotator.tick(HeroRotator.initial(2, 3, 0L), HeroRotator.INTERVAL_MS)
+        check("rotator: advance wraps past the last candidate",
+            rWrap != null && rWrap.index == 0)
+        check("rotator: fewer than 2 candidates never rotates",
+            HeroRotator.tick(HeroRotator.initial(0, 1, 0L), 999_999L) == null &&
+                !HeroRotator.canRotate(HeroRotator.initial(0, 0, 0L)))
+        val rHeld = HeroRotator.focusGained(r0)
+        check("rotator: focus held blocks a late tick",
+            HeroRotator.tick(rHeld, r0.dueAt + 60_000L) == null)
+        val rRel = HeroRotator.focusReleased(rHeld, 50_000L)
+        check("rotator: release resumes after the resume delay, not at once",
+            !rRel.focusHeld && rRel.dueAt == 50_000L + HeroRotator.RESUME_MS &&
+                HeroRotator.tick(rRel, rRel.dueAt - 1) == null &&
+                HeroRotator.tick(rRel, rRel.dueAt)?.index == 1)
+        val rNext = HeroRotator.next(r0, 7_000L)
+        check("rotator: Next advances immediately and resets the timer",
+            rNext.index == 1 && rNext.dueAt == 7_000L + HeroRotator.INTERVAL_MS)
+        val rClamp = HeroRotator.withCount(HeroRotator.initial(2, 3, 0L), 2, 100L)
+        check("rotator: a shrunk candidate list clamps the index",
+            rClamp.index == 1 && rClamp.count == 2)
+        check("rotator: initial index is clamped into range",
+            HeroRotator.initial(9, 3, 0L).index == 2 && HeroRotator.initial(-1, 3, 0L).index == 0)
+
+        // --- TrackerSections ---
+        val ts = TrackerSections
+        val defCfg = ts.decode(null)
+        check("sections: default config composes the canonical order",
+            ts.compose(defCfg) { true } == ts.CANONICAL)
+        check("sections: codec round-trips a custom config",
+            ts.decode(ts.encode(ts.normalize(setOf("foryou"), listOf("foryou", "upnext", "continue", "movienight", "favorites", "allapps")))) ==
+                ts.normalize(setOf("foryou"), listOf("foryou", "upnext", "continue", "movienight", "favorites", "allapps")))
+        check("sections: garbage decodes to defaults",
+            ts.decode("nonsense||,,") == TrackerSections.Config() && ts.decode("") == TrackerSections.Config())
+        val noHero = ts.setShown(defCfg, ts.HERO, false)
+        check("sections: a hidden hero drops only the hero",
+            ts.compose(noHero) { true } == ts.CANONICAL.drop(1))
+        val moved = ts.move(defCfg, ts.FORYOU, -1)
+        check("sections: move up swaps with the previous row",
+            moved.order == listOf("upnext", "continue", "foryou", "movienight", "favorites", "allapps"))
+        check("sections: moves at the edges and for the hero are no-ops",
+            ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
+                ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
+                ts.move(defCfg, ts.HERO, 1) == defCfg)
+        val reordered = ts.normalize(emptySet(), listOf("allapps", "upnext"))
+        check("sections: compose follows the configured order, hero first",
+            ts.compose(reordered) { true } ==
+                listOf("hero", "allapps", "upnext", "continue", "movienight", "foryou", "favorites"))
+        check("sections: hidden + data-empty sections are both skipped",
+            ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.MOVIENIGHT } ==
+                listOf("hero", "continue", "foryou", "favorites", "allapps"))
+        check("sections: unknown keys are dropped by normalize",
+            ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
+                ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
+
+        // --- For You: parse, filter, overlay convergence ---
+        val fyJson = """
+            [{"id": 101, "type": "tv", "title": "Slow Horses", "poster_path": "/sh.jpg",
+              "vote_average": 8.24, "reason": "Because you watch Severance",
+              "whyGenres": ["Drama", "Thriller"], "score": 91.5},
+             {"id": 202, "type": "movie", "title": "Dune: Part Two", "poster_path": "/dune.jpg",
+              "vote_average": 8.0, "reason": "Popular with sci-fi fans",
+              "whyGenres": ["Sci-Fi"], "score": 88.0},
+             {"id": 303, "type": "tv", "title": "No Rating Show", "poster_path": "",
+              "vote_average": 0, "reason": "", "whyGenres": [], "score": 10.0}]
+        """.trimIndent()
+        val picks = TrackerLogic.parseForYou(fyJson)
+        check("foryou: picks parse with the contract shape (whyGenres are names)",
+            picks.size == 3 && picks[0].title == "Slow Horses" &&
+                picks[0].whyGenres == listOf("Drama", "Thriller") &&
+                picks[0].poster == "/sh.jpg" && picks[1].type == "movie",
+            picks.toString())
+        check("foryou: malformed JSON yields no picks",
+            TrackerLogic.parseForYou(null).isEmpty() && TrackerLogic.parseForYou("junk").isEmpty())
+        check("foryou: rating text is one decimal, absent when zero",
+            TrackerLogic.ratingText(8.24) == "★ 8.2" &&
+                TrackerLogic.ratingText(8.0) == "★ 8.0" &&
+                TrackerLogic.ratingText(0.0) == null)
+        val trackedShows = listOf(TrackerLogic.TrackedShow(101L, "Slow Horses", 3, false))
+        val trackedMovies = listOf(TrackerLogic.MovieItem(202L, "Dune: Part Two", "2024-03-01", false, "/dune.jpg", false))
+        check("foryou: already-tracked picks (tv + movie) are dropped",
+            TrackerLogic.filterForYou(picks, trackedShows, trackedMovies, emptyList()).map { it.id } ==
+                listOf(303L))
+        val overlay = listOf(TrackerLogic.ForYouMark(303L, "tv", added = false, at = 500L))
+        check("foryou: overlay-dismissed picks are dropped",
+            TrackerLogic.filterForYou(picks, emptyList(), emptyList(), overlay).map { it.id } ==
+                listOf(101L, 202L))
+        check("foryou: the row is capped",
+            TrackerLogic.filterForYou(
+                (1..30).map { TrackerLogic.ForYouPick(it.toLong(), "tv", "T$it", "", 7.0, "", emptyList(), 1.0) },
+                emptyList(), emptyList(), emptyList()
+            ).size == 20)
+        check("foryou: overlay codec round-trips",
+            TrackerLogic.decodeForYouOverlay(TrackerLogic.encodeForYouOverlay(overlay)) == overlay)
+        val stalePrune = TrackerLogic.pruneForYouOverlay(
+            listOf(TrackerLogic.ForYouMark(101L, "tv", added = true, at = 900L)),
+            picks, emptyList(), emptyList(), snapshotUpdated = 800L
+        )
+        check("foryou: a snapshot older than the mark retires nothing",
+            stalePrune.size == 1)
+        val addedPrune = TrackerLogic.pruneForYouOverlay(
+            listOf(TrackerLogic.ForYouMark(101L, "tv", added = true, at = 100L)),
+            picks, trackedShows, emptyList(), snapshotUpdated = 1_000L
+        )
+        check("foryou: an add retires once the title is tracked",
+            addedPrune.isEmpty())
+        val addedGone = TrackerLogic.pruneForYouOverlay(
+            listOf(TrackerLogic.ForYouMark(999L, "tv", added = true, at = 100L)),
+            picks, emptyList(), emptyList(), snapshotUpdated = 1_000L
+        )
+        check("foryou: an add also retires when the pick leaves the snapshot",
+            addedGone.isEmpty())
+        val dismissKept = TrackerLogic.pruneForYouOverlay(overlay, picks, emptyList(), emptyList(), 1_000L)
+        val dismissPrune = TrackerLogic.pruneForYouOverlay(
+            overlay, picks.filter { it.id != 303L }, emptyList(), emptyList(), 1_000L
+        )
+        check("foryou: a dismiss retires only when the pick leaves the snapshot",
+            dismissKept.size == 1 && dismissPrune.isEmpty())
+
+        // --- AppCategories ---
+        val ac = AppCategories
+        check("categories: curated packages win over the manifest category",
+            ac.categoryFor("com.netflix.ninja", -1) == "Video" &&
+                ac.categoryFor("com.google.android.youtube.tv", 0) == "Video" &&
+                ac.categoryFor("com.spotify.music", -1) == "Music" &&
+                ac.categoryFor("com.peacocktv.peacockandroid", -1) == "Video")
+        check("categories: manifest category table",
+            ac.categoryFor("com.unknown.a", 2) == "Video" &&
+                ac.categoryFor("com.unknown.b", 1) == "Music" &&
+                ac.categoryFor("com.unknown.c", 0) == "Games" &&
+                ac.categoryFor("com.unknown.d", 4) == "Social" &&
+                ac.categoryFor("com.unknown.e", 7) == "Other" &&
+                ac.categoryFor("com.unknown.f", 5) == "Other" &&
+                ac.categoryFor("com.unknown.g", 3) == "Other" &&
+                ac.categoryFor("com.unknown.h", -1) == "Other")
+        val grouped = ac.sections(
+            listOf(
+                AppCategories.Item("com.zed.app", "Zed", -1),
+                AppCategories.Item("com.netflix.ninja", "Netflix", -1),
+                AppCategories.Item("com.alpha.app", "alpha", -1),
+                AppCategories.Item("com.spotify.music", "Spotify", -1),
+                AppCategories.Item("com.game.x", "Game X", 0)
+            )
+        )
+        check("categories: sections render in order, non-empty only, alpha inside",
+            grouped.map { it.first } == listOf("Video", "Music", "Games", "Other") &&
+                grouped.last().second.map { it.label } == listOf("alpha", "Zed"),
+            grouped.toString())
+
+        // --- MostUsedLogic ---
+        val stats = listOf(
+            MostUsedLogic.Stat("com.a", 5, 100L, "Alpha"),
+            MostUsedLogic.Stat("com.b", 5, 300L, "Beta"),
+            MostUsedLogic.Stat("com.c", 5, 300L, "Charlie"),
+            MostUsedLogic.Stat("com.d", 9, 50L, "Delta"),
+            MostUsedLogic.Stat("com.hidden", 99, 999L, "Hidden"),
+            MostUsedLogic.Stat("com.gone", 99, 999L, "Uninstalled")
+        )
+        val top = MostUsedLogic.topUsed(
+            stats, setOf("com.a", "com.b", "com.c", "com.d", "com.hidden"), setOf("com.hidden"), 8
+        )
+        check("mostused: count desc, recency breaks count ties, name breaks recency ties",
+            top.map { it.pkg } == listOf("com.d", "com.b", "com.c", "com.a"), top.toString())
+        check("mostused: hidden + non-launchable excluded, limit respected, zero counts dropped",
+            MostUsedLogic.topUsed(stats, setOf("com.a", "com.b"), emptySet(), 1).map { it.pkg } ==
+                listOf("com.b") &&
+                MostUsedLogic.topUsed(
+                    listOf(MostUsedLogic.Stat("com.z", 0, 5L, "Zero")), setOf("com.z"), emptySet(), 8
+                ).isEmpty())
+
+        // --- ArtworkStore ---
+        val aw = ArtworkStore
+        check("artwork: 12 presets with names + colours, indices coerced",
+            aw.PRESET_COUNT == 12 && aw.PRESET_NAMES.size == 12 &&
+                aw.presetIndex("99") == 11 && aw.presetIndex("-3") == 0 &&
+                aw.presetColors(0) != aw.presetColors(1))
+        val awMap = mapOf(
+            "com.netflix.ninja" to aw.preset(3),
+            "com.spotify.music" to aw.url("https://example.com/a\tb.png")
+        )
+        check("artwork: codec round-trips presets and escaped URLs",
+            aw.decode(aw.encode(awMap)) == awMap)
+        check("artwork: garbage decodes empty; with() sets and removes",
+            aw.decode("garbage\n\ncom.x\tQ\t1").isEmpty() &&
+                aw.with(awMap, "com.new", aw.preset(0)).size == 3 &&
+                aw.with(awMap, "com.netflix.ninja", null).size == 1)
+
+        // --- QuickSettings table ---
+        check("quicksettings: six system targets then Sreeb Settings, actions distinct",
+            QuickSettings.TARGETS.size == 7 &&
+                QuickSettings.TARGETS.last().label == "Sreeb Settings" &&
+                QuickSettings.TARGETS.last().action.isEmpty() &&
+                QuickSettings.TARGETS.dropLast(1).all { it.action.startsWith("android.settings.") } &&
+                QuickSettings.TARGETS.dropLast(1).map { it.action }.toSet().size == 6)
+        check("quicksettings: unresolvable targets are filtered, Sreeb Settings stays",
+            QuickSettings.visible(QuickSettings.TARGETS) { it.contains("WIFI") }.map { it.label } ==
+                listOf("Wi-Fi", "Sreeb Settings"))
+
+        // --- LiveTvLogic state mapping ---
+        val lt = LiveTvLogic
+        check("livetv: state precedence (feature, security, failure, count)",
+            lt.classify(hasLiveTv = false, securityBlocked = true, queryFailed = false, channelCount = 5) ==
+                LiveTvLogic.State.NOT_SUPPORTED &&
+                lt.classify(true, securityBlocked = true, queryFailed = false, channelCount = 5) ==
+                LiveTvLogic.State.BLOCKED &&
+                lt.classify(true, securityBlocked = false, queryFailed = true, channelCount = 0) ==
+                LiveTvLogic.State.NOT_SUPPORTED &&
+                lt.classify(true, securityBlocked = false, queryFailed = false, channelCount = 0) ==
+                LiveTvLogic.State.NO_CHANNELS &&
+                lt.classify(true, securityBlocked = false, queryFailed = false, channelCount = 7) ==
+                LiveTvLogic.State.OK)
+        check("livetv: diagnostics wording",
+            lt.diagText(LiveTvLogic.State.OK, 7) == "7 channels" &&
+                lt.diagText(LiveTvLogic.State.BLOCKED, 0) == "blocked (permission)" &&
+                lt.diagText(LiveTvLogic.State.NO_CHANNELS, 0) == "no tuner channels" &&
+                lt.diagText(LiveTvLogic.State.NOT_SUPPORTED, 0) == "not supported")
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

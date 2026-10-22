@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.0 adaptive icon: near-black background + the red "M" mark.
+     minSdk is 26, so every supported device renders THIS icon; the
+     @drawable/ic_launcher layer-list remains the legacy fallback and
+     carries the same artwork. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

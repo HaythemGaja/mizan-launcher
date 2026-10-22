@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.0 "Sreeb" brand mark: a bold geometric red "S" monogram
+     (#E50914) in the Netflix manner, drawn as ONE filled polygon (a
+     block/digital S: top bar, upper-left stem, middle bar, lower-
+     right stem, bottom bar) in a 108x108 viewport. The S spans
+     x 36-72 / y 34-74 — inside the adaptive-icon safe zone, so
+     circle/squircle/round masks all crop to background, never into
+     the letter. Strokes are 11 units thick so the mark stays
+     legible at small sizes. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M36,74 L36,63 L61,63 L61,60 L36,60 L36,34 L72,34 L72,45 L47,45 L47,49 L72,49 L72,74 Z" />
+</vector>

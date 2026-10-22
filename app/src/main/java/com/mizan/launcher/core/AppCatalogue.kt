@@ -16,7 +16,7 @@ package com.mizan.launcher.core
  * - De-duplicated by package; the LEANBACK record wins over the
  *   plain LAUNCHER record (the TV label/icon source is preferred),
  *   otherwise the first record wins.
- * - Mizan Launcher itself is excluded — locking the launcher's own
+ * - Sreeb itself is excluded — locking the launcher's own
  *   entry is meaningless (its Settings have their own lock).
  * - System apps are INCLUDED (flagged, never filtered out).
  * - Sorted by label (case-insensitive), package name as tie-break.

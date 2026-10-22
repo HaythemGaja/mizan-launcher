@@ -16,7 +16,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.mizan.launcher.core.AllAppsLogic
+import com.mizan.launcher.core.AppCategories
 import com.mizan.launcher.core.AppSearch
+import com.mizan.launcher.core.ArtworkStore
 import com.mizan.launcher.core.Folder
 import com.mizan.launcher.core.FolderEntry
 import com.mizan.launcher.core.FolderTree
@@ -25,6 +27,7 @@ import com.mizan.launcher.core.Themes
 import com.mizan.launcher.core.TileLayout
 import com.mizan.launcher.data.AppEntry
 import com.mizan.launcher.data.AppLoader
+import com.mizan.launcher.data.ArtworkImages
 import com.mizan.launcher.data.Prefs
 
 /**
@@ -35,9 +38,12 @@ import com.mizan.launcher.data.Prefs
  * installed launchable app except hidden ones — including apps that
  * live inside folders (the row dedupes those away; finding them again
  * is the point of the tab). Foldered apps carry a small "▸ Folder"
- * badge (core/AllAppsLogic decides membership recursively). The grid
- * is alphabetical by label — there is no custom order here, so tiles
- * have no Move action.
+ * badge (core/AllAppsLogic decides membership recursively).
+ *
+ * v2.0: the page is grouped into automatic categories (core/
+ * AppCategories: Video, Music, Games, Social, Other — non-empty only,
+ * in that order) with apps alphabetical inside each section. There is
+ * still no custom order, so tiles have no Move action.
  *
  * Tiles behave like home tiles otherwise: OK launches through the
  * same arrow-lock gate (and records in Recently Used); hold-OK opens
@@ -56,6 +62,8 @@ class AllAppsActivity : Activity() {
     private var byPkg: Map<String, AppEntry> = emptyMap()
     private var items: List<AllAppsLogic.Item> = emptyList()
     private var gridBox: LinearLayout? = null
+    /** v2.0: this profile's custom artwork, parsed per grid rebuild. */
+    private var artworkByPkg: Map<String, ArtworkStore.Entry> = emptyMap()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,7 +107,7 @@ class AllAppsActivity : Activity() {
         root.addView(title)
 
         val sub = TextView(this)
-        sub.text = "Every app on this TV — apps inside folders are badged ▸"
+        sub.text = "Every app on this TV, grouped by kind — apps inside folders are badged ▸"
         sub.setTextColor(subColour); sub.textSize = 16f
         sub.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 10))
         root.addView(sub)
@@ -127,6 +135,7 @@ class AllAppsActivity : Activity() {
     private fun rebuildGrid() {
         val box = gridBox ?: return
         box.removeAllViews()
+        artworkByPkg = prefs.artworkMap()
         if (items.isEmpty()) {
             val t = TextView(this)
             t.text = "No launchable apps found."
@@ -134,17 +143,33 @@ class AllAppsActivity : Activity() {
             box.addView(t)
             return
         }
+        // v2.0: automatic category sections (core/AppCategories) —
+        // curated packages first, then the manifest category; apps
+        // alphabetical inside a section; empty sections never render.
+        val logicByPkg = items.associateBy { it.pkg }
+        val catItems = items.mapNotNull { li ->
+            byPkg[li.pkg]?.let { AppCategories.Item(it.pkg, it.label, it.category) }
+        }
         val cols = prefs.columns
-        var i = 0
-        while (i < items.size) {
-            val rowView = LinearLayout(this)
-            rowView.orientation = LinearLayout.HORIZONTAL
-            for (item in items.subList(i, minOf(i + cols, items.size))) {
-                val entry = byPkg[item.pkg] ?: continue
-                rowView.addView(appTile(entry, item))
+        for ((category, group) in AppCategories.sections(catItems)) {
+            val header = TextView(this)
+            header.text = category
+            header.setTextColor(accent); header.textSize = 20f
+            header.setTypeface(header.typeface, android.graphics.Typeface.BOLD)
+            header.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4))
+            box.addView(header)
+            var i = 0
+            while (i < group.size) {
+                val rowView = LinearLayout(this)
+                rowView.orientation = LinearLayout.HORIZONTAL
+                for (catItem in group.subList(i, minOf(i + cols, group.size))) {
+                    val entry = byPkg[catItem.pkg] ?: continue
+                    val logicItem = logicByPkg[catItem.pkg] ?: continue
+                    rowView.addView(appTile(entry, logicItem))
+                }
+                box.addView(rowView)
+                i += cols
             }
-            box.addView(rowView)
-            i += cols
         }
     }
 
@@ -174,7 +199,22 @@ class AllAppsActivity : Activity() {
         frame.background = Ui.tileBackground(accent, false, 16, this)
 
         val iv = ImageView(this)
-        iv.setImageBitmap(Ui.shapedIcon(entry.icon, m.iconPx, prefs.iconShape))
+        // v2.0 custom artwork, same consultation as the home tiles.
+        val fallbackIcon = Ui.shapedIcon(entry.icon, m.iconPx, prefs.iconShape)
+        when (val art = artworkByPkg[entry.pkg]) {
+            null -> iv.setImageBitmap(fallbackIcon)
+            else -> when (art.kind) {
+                ArtworkStore.Kind.PRESET -> iv.setImageBitmap(
+                    Ui.presetArtwork(
+                        ArtworkStore.presetColors(ArtworkStore.presetIndex(art.value)),
+                        entry.label, m.iconPx, prefs.iconShape
+                    )
+                )
+                ArtworkStore.Kind.URL -> ArtworkImages.load(
+                    this, entry.pkg, art.value, iv, m.iconPx, prefs.iconShape, fallbackIcon
+                )
+            }
+        }
         val ilp = FrameLayout.LayoutParams(m.iconPx, m.iconPx)
         ilp.gravity = Gravity.CENTER
         iv.layoutParams = ilp
@@ -268,6 +308,11 @@ class AllAppsActivity : Activity() {
             layout.favorites.remove(entry.pkg)
             saveLayoutAndRefresh()
             Toast.makeText(this, "Hidden. Unhide it in Settings.", Toast.LENGTH_SHORT).show()
+        }
+        // v2.0: custom artwork (presets / image URL / reset).
+        labels.add("Custom artwork…")
+        actions.add {
+            ArtworkPicker.show(this, prefs, accent, entry.pkg, entry.label) { rebuildGrid() }
         }
         labels.add("App info")
         actions.add {

@@ -110,6 +110,50 @@ class Prefs(ctx: Context) {
         get() = sp.getInt(k("tracker_hero_index"), 0)
         set(v) { sp.edit().putInt(k("tracker_hero_index"), v).apply() }
 
+    // ---- per-profile v2.0 state ----
+
+    /**
+     * Tracker-view section controls (v2.0), encoded by
+     * core/TrackerSections ("order-csv|hidden-csv"). Part of backups.
+     */
+    var trackerSections: String
+        get() = sp.getString(k("tracker_sections"), "") ?: ""
+        set(v) { sp.edit().putString(k("tracker_sections"), v).apply() }
+
+    fun trackerSectionsConfig(): com.mizan.launcher.core.TrackerSections.Config =
+        com.mizan.launcher.core.TrackerSections.decode(trackerSections)
+
+    fun setTrackerSectionsConfig(c: com.mizan.launcher.core.TrackerSections.Config) {
+        trackerSections = com.mizan.launcher.core.TrackerSections.encode(c)
+    }
+
+    /**
+     * The local For You overlay (v2.0), encoded by core/TrackerLogic:
+     * titles added/dismissed from the For You row hide immediately and
+     * the entry retires once the tracker's snapshots converge. Like
+     * the marked-set, this is optimistic local state — not in backups.
+     */
+    var forYouOverlay: String
+        get() = sp.getString(k("foryou_overlay"), "") ?: ""
+        set(v) { sp.edit().putString(k("foryou_overlay"), v).apply() }
+
+    /**
+     * Custom app artwork (v2.0), encoded by core/ArtworkStore
+     * (per package: PRESET index or image URL). Part of backups.
+     */
+    var artwork: String
+        get() = sp.getString(k("artwork"), "") ?: ""
+        set(v) { sp.edit().putString(k("artwork"), v).apply() }
+
+    fun artworkMap(): Map<String, com.mizan.launcher.core.ArtworkStore.Entry> =
+        com.mizan.launcher.core.ArtworkStore.decode(artwork)
+
+    fun setArtwork(pkg: String, entry: com.mizan.launcher.core.ArtworkStore.Entry?) {
+        artwork = com.mizan.launcher.core.ArtworkStore.encode(
+            com.mizan.launcher.core.ArtworkStore.with(artworkMap(), pkg, entry)
+        )
+    }
+
     var layout: LayoutData
         get() = LayoutCodec.decode(sp.getString(k("layout"), null))
         set(v) { sp.edit().putString(k("layout"), LayoutCodec.encode(v)).apply() }

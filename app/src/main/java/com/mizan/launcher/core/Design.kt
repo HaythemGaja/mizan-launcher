@@ -116,4 +116,37 @@ object Design {
     const val SECTION_HEADER_SP = 15f
     const val SECTION_HEADER_TRACKING = 0.14f
     const val SECTION_RULE_ALPHA = 0x59
+
+    // ---- Netflix look (v2.0, Tracker view ONLY) ----------------------
+    // The Tracker home restyles to the Netflix language: a near-black
+    // page, the hero backdrop as the full-bleed screen background, a
+    // red NEW badge, and portrait 2:3 poster cards. TV and iPad views
+    // never read these tokens.
+    /** The Tracker page colour — background regardless of theme/wallpaper. */
+    val NETFLIX_BG: Int = 0xFF141414.toInt()
+    /** The NEW badge / brand red. */
+    val NETFLIX_RED: Int = 0xFFE50914.toInt()
+    /** Hero title size (lower-left block, over the backdrop). */
+    const val NETFLIX_HERO_TITLE_SP = 44f
+    /** Hero overview size (up to 3 lines). */
+    const val NETFLIX_HERO_OVERVIEW_SP = 16f
+    /** The NEW badge text size. */
+    const val NETFLIX_BADGE_SP = 13f
+    /** Primary hero button: white fill, near-black text. */
+    val NETFLIX_BUTTON_FILL: Int = 0xFFFFFFFF.toInt()
+    val NETFLIX_BUTTON_TEXT: Int = 0xFF141414.toInt()
+    /** Secondary hero buttons: translucent dark fill, white text. */
+    val NETFLIX_BUTTON2_FILL: Int = 0x8C2B2B2B.toInt()
+    /**
+     * Poster card height, in multiples of the uniform tile height: a
+     * portrait card stands two tiles tall, its width derived 2:3.
+     * (The v2.0 brief's "≈0.9× the Continue wide card's height" would
+     * have SHRUNK the cards below v1.8's — the defect was posters not
+     * shown full; spec §18 records the substitution.)
+     */
+    const val POSTER_HEIGHT_TILES = 2f
+    /** The hero zone's height as a fraction of the screen height:
+     * the backdrop + lower-left block own the top ~62%, rows sit on
+     * the fade below it. */
+    const val HERO_ZONE_FRACTION = 0.62f
 }

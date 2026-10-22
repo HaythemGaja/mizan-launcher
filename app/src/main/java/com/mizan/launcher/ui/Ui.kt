@@ -123,6 +123,13 @@ object Ui {
             val p = Paint().apply { color = 0xFF666666.toInt() }
             c0.drawRect(0f, 0f, sizePx.toFloat(), sizePx.toFloat(), p)
         }
+        return maskToShape(src, shape)
+    }
+
+    /** Mask an existing square bitmap to the chosen shape (v2.0 split
+     * out of shapedIcon so custom artwork gets the identical mask). */
+    fun maskToShape(src: Bitmap, shape: String): Bitmap {
+        val sizePx = src.width
         if (shape == "square") return src
         val out = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
@@ -140,6 +147,47 @@ object Ui {
         }
         canvas.drawBitmap(src, 0f, 0f, paint)
         return out
+    }
+
+    /**
+     * v2.0 preset artwork: a vertical gradient (top → bottom from
+     * core/ArtworkStore's palette) with the app's initial letter
+     * centred in bold white, masked to the icon shape. Rendered fresh
+     * at draw time — nothing is stored.
+     */
+    fun presetArtwork(colors: Pair<Int, Int>, label: String, sizePx: Int, shape: String): Bitmap {
+        val src = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(src)
+        val gradient = android.graphics.LinearGradient(
+            0f, 0f, 0f, sizePx.toFloat(),
+            colors.first, colors.second, android.graphics.Shader.TileMode.CLAMP
+        )
+        canvas.drawRect(
+            0f, 0f, sizePx.toFloat(), sizePx.toFloat(),
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = gradient }
+        )
+        val initial = label.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "?"
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            textSize = sizePx * 0.52f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+        }
+        val fm = textPaint.fontMetrics
+        val baseline = sizePx / 2f - (fm.ascent + fm.descent) / 2f
+        canvas.drawText(initial, sizePx / 2f, baseline, textPaint)
+        return maskToShape(src, shape)
+    }
+
+    /** Clip a view to rounded corners via its outline (poster art). */
+    fun roundClip(view: android.view.View, radiusDp: Int, ctx: Context) {
+        val radiusPx = dp(ctx, radiusDp).toFloat()
+        view.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(v: android.view.View, outline: android.graphics.Outline) {
+                outline.setRoundRect(0, 0, v.width, v.height, radiusPx)
+            }
+        }
+        view.clipToOutline = true
     }
 
     fun drawableToBitmap(ctx: Context, bmp: Bitmap): BitmapDrawable = BitmapDrawable(ctx.resources, bmp)

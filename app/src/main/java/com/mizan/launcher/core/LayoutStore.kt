@@ -362,7 +362,10 @@ object RowOrder {
     /** Canonical (row, anchor-it-follows) pairs, in insertion order. */
     private val INSERTIONS: List<Pair<String, String>> = listOf(
         "recents" to "favorites",
-        "nowplaying" to "folders"
+        "nowplaying" to "folders",
+        // v2.0: Most Used sits under Recently Used; Live TV under inputs.
+        "mostused" to "recents",
+        "livetv" to "inputs"
     )
 
     fun normalize(order: List<String>): List<String> {
@@ -383,13 +386,14 @@ data class LayoutData(
     val folders: MutableList<Folder> = mutableListOf(),
     /** Custom All-Apps order; packages not in the list sort after, alphabetically by caller. */
     val allAppsOrder: MutableList<String> = mutableListOf(),
-    /** Row keys in display order. Known keys: favorites, recents, folders, nowplaying, continue, inputs, apps. */
+    /** Row keys in display order. Known keys: favorites, recents, mostused,
+     * folders, nowplaying, continue, inputs, livetv, apps. */
     val rowOrder: MutableList<String> = mutableListOf(
-        "favorites", "recents", "folders", "nowplaying", "continue", "inputs", "apps"
+        "favorites", "recents", "mostused", "folders", "nowplaying", "continue", "inputs", "livetv", "apps"
     ),
     val rowVisible: MutableMap<String, Boolean> = mutableMapOf(
-        "favorites" to true, "recents" to true, "folders" to true, "nowplaying" to true,
-        "continue" to true, "inputs" to true, "apps" to true
+        "favorites" to true, "recents" to true, "mostused" to true, "folders" to true,
+        "nowplaying" to true, "continue" to true, "inputs" to true, "livetv" to true, "apps" to true
     ),
     /** Status bar configuration (v1.1). Defaults = v1.0 behaviour. */
     var statusBar: StatusBarConfig = StatusBarConfig()

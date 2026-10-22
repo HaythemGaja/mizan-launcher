@@ -82,7 +82,7 @@ class SettingsActivity : Activity() {
     private var textColour: Int = 0
     private var subColour: Int = 0
 
-    /** True while the "Make Mizan your home screen" checklist replaces the home category's detail. */
+    /** True while the "Make Sreeb your home screen" checklist replaces the home category's detail. */
     private var showingMakeHome: Boolean = false
 
     // ------------------------------------------------ two-column state
@@ -367,7 +367,7 @@ class SettingsActivity : Activity() {
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         pane.addView(title)
         val version = TextView(this)
-        version.text = "Mizan Launcher v1.9"
+        version.text = "Sreeb v2.0"
         version.setTextColor(subColour)
         version.textSize = 15f
         version.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, metrics.rowPadVDp + 2))
@@ -572,7 +572,7 @@ class SettingsActivity : Activity() {
             "⚡ Speed up now",
             prefs.speedupLastResult.ifEmpty { "Ask background apps to close and report the free RAM before/after" }
         ) { runSpeedUp() })
-        content.addView(info("Speed up signals OTHER apps' background processes to exit (it disables and uninstalls nothing, and Android may restart what it wants — the numbers are informational). The never-kill list, system apps, the foreground app, and Mizan itself are never signalled."))
+        content.addView(info("Speed up signals OTHER apps' background processes to exit (it disables and uninstalls nothing, and Android may restart what it wants — the numbers are informational). The never-kill list, system apps, the foreground app, and Sreeb itself are never signalled."))
     }
 
     /**
@@ -742,7 +742,7 @@ class SettingsActivity : Activity() {
                 rebuild()
             }
         })
-        content.addView(info("Forgot the pattern? Recovery is Android system Settings → Apps → Mizan Launcher → Clear data — that resets the layout too. This is a casual lock, by design."))
+        content.addView(info("Forgot the pattern? Recovery is Android system Settings → Apps → Sreeb → Clear data — that resets the layout too. This is a casual lock, by design."))
         content.addView(info("Folder locks live in the Folders manager (Home screen category) or any folder's hold-OK menu; app locks in the Locked apps list above or any app's hold-OK menu."))
         content.addView(header("Unlock grace"))
         content.addView(row(
@@ -824,7 +824,7 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        content.addView(header("Mizan Launcher v1.9"))
+        content.addView(header("Sreeb v2.0"))
         content.addView(info(diagnosticsText()))
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
@@ -855,7 +855,7 @@ class SettingsActivity : Activity() {
         content.addView(toggleRow("Tile: Sound", sb.showTileSound) { updateStatusBar { c -> c.copy(showTileSound = it) } })
         content.addView(toggleRow("Tile: Picture", sb.showTilePicture) { updateStatusBar { c -> c.copy(showTilePicture = it) } })
         content.addView(toggleRow("Tile: Settings gear", sb.showTileSettings, "The ⚙ Settings button inside the bar (corner gear is separate)") { updateStatusBar { c -> c.copy(showTileSettings = it) } })
-        content.addView(toggleRow("Tile: Search", sb.showTileSearch, "Opens Mizan's app Search screen (the remote's Search key works too)") { updateStatusBar { c -> c.copy(showTileSearch = it) } })
+        content.addView(toggleRow("Tile: Search", sb.showTileSearch, "Opens Sreeb's app Search screen (the remote's Search key works too)") { updateStatusBar { c -> c.copy(showTileSearch = it) } })
         content.addView(toggleRow("Tile: All Apps", sb.showTileAllApps, "Opens the full-screen All Apps tab — every app, foldered ones included") { updateStatusBar { c -> c.copy(showTileAllApps = it) } })
         content.addView(row("Clock format", if (sb.clock24h) "24-hour" else "12-hour") {
             pickFrom(listOf("12-hour", "24-hour"), if (sb.clock24h) "24-hour" else "12-hour") { v ->
@@ -902,6 +902,55 @@ class SettingsActivity : Activity() {
             pickFrom(listOf("4", "5", "6", "7", "8"), prefs.columns.toString()) { prefs.columns = it.toInt(); rebuild() }
         })
 
+        // v2.0: Tracker-view section controls (per profile; the codec
+        // is core/TrackerSections). Placed in this category because it
+        // sits next to the Home style picker it belongs to. The hero
+        // is always first when shown; the other sections reorder.
+        content.addView(header("Tracker sections"))
+        content.addView(info("Only applies when Home style is Tracker. A section with nothing in it never appears, even when switched on. For You also needs TV Shows & Movies Tracker 1.14.4 or newer."))
+        val sectionsCfg = prefs.trackerSectionsConfig()
+        val ts = com.mizan.launcher.core.TrackerSections
+        content.addView(toggleRow(
+            "Section: Hero", ts.isShown(sectionsCfg, ts.HERO),
+            "The big featured title at the top — always first when shown"
+        ) { shown ->
+            prefs.setTrackerSectionsConfig(ts.setShown(prefs.trackerSectionsConfig(), ts.HERO, shown))
+            rebuild()
+        })
+        for (key in sectionsCfg.order) {
+            content.addView(toggleRow(
+                "Section: ${ts.label(key)}", ts.isShown(sectionsCfg, key), ""
+            ) { shown ->
+                prefs.setTrackerSectionsConfig(
+                    ts.setShown(prefs.trackerSectionsConfig(), key, shown)
+                )
+                rebuild()
+            })
+        }
+        content.addView(row(
+            "Reorder tracker sections…",
+            sectionsCfg.order.joinToString(" › ") { ts.label(it) }
+        ) { trackerSectionOrder() })
+    }
+
+    /** Move up/down dialog for one Tracker section (v2.0). */
+    private fun trackerSectionOrder() {
+        val ts = com.mizan.launcher.core.TrackerSections
+        val cfg = prefs.trackerSectionsConfig()
+        val labels = cfg.order.map { ts.label(it) }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Reorder tracker sections")
+            .setItems(labels) { _, which ->
+                val key = cfg.order[which]
+                AlertDialog.Builder(this).setTitle(ts.label(key))
+                    .setItems(arrayOf("Move up", "Move down")) { _, dir ->
+                        prefs.setTrackerSectionsConfig(
+                            ts.move(prefs.trackerSectionsConfig(), key, if (dir == 0) -1 else 1)
+                        )
+                        rebuild()
+                    }
+                    .setNegativeButton("Cancel", null).show()
+            }
+            .setNegativeButton("Cancel", null).show()
     }
 
     /** The current home style with its one-line description (v1.7, v1.8). */
@@ -964,6 +1013,18 @@ class SettingsActivity : Activity() {
             })
         }
         content.addView(info("The Recently Used row is the “Row: Recently Used” entry above — Shown/Hidden is its toggle."))
+        // v2.0: the Most Used row needs Usage Access; while the grant
+        // is missing, its settings entry point lives here.
+        if (!com.mizan.launcher.data.MostUsed.isGranted(this)) {
+            content.addView(row(
+                "Most Used — needs Usage Access",
+                "Android hides app-usage data until you allow it — tap to open Usage Access settings"
+            ) {
+                try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                catch (e: Exception) { failOpen("usageAccessSettings", e) }
+            })
+        }
+        content.addView(info("Live TV reads the TV's tuner channel list when the system allows it — on many TVs that permission is reserved, the row stays hidden, and Diagnostics shows why (“live tv:”)."))
 
         content.addView(header("Apps & folders"))
         content.addView(row("Hidden apps", "${layout.hidden.size} hidden") { hiddenApps() })
@@ -989,7 +1050,7 @@ class SettingsActivity : Activity() {
             try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
             catch (e: Exception) { failOpen("notificationListenerSettings", e) }
         })
-        content.addView(info("State: ${if (npGranted) "Granted" else "Not granted"}. Mizan's listener reads no notification content — Android simply requires this grant before an app may see media sessions (what's playing, and its play/pause controls). Without it the row stays hidden."))
+        content.addView(info("State: ${if (npGranted) "Granted" else "Not granted"}. Sreeb's listener reads no notification content — Android simply requires this grant before an app may see media sessions (what's playing, and its play/pause controls). Without it the row stays hidden."))
     }
 
     // ------------------------------------------------------------ row helpers
@@ -1132,10 +1193,12 @@ class SettingsActivity : Activity() {
     private fun rowLabel(key: String): String = when (key) {
         "favorites" -> "Row: Favorites"
         "recents" -> "Row: Recently Used"
+        "mostused" -> "Row: Most Used"
         "folders" -> "Row: Folders"
         "nowplaying" -> "Row: Now Playing"
         "continue" -> "Row: Continue Watching"
         "inputs" -> "Row: HDMI & Inputs"
+        "livetv" -> "Row: Live TV"
         "apps" -> "Row: All Apps"
         else -> "Row: $key"
     }
@@ -1149,10 +1212,10 @@ class SettingsActivity : Activity() {
             append(", safe mode: ${if (prefs.safeMode) "on" else "off"}")
             val isHome = com.mizan.launcher.data.HomeStatus.isDefaultHome(this@SettingsActivity)
             val watcher = com.mizan.launcher.data.HomeStatus.isWatcherEnabled(this@SettingsActivity)
-            append("\nHome: ${if (isHome) "Mizan is default" else "not default (current: " +
+            append("\nHome: ${if (isHome) "Sreeb is default" else "not default (current: " +
                 com.mizan.launcher.data.HomeStatus.currentHomePackage(this@SettingsActivity).ifEmpty { "unknown" } + ")"}")
             append(", watcher: ${if (watcher) "enabled" else "disabled"}" +
-                if (watcher) "" else " (listed in Accessibility as “Mizan Launcher watcher”)")
+                if (watcher) "" else " (listed in Accessibility as “Sreeb watcher”)")
             val relaunches = Prefs.watcherRelaunches(this@SettingsActivity)
             if (relaunches > 0) {
                 val lastAt = Prefs.watcherLastAt(this@SettingsActivity)
@@ -1184,6 +1247,9 @@ class SettingsActivity : Activity() {
                     tSnap.cont.size, tSnap.movies.size, tTime
                 )
             )
+            // v2.0: the live tv: line — the Live TV probe's verdict
+            // (channel count, or exactly why there is no row).
+            append("\nlive tv: " + com.mizan.launcher.data.LiveTv.diagLine(this@SettingsActivity))
             val sbCfg = layout.statusBar
             append("\nQuick tiles: master ${if (sbCfg.showQuickTiles) "on" else "off"}" +
                 ", wifi ${onOff(sbCfg.showTileWifi)}, bt ${onOff(sbCfg.showTileBluetooth)}" +
@@ -1267,16 +1333,16 @@ class SettingsActivity : Activity() {
         val isHome = com.mizan.launcher.data.HomeStatus.isDefaultHome(this)
         val watcher = com.mizan.launcher.data.HomeStatus.isWatcherEnabled(this)
         return when {
-            isHome -> "✓ Mizan is your home screen" + if (watcher) " · watcher on" else ""
-            watcher -> "Watcher is on, but Mizan isn't the default home yet"
-            else -> "Mizan isn't your home screen yet — 3 guided steps"
+            isHome -> "✓ Sreeb is your home screen" + if (watcher) " · watcher on" else ""
+            watcher -> "Watcher is on, but Sreeb isn't the default home yet"
+            else -> "Sreeb isn't your home screen yet — 3 guided steps"
         }
     }
 
     /**
      * The takeover checklist (fills the Home override detail pane).
      * Status lines are LIVE (rebuilt on resume, so returning from a
-     * system settings screen updates the ticks). Mizan never disables
+     * system settings screen updates the ticks). Sreeb never disables
      * the stock launcher or any other package — taking over Home is
      * the system's default-home choice + the optional watcher.
      */
@@ -1284,7 +1350,7 @@ class SettingsActivity : Activity() {
         val isHome = com.mizan.launcher.data.HomeStatus.isDefaultHome(this)
         val watcher = com.mizan.launcher.data.HomeStatus.isWatcherEnabled(this)
 
-        content.addView(header("Make Mizan your home screen"))
+        content.addView(header("Make Sreeb your home screen"))
         content.addView(info(
             "Three steps. Nothing here turns off the TV's own launcher or any other app — " +
                 "you can switch back in the same system screens at any time."
@@ -1292,30 +1358,30 @@ class SettingsActivity : Activity() {
 
         content.addView(header("Step 1 — Default home"))
         content.addView(info(
-            if (isHome) "✓ Done — Mizan is the default home screen."
+            if (isHome) "✓ Done — Sreeb is the default home screen."
             else "✗ Not yet — current home: " +
                 com.mizan.launcher.data.HomeStatus.currentHomePackage(this).ifEmpty { "unknown" }
         ))
-        content.addView(row("Set Mizan as default home", "Opens the system's home-role request / Home settings") {
+        content.addView(row("Set Sreeb as default home", "Opens the system's home-role request / Home settings") {
             requestDefaultHome()
         })
 
         content.addView(header("Step 2 — Home watcher"))
         content.addView(info(
-            if (watcher) "✓ Done — “Mizan Launcher watcher” is enabled in Accessibility."
+            if (watcher) "✓ Done — “Sreeb watcher” is enabled in Accessibility."
             else "Optional but recommended: the watcher notices when the TV's own home screen " +
-                "appears and reopens Mizan. It only watches which window is showing — " +
+                "appears and reopens Sreeb. It only watches which window is showing — " +
                 "it cannot read screen contents."
         ))
         if (!watcher) {
             content.addView(info(
                 "Where to find it: TV Settings → Device Preferences → Accessibility → " +
-                    "Installed services → “Mizan Launcher watcher”. If it isn't listed, " +
+                    "Installed services → “Sreeb watcher”. If it isn't listed, " +
                     "allow restricted settings first: Android system Settings → Apps → " +
-                    "Mizan Launcher → ⋮ (top-right) → “Allow restricted settings”, then look again."
+                    "Sreeb → ⋮ (top-right) → “Allow restricted settings”, then look again."
             ))
         }
-        content.addView(row("Enable Home watcher", "Opens Accessibility settings — turn on “Mizan Launcher watcher”") {
+        content.addView(row("Enable Home watcher", "Opens Accessibility settings — turn on “Sreeb watcher”") {
             try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             catch (e: Exception) { failOpen("a11ySettings", e) }
         })
@@ -1324,7 +1390,7 @@ class SettingsActivity : Activity() {
 
         content.addView(header("Step 3 — Optional: set via ADB"))
         content.addView(info(
-            "If the system screens don't offer Mizan on this TV, the same result from a " +
+            "If the system screens don't offer Sreeb on this TV, the same result from a " +
                 "computer on the same Wi-Fi (this changes only the default home — it disables nothing):"
         ))
         val adbView = info(com.mizan.launcher.data.HomeStatus.adbCommands())
@@ -1337,7 +1403,7 @@ class SettingsActivity : Activity() {
         })
     }
 
-    /** Ask Android to make Mizan the default home; fail-open across variants. */
+    /** Ask Android to make Sreeb the default home; fail-open across variants. */
     private fun requestDefaultHome() {
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -1351,7 +1417,7 @@ class SettingsActivity : Activity() {
                     return
                 }
                 if (rm != null && rm.isRoleHeld(android.app.role.RoleManager.ROLE_HOME)) {
-                    toast("Mizan is already the default home")
+                    toast("Sreeb is already the default home")
                     return
                 }
             }
@@ -1366,7 +1432,7 @@ class SettingsActivity : Activity() {
         }
         try {
             startActivity(Intent(Settings.ACTION_SETTINGS))
-            toast("Find “Default home app” in Settings and choose Mizan Launcher")
+            toast("Find “Default home app” in Settings and choose Sreeb")
         } catch (e: Exception) {
             failOpen("homeSettings", e)
         }
@@ -1760,8 +1826,8 @@ class SettingsActivity : Activity() {
             .setMessage(
                 "Every launchable app on this TV is listed — hidden apps, apps inside " +
                     "folders, and system apps (like the TV's own Settings) included. " +
-                    "Mizan Launcher itself is the only app not listed. Locking gates " +
-                    "launches made through Mizan; the remote's hardware app buttons bypass it."
+                    "Sreeb itself is the only app not listed. Locking gates " +
+                    "launches made through Sreeb; the remote's hardware app buttons bypass it."
             )
             .setItems(labels.toTypedArray()) { _, which ->
                 val set = prefs.lockedApps.toMutableSet()
@@ -1930,17 +1996,17 @@ class SettingsActivity : Activity() {
             .setMessage(
                 "Android sometimes brings back the TV's own home screen when you press Home. " +
                     "The watcher is a small accessibility service that notices when the stock home " +
-                    "screen appears and reopens Mizan Launcher instead.\n\n" +
+                    "screen appears and reopens Sreeb instead.\n\n" +
                     "It only watches which window is on screen — it cannot read screen contents, " +
                     "and it sends nothing anywhere.\n\n" +
                     "It is OFF by default. To turn it on, open the TV's Settings → " +
                     "Device Preferences → Accessibility → Installed services → " +
-                    "“Mizan Launcher watcher” — that exact name (older builds listed it as " +
-                    "just “Mizan Launcher”, which is why it was hard to find) — and turn it on " +
+                    "“Sreeb watcher” — that exact name (builds before v2.0 listed it as " +
+                    "“Mizan Launcher watcher”) — and turn it on " +
                     "yourself. Turn it off there any time.\n\n" +
                     "Still not listed? Sideloaded apps are hidden from Accessibility on some " +
                     "Google TV builds until you allow them: Android system Settings → Apps → " +
-                    "Mizan Launcher → ⋮ (top-right) → “Allow restricted settings”, then check " +
+                    "Sreeb → ⋮ (top-right) → “Allow restricted settings”, then check " +
                     "Accessibility again."
             )
             .setPositiveButton("Open Accessibility settings") { _, _ ->
@@ -1998,6 +2064,10 @@ class SettingsActivity : Activity() {
             o.put("profile_name", prefs.profileName(p))
             o.put("unlock_grace_min", prefs.unlockGraceMinutes)
             o.put("sticky_status_bar", prefs.stickyStatusBar)
+            // v2.0 per-profile extras: tracker section controls +
+            // custom app artwork (both codec strings).
+            o.put("tracker_sections", prefs.trackerSections)
+            o.put("artwork", prefs.artwork)
             profiles.put(p.toString(), o)
         }
         prefs.currentProfile = current
@@ -2056,6 +2126,11 @@ class SettingsActivity : Activity() {
                 if (o.has("profile_name")) prefs.setProfileName(p, o.optString("profile_name", ""))
                 if (o.has("unlock_grace_min")) prefs.unlockGraceMinutes = o.optInt("unlock_grace_min", prefs.unlockGraceMinutes)
                 if (o.has("sticky_status_bar")) prefs.stickyStatusBar = o.optBoolean("sticky_status_bar", false)
+                // v2.0: absent in pre-v2.0 backups → keep current.
+                // Both setters run the values through their codecs'
+                // normalization on read, so garbled data fails open.
+                if (o.has("tracker_sections")) prefs.trackerSections = o.optString("tracker_sections", "")
+                if (o.has("artwork")) prefs.artwork = o.optString("artwork", "")
             }
             prefs.currentProfile = root.optInt("current_profile", current).coerceIn(1, 2)
             true
@@ -2084,7 +2159,7 @@ class SettingsActivity : Activity() {
                         BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readText()
                     } ?: ""
                     if (importJson(text)) { toast("Settings imported"); rebuild() }
-                    else toast("That file isn't a Mizan Launcher backup — nothing imported")
+                    else toast("That file isn't a Sreeb backup — nothing imported")
                 }
                 43 -> {
                     try {

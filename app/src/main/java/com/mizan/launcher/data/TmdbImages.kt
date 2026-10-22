@@ -44,17 +44,27 @@ object TmdbImages {
      * Load [url] into [target]: cache hit applies immediately;
      * otherwise a background download applies on completion — but
      * only if the view still wants this URL (its tag), so recycled
-     * row cards never flash the wrong poster.
+     * row cards never flash the wrong poster. [onApplied] (v2.0, for
+     * the hero crossfade) fires on the main thread right after the
+     * bitmap is set; it never fires on failure (fail-open: the view
+     * keeps what it shows).
      */
-    fun load(url: String, target: ImageView) {
+    fun load(url: String, target: ImageView, onApplied: (() -> Unit)? = null) {
         if (url.isBlank()) return
-        cached(url)?.let { target.setImageBitmap(it); return }
+        cached(url)?.let {
+            target.setImageBitmap(it)
+            onApplied?.invoke()
+            return
+        }
         target.tag = url
         thread(name = "mizan-tmdb-img") {
             val bmp = download(url) ?: return@thread
             synchronized(lock) { cache[url] = bmp }
             mainHandler.post {
-                if (target.tag == url) target.setImageBitmap(bmp)
+                if (target.tag == url) {
+                    target.setImageBitmap(bmp)
+                    onApplied?.invoke()
+                }
             }
         }
     }

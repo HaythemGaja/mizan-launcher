@@ -11,7 +11,10 @@ data class AppEntry(
     val pkg: String,
     val label: String,
     val icon: Drawable?,
-    val isSystem: Boolean
+    val isSystem: Boolean,
+    /** v2.0: the manifest's ApplicationInfo.category (API 26+), −1
+     * when undeclared — input to core/AppCategories for All Apps. */
+    val category: Int = -1
 )
 
 object AppLoader {
@@ -29,6 +32,7 @@ object AppLoader {
     fun loadApps(pm: PackageManager, ownPkg: String): List<AppEntry> {
         val records = ArrayList<AppCatalogue.Record>()
         val resolveByPkg = HashMap<String, android.content.pm.ResolveInfo>()
+        val categoryByPkg = HashMap<String, Int>()
         for (category in listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)) {
             try {
                 val intent = Intent(Intent.ACTION_MAIN).addCategory(category)
@@ -47,6 +51,9 @@ object AppLoader {
                     // runs first) supplies the icon, matching the
                     // catalogue's leanback-wins rule.
                     if (!resolveByPkg.containsKey(pkg)) resolveByPkg[pkg] = ri
+                    if (!categoryByPkg.containsKey(pkg)) {
+                        categoryByPkg[pkg] = try { ai.category } catch (e: Exception) { -1 }
+                    }
                 }
             } catch (e: Exception) {
                 // Fail-open: one bad category must not lose the whole list.
@@ -58,7 +65,8 @@ object AppLoader {
                 pkg = rec.pkg,
                 label = rec.label,
                 icon = try { ri?.loadIcon(pm) } catch (e: Exception) { null },
-                isSystem = rec.isSystem
+                isSystem = rec.isSystem,
+                category = categoryByPkg[rec.pkg] ?: -1
             )
         }
     }

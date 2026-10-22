@@ -13,12 +13,14 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.mizan.launcher.core.AppSearch
+import com.mizan.launcher.core.ArtworkStore
 import com.mizan.launcher.core.FolderLogic
 import com.mizan.launcher.core.Themes
 import com.mizan.launcher.core.TileLayout
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.data.AppEntry
 import com.mizan.launcher.data.AppLoader
+import com.mizan.launcher.data.ArtworkImages
 import com.mizan.launcher.data.Prefs
 import com.mizan.launcher.data.TrackerClient
 
@@ -41,6 +43,10 @@ import com.mizan.launcher.data.TrackerClient
  */
 class SearchActivity : Activity() {
 
+    private companion object {
+        const val REQ_VOICE = 9417
+    }
+
     private lateinit var prefs: Prefs
     private var accent: Int = 0
     private var textColour: Int = 0
@@ -53,6 +59,12 @@ class SearchActivity : Activity() {
 
     private var queryView: TextView? = null
     private var resultsBox: LinearLayout? = null
+    private var keyboardHost: LinearLayout? = null
+
+    /** v2.0 voice search: null = not yet probed this session. */
+    private var voiceAvailable: Boolean? = null
+    /** v2.0: this profile's custom artwork, parsed per results rebuild. */
+    private var artworkByPkg: Map<String, ArtworkStore.Entry> = emptyMap()
 
     /** Keyboard rows (for the DOWN-into-results handoff). */
     private var keyboardRows: List<List<View>> = emptyList()
@@ -135,7 +147,11 @@ class SearchActivity : Activity() {
         root.addView(queryView)
         updateQueryLabel()
 
-        root.addView(buildKeyboard())
+        val kbHost = LinearLayout(this)
+        kbHost.orientation = LinearLayout.VERTICAL
+        kbHost.addView(buildKeyboard())
+        keyboardHost = kbHost
+        root.addView(kbHost)
 
         val scroll = ScrollView(this)
         val box = LinearLayout(this)
@@ -169,9 +185,27 @@ class SearchActivity : Activity() {
             rows.add(keys)
             kb.addView(rowView)
         }
-        // Bottom row: Space / Backspace / Clear.
+        // Bottom row: [Voice] / Space / Backspace / Clear.
         val special = LinearLayout(this)
         special.orientation = LinearLayout.HORIZONTAL
+        val specialKeys = mutableListOf<View>()
+        // v2.0 voice search: the mic key exists only while a speech
+        // recognizer resolves on this device (probed once per build;
+        // a failed launch hides it for the rest of the session).
+        if (voiceAvailable == null) {
+            voiceAvailable = try {
+                android.content.Intent(
+                    android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+                ).resolveActivity(packageManager) != null
+            } catch (e: Exception) {
+                false
+            }
+        }
+        if (voiceAvailable == true) {
+            val mic = keyButton("🎤 Voice") { startVoiceSearch() }
+            specialKeys.add(mic)
+            special.addView(mic)
+        }
         val space = keyButton("␣ Space") { typeChar(' ') }
         val back = keyButton("⌫") {
             if (query.isNotEmpty()) { query = query.dropLast(1); onQueryChanged() }
@@ -179,12 +213,66 @@ class SearchActivity : Activity() {
         val clear = keyButton("Clear") {
             if (query.isNotEmpty()) { query = ""; onQueryChanged() }
         }
-        val specialKeys = listOf<View>(space, back, clear)
-        for (k in specialKeys) special.addView(k)
+        for (k in listOf(space, back, clear)) {
+            specialKeys.add(k)
+            special.addView(k)
+        }
         rows.add(specialKeys)
         kb.addView(special)
         keyboardRows = rows
         return kb
+    }
+
+    /**
+     * v2.0 voice search: hand recognition to the system's recognizer
+     * activity (no permission of ours — it is another app's screen).
+     * The top result becomes the query and the existing search runs
+     * (apps + "In your tracker"). No recognizer / a refused launch →
+     * toast + the mic key hides for the session.
+     */
+    private fun startVoiceSearch() {
+        val intent = android.content.Intent(
+            android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+        )
+            .putExtra(
+                android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            .putExtra(
+                android.speech.RecognizerIntent.EXTRA_PROMPT,
+                "Search apps and your tracker"
+            )
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, REQ_VOICE)
+        } catch (e: Exception) {
+            Prefs.noteError(this, "voiceSearch", e)
+            voiceAvailable = false
+            Toast.makeText(
+                this, "Voice search isn't available on this TV", Toast.LENGTH_SHORT
+            ).show()
+            keyboardHost?.let { host ->
+                host.removeAllViews()
+                host.addView(buildKeyboard())
+            }
+        }
+    }
+
+    @Deprecated("Activity result routing for the recognizer")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_VOICE || resultCode != RESULT_OK) return
+        val spoken = try {
+            data?.getStringArrayListExtra(
+                android.speech.RecognizerIntent.EXTRA_RESULTS
+            )?.firstOrNull()
+        } catch (e: Exception) {
+            null
+        }
+        if (!spoken.isNullOrBlank()) {
+            query = spoken.trim()
+            onQueryChanged()
+        }
     }
 
     private fun keyButton(label: String, onPress: () -> Unit): TextView {
@@ -218,6 +306,7 @@ class SearchActivity : Activity() {
     private fun rebuildResults() {
         val box = resultsBox ?: return
         box.removeAllViews()
+        artworkByPkg = prefs.artworkMap()
         val rows = mutableListOf<List<View>>()
 
         // v1.8: "In your tracker" — above the app results, present
@@ -375,7 +464,22 @@ class SearchActivity : Activity() {
         frame.background = Ui.tileBackground(accent, false, 16, this)
 
         val iv = ImageView(this)
-        iv.setImageBitmap(Ui.shapedIcon(entry.icon, m.iconPx, prefs.iconShape))
+        // v2.0 custom artwork, same consultation as the home tiles.
+        val fallbackIcon = Ui.shapedIcon(entry.icon, m.iconPx, prefs.iconShape)
+        when (val art = artworkByPkg[entry.pkg]) {
+            null -> iv.setImageBitmap(fallbackIcon)
+            else -> when (art.kind) {
+                ArtworkStore.Kind.PRESET -> iv.setImageBitmap(
+                    Ui.presetArtwork(
+                        ArtworkStore.presetColors(ArtworkStore.presetIndex(art.value)),
+                        entry.label, m.iconPx, prefs.iconShape
+                    )
+                )
+                ArtworkStore.Kind.URL -> ArtworkImages.load(
+                    this, entry.pkg, art.value, iv, m.iconPx, prefs.iconShape, fallbackIcon
+                )
+            }
+        }
         val ilp = FrameLayout.LayoutParams(m.iconPx, m.iconPx)
         ilp.gravity = Gravity.CENTER
         iv.layoutParams = ilp
@@ -441,6 +545,11 @@ class SearchActivity : Activity() {
                 ).show()
             }
             rebuildResults()
+        }
+        // v2.0: custom artwork (presets / image URL / reset).
+        labels.add("Custom artwork…")
+        actions.add {
+            ArtworkPicker.show(this, prefs, accent, entry.pkg, entry.label) { rebuildResults() }
         }
         labels.add("App info")
         actions.add {

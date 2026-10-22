@@ -29,6 +29,7 @@ object KeyboardDialog {
         accent: Int,
         initial: String,
         maxLen: Int,
+        symbols: Boolean = false,
         onDone: (String) -> Unit
     ) {
         val text = StringBuilder(initial.take(maxLen))
@@ -108,6 +109,22 @@ object KeyboardDialog {
                 })
             }
             keysBox.addView(digits)
+            if (symbols) {
+                // v2.0: URL entry (artwork picker) needs punctuation.
+                // Sits BEFORE the special row so the Aa toggle's
+                // refocus-by-index in that row is unchanged.
+                val punct = LinearLayout(activity)
+                punct.orientation = LinearLayout.HORIZONTAL
+                for (ch in listOf(".", "/", ":", "-", "_", "?", "&", "=", "%", "+", "@", "#", "~")) {
+                    punct.addView(key(ch) {
+                        if (text.length < maxLen) {
+                            text.append(ch)
+                            refreshValue()
+                        }
+                    })
+                }
+                keysBox.addView(punct)
+            }
             val special = LinearLayout(activity)
             special.orientation = LinearLayout.HORIZONTAL
             special.addView(key("␣ Space") {
