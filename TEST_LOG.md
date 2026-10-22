@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-22 04:14 UTC
+Date: 2026-10-22 17:28 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -66,6 +66,25 @@ typed-entry model throughout. New sections: folder tree
 codec migration + nested round-trip, settings gate, All Apps
 tab list, status codec v1.5 (All Apps tile), move session by
 folder id + sub-folder entry moves (spec section 13).
+
+Note (v2.2): the iPad home style is REMOVED (Haythem: 'it is
+bad'). Section 32 was rewritten in place: the label-rule,
+squircle-override, grid-composition, dock-composition and
+tile-boost checks are DELETED with the renderers they tested,
+replaced by codec + migration checks (a saved 'ipad' decodes
+to TV) and the value list [tv, tracker, iptv]; the root-
+reorder checks stay (shared FolderTree machinery). Section
+33's label/shape check went with them. New section 37 — IPTV:
+server normalization, Xtream URL shapes (api/live/movie/
+series/timeshift), auth probe, catalogue parsing (string +
+numeric ids, malformed entries), series-info season/episode
+ordering, the M3U parser, favorites + resume codecs and clear
+rules, cross-catalogue search, home-row composition (empty
+categories skipped, favorites first, locks applied), the
+XMLTV parser (timezone offsets, entities, CDATA), now/next +
+progress at a fixed clock, short-EPG base64 titles, category
+pattern-locks (adult markers, stamp/grace rules), and the
+iptv status classification + diagnostics line (spec S20).
 
 ```
 PASS  neverlist: gms is never
@@ -400,28 +419,13 @@ PASS  redditstatus: attempt line names endpoint, code, count
 PASS  redditstatus: success summary shows the photo count
 PASS  redditstatus: failure summary names the last result
 PASS  homestyle: missing/garbage decodes to tv
-PASS  homestyle: ipad survives the codec
-PASS  homestyle: value list is tv then ipad (v1.8: tracker appended)
-PASS  homestyle: label rule ? tv needs focus, ipad always shows
-PASS  homestyle: ipad forces squircle, tv keeps the preference
-PASS  homestyle: grid apps exclude hidden and foldered (any depth), order kept
-PASS  homestyle: grid folders are the ROOTS in row order
-PASS  homestyle: grid inputs appended when enabled and present
-PASS  homestyle: grid apps keep the caller's order
-PASS  homestyle: grid inputs empty when the row is disabled
-PASS  homestyle: grid inputs empty when the device reports none
+PASS  homestyle: saved ipad migrates to tv (v2.2 removal)
+PASS  homestyle: tracker and iptv survive the codec
+PASS  homestyle: value list is tv, tracker, iptv (the Settings picker order)
 PASS  homestyle: root reorder permutes only the root slots
 PASS  homestyle: root reorder keeps nesting intact
 PASS  homestyle: root reorder with the current order is a no-op
-PASS  homestyle: dock caps favorites at 10, in order
-PASS  homestyle: dock divider sits after the favorites
-PASS  homestyle: dock fixed buttons follow, profile + settings last
-PASS  homestyle: dock drops search/all-apps when their switches are off
-PASS  homestyle: dock with no favorites has no divider
-PASS  homestyle: tile boost enlarges width and icon
-PASS  homestyle: default boost leaves metrics unchanged
 PASS  tracker: codec ? tracker survives, garbage still decodes to tv
-PASS  tracker: tracker style keeps tv label + shape rules
 PASS  tracker: upnext parse ? fields land, id-less item dropped
 PASS  tracker: parse is fail-open ? garbage and null give empty lists
 PASS  tracker: continue parse ? progress counts land
@@ -570,5 +574,49 @@ PASS  hero pool: every candidate carries its exact section name as source
 PASS  hero pool: poster-only For You pick stays out; a known backdrop lets it in
 PASS  hero pool: movie hero uses the movie path (type movie, release date, no fake backdrop)
 PASS  hero pool: two-source overload keeps the v1.8 order and tags
-RESULT: 501 passed, 0 failed, 501 total
+PASS  iptv: bare host gains http:// and loses the trailing slash
+PASS  iptv: account needs server + user + pass
+PASS  iptv: api url is player_api.php with encoded credentials + action
+PASS  iptv: xmltv url shape
+PASS  iptv: live url is /live/user/pass/id.m3u8
+PASS  iptv: vod url uses container_extension, defaulting to mp4
+PASS  iptv: episode url is /series/user/pass/episodeId.ext
+PASS  iptv: timeshift url is /timeshift/user/pass/durationMin/startYmdHis/id.ts
+PASS  iptv: auth probe ? 1 true, 0 false, string ids accepted, junk null
+PASS  iptv: categories parse (string+numeric ids, blank names skipped, key stamped)
+PASS  iptv: live parse skips bad ids + blank names, resolves category names
+PASS  iptv: tv_archive flag drives catch-up availability
+PASS  iptv: vod parse keeps container_extension + numeric rating as text
+PASS  iptv: series list parse
+PASS  iptv: series info ? seasons sort numerically, ghost episodes skipped
+PASS  iptv: series info ? episode fields (ext, duration, plot)
+PASS  iptv: m3u channels + groups (quote-aware name, ungrouped ? Playlist)
+PASS  iptv: m3u channel identity ? tvg-id/logo/direct url, stable ids
+PASS  iptv: favorites codec round-trips hostile names
+PASS  iptv: favorites toggle adds then removes by identity key
+PASS  iptv: favorites decode is fail-open on garbage
+PASS  iptv: shouldClear ? near the end or ?95% is finished; unknown duration is not
+PASS  iptv: resume store replaces by key and drops finished entries
+PASS  iptv: resumeFor hides sub-threshold positions
+PASS  iptv: continue list is vod/episode only, newest first
+PASS  iptv: resume codec round-trips
+PASS  iptv: search is case-insensitive across all three catalogues
+PASS  iptv: search excludes hidden categories
+PASS  iptv: home rows order ? favorites, live categories, continue, movies, series
+PASS  iptv: home live card carries the EPG now title + progress
+PASS  iptv: home rows drop locked categories (empty category rows never render)
+PASS  iptv: home rows with no data compose to nothing
+PASS  iptv: xmltv parses channels, unescapes entities, unwraps CDATA, skips broken spans
+PASS  iptv: xmltv timezone offsets convert to the same absolute instant
+PASS  iptv: now/next selection at a fixed clock + progress fraction
+PASS  iptv: short epg ? base64 titles, listing times read as UTC
+PASS  iptv: adult markers match case-insensitively
+PASS  iptv: lock store codecs round-trip
+PASS  iptv: stamp validity ? grace window vs session rule
+PASS  iptv: isLocked ? no pattern means nothing locks; stored + adult lock; a valid stamp opens
+PASS  iptv: hiddenKeys composes the decision over a category list
+PASS  iptv: status classify precedence ? unconfigured, data beats auth, auth, empty, error
+PASS  iptv: diag line carries counts + time, never credentials
+PASS  iptv: empty-state lines per kind
+RESULT: 530 passed, 0 failed, 530 total
 ```

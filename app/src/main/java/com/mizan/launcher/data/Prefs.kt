@@ -79,12 +79,12 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putInt(k("columns"), v.coerceIn(3, 10)).apply() }
 
     /**
-     * Home-screen style (v1.7, extended v1.8): "tv" (default) |
-     * "ipad" | "tracker". Per profile — one profile can be iPad
-     * while the other stays TV. Reads and writes both pass through
-     * the HomeStyle codec, so a missing or garbled stored value
-     * always resolves to TV (never a crash, and old backups restore
-     * as TV).
+     * Home-screen style (v1.7, extended v1.8, reworked v2.2): "tv"
+     * (default) | "tracker" | "iptv". Per profile. Reads and writes
+     * both pass through the HomeStyle codec, so a missing or garbled
+     * stored value always resolves to TV (never a crash, and old
+     * backups restore as TV). v2.2 removed the iPad style — a stored
+     * "ipad" decodes to TV (see core/HomeStyle).
      */
     var homeStyle: String
         get() = com.mizan.launcher.core.HomeStyle.normalize(sp.getString(k("home_style"), null))
@@ -149,6 +149,93 @@ class Prefs(ctx: Context) {
     var pendingOverlay: String
         get() = sp.getString(k("pending_overlay"), "") ?: ""
         set(v) { sp.edit().putString(k("pending_overlay"), v).apply() }
+
+    // ---- IPTV account (GLOBAL, v2.2) ----
+    /**
+     * The IPTV sources are device-global (one household account,
+     * like the weather location): an Xtream server/username/password
+     * and/or an M3U playlist URL + optional XMLTV (EPG) URL.
+     *
+     * HARD RULE (spec §20.2): these values are CREDENTIALS. They
+     * live only in this prefs file — never in the backup/export
+     * payload, diagnostics, logs, or any file the app produces. The
+     * M3U/EPG URLs may embed credentials of their own and get the
+     * same treatment. The diagnostics line shows counts + state only.
+     */
+    var iptvServer: String
+        get() = sp.getString("iptv_server", "") ?: ""
+        set(v) { sp.edit().putString("iptv_server", v).apply() }
+
+    var iptvUser: String
+        get() = sp.getString("iptv_user", "") ?: ""
+        set(v) { sp.edit().putString("iptv_user", v).apply() }
+
+    var iptvPass: String
+        get() = sp.getString("iptv_pass", "") ?: ""
+        set(v) { sp.edit().putString("iptv_pass", v).apply() }
+
+    var iptvM3uUrl: String
+        get() = sp.getString("iptv_m3u_url", "") ?: ""
+        set(v) { sp.edit().putString("iptv_m3u_url", v).apply() }
+
+    var iptvEpgUrl: String
+        get() = sp.getString("iptv_epg_url", "") ?: ""
+        set(v) { sp.edit().putString("iptv_epg_url", v).apply() }
+
+    /** The Xtream account, normalized (core/IptvLogic owns the rules). */
+    fun iptvAccount(): com.mizan.launcher.core.IptvLogic.Account =
+        com.mizan.launcher.core.IptvLogic.account(iptvServer, iptvUser, iptvPass)
+
+    /** True when at least one IPTV source (Xtream or M3U) is set up. */
+    fun iptvAnyConfigured(): Boolean =
+        iptvAccount().isConfigured || iptvM3uUrl.isNotBlank()
+
+    /** Remove every IPTV source value (Settings › IPTV › Clear). Prefs only — nothing else stores them. */
+    fun clearIptvAccount() {
+        sp.edit()
+            .remove("iptv_server").remove("iptv_user").remove("iptv_pass")
+            .remove("iptv_m3u_url").remove("iptv_epg_url")
+            .apply()
+    }
+
+    // ---- per-profile IPTV state (v2.2) ----
+    /**
+     * IPTV favorites, encoded by core/IptvLogic (one entry per
+     * line). Per profile. Like the marked-set: local state, NOT
+     * part of backups (entries can carry stream URLs).
+     */
+    var iptvFavorites: String
+        get() = sp.getString(k("iptv_favorites"), "") ?: ""
+        set(v) { sp.edit().putString(k("iptv_favorites"), v).apply() }
+
+    fun iptvFavoriteList(): List<com.mizan.launcher.core.IptvLogic.FavEntry> =
+        com.mizan.launcher.core.IptvLogic.decodeFavorites(iptvFavorites)
+
+    fun setIptvFavoriteList(list: List<com.mizan.launcher.core.IptvLogic.FavEntry>) {
+        iptvFavorites = com.mizan.launcher.core.IptvLogic.encodeFavorites(list)
+    }
+
+    /** IPTV resume positions, encoded by core/IptvLogic. Per profile, not in backups. */
+    var iptvResume: String
+        get() = sp.getString(k("iptv_resume"), "") ?: ""
+        set(v) { sp.edit().putString(k("iptv_resume"), v).apply() }
+
+    fun iptvResumeList(): List<com.mizan.launcher.core.IptvLogic.ResumeEntry> =
+        com.mizan.launcher.core.IptvLogic.decodeResume(iptvResume)
+
+    fun setIptvResumeList(list: List<com.mizan.launcher.core.IptvLogic.ResumeEntry>) {
+        iptvResume = com.mizan.launcher.core.IptvLogic.encodeResume(list)
+    }
+
+    /** Explicitly pattern-locked IPTV categories, encoded by core/IptvLocks. Per profile. */
+    var iptvLockedCats: String
+        get() = sp.getString(k("iptv_locked_cats"), "") ?: ""
+        set(v) { sp.edit().putString(k("iptv_locked_cats"), v).apply() }
+
+    /** Per-category unlock stamps (epoch ms), encoded by core/IptvLocks. Per profile. */
+    var iptvCatUnlockStamps: String
+        get() = sp.getString(k("iptv_cat_unlock_stamps"), "") ?: ""
+        set(v) { sp.edit().putString(k("iptv_cat_unlock_stamps"), v).apply() }
 
     /**
      * Custom app artwork (v2.0), encoded by core/ArtworkStore
@@ -305,9 +392,9 @@ class Prefs(ctx: Context) {
 
     // ---- sticky status bar (per profile, v1.9) ----
     /**
-     * "Sticky status bar": when ON, the status bar / iPad top strip
-     * renders in a fixed header above the scrollable home instead of
-     * scrolling away with it. Default OFF = the pre-v1.9 behaviour.
+     * "Sticky status bar": when ON, the status bar renders in a
+     * fixed header above the scrollable home instead of scrolling
+     * away with it. Default OFF = the pre-v1.9 behaviour.
      */
     var stickyStatusBar: Boolean
         get() = sp.getBoolean(k("sticky_status_bar"), false)

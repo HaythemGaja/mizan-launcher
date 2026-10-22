@@ -31,6 +31,10 @@ import com.mizan.launcher.core.FolderLogic
 import com.mizan.launcher.core.FolderTree
 import com.mizan.launcher.core.GuestGate
 import com.mizan.launcher.core.HeroRotator
+import com.mizan.launcher.core.IptvEpg
+import com.mizan.launcher.core.IptvLocks
+import com.mizan.launcher.core.IptvLogic
+import com.mizan.launcher.core.IptvStatus
 import com.mizan.launcher.core.LiveTvLogic
 import com.mizan.launcher.core.MostUsedLogic
 import com.mizan.launcher.core.MoveContainer
@@ -58,6 +62,9 @@ import com.mizan.launcher.data.NowPlayingData
 import com.mizan.launcher.data.Prefs
 import com.mizan.launcher.data.TmdbImages
 import com.mizan.launcher.data.TrackerActions
+import com.mizan.launcher.data.IptvClient
+import com.mizan.launcher.data.PlayItem
+import com.mizan.launcher.data.PlayQueue
 import com.mizan.launcher.data.TrackerClient
 import com.mizan.launcher.data.TvData
 import com.mizan.launcher.data.WallpaperRotator
@@ -67,6 +74,10 @@ import com.mizan.launcher.data.WeatherArt
 import com.mizan.launcher.ui.ArrowPinDialog
 import com.mizan.launcher.ui.ArtworkPicker
 import com.mizan.launcher.ui.ForecastActivity
+import com.mizan.launcher.ui.IptvActivity
+import com.mizan.launcher.ui.IptvCards
+import com.mizan.launcher.ui.IptvGuideActivity
+import com.mizan.launcher.ui.PlayerActivity
 import com.mizan.launcher.ui.SearchActivity
 import com.mizan.launcher.ui.SettingsActivity
 import com.mizan.launcher.ui.Ui
@@ -190,7 +201,7 @@ class MainActivity : Activity() {
             if (MostUsed.isGranted(this)) {
                 val beforeStats = MostUsed.cachedStats()
                 MostUsed.refreshAsync(this, appsByPkg.mapValues { it.value.label }) { stats ->
-                    if (stats != beforeStats && !isTrackerStyle() && !isIpadStyle()) rebuild()
+                    if (stats != beforeStats && !isTrackerStyle() && !isIptvStyle()) rebuild()
                 }
             }
         }
@@ -455,21 +466,11 @@ class MainActivity : Activity() {
             root.addView(pill)
         }
 
-        // v1.7: the iPad home style renders an alternate root from the
-        // SAME wallpaper/scrim/corner-gear/corner-pill frame above —
-        // presentation only; every datum, menu, lock, gate and move
-        // session is shared with the TV style. Safe mode forces TV.
-        if (isIpadStyle()) {
-            // The floating dock overlays the bottom of the scroll
-            // content; pad the content so the grid's last row can
-            // scroll fully clear of it.
-            content.setPadding(
-                Ui.dp(this, com.mizan.launcher.core.Design.CONTENT_MARGIN_DP),
-                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_L),
-                Ui.dp(this, com.mizan.launcher.core.Design.CONTENT_MARGIN_DP),
-                Ui.dp(this, 200)
-            )
-            buildIpadHome(root, content, barHost)
+        // v1.8: the Tracker home style — same frame (wallpaper, scrim,
+        // corner gear/pill), an alternate root render. The TV render
+        // below is untouched and tracker-free.
+        if (isTrackerStyle()) {
+            buildTrackerHome(content, barHost)
             homeRoot = root
             if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
                 attachMoveHint(root)
@@ -477,11 +478,11 @@ class MainActivity : Activity() {
             return root
         }
 
-        // v1.8: the Tracker home style — same frame (wallpaper, scrim,
-        // corner gear/pill), a third root render. The TV and iPad
-        // renders above/below are untouched and tracker-free.
-        if (isTrackerStyle()) {
-            buildTrackerHome(content, barHost)
+        // v2.2: the IPTV home style — same frame again (the wallpaper
+        // treatment is the TV one; no hero backdrop here), a third
+        // root render. Safe mode forces TV, so this never runs there.
+        if (isIptvStyle()) {
+            buildIptvHome(content, barHost)
             homeRoot = root
             if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
                 attachMoveHint(root)
@@ -631,385 +632,293 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------
-    // v1.7 iPad home style — presentation + composition only. All
-    // data, menus, locks, gates and move machinery are the TV style's.
+    // Home styles (v1.7 TV, v1.8 Tracker, v2.2 IPTV). v2.2 REMOVED
+    // the iPad style (Haythem: "it is bad") — its renderers are
+    // gone; the HomeStyle codec decodes a stored "ipad" to TV, so
+    // profiles saved with it open in the TV style (spec §20.1).
     // ---------------------------------------------------------------
 
     /** The effective home style: safe mode always forces TV. */
     private fun homeStyleKey(): String =
         if (prefs.safeMode) com.mizan.launcher.core.HomeStyle.TV else prefs.homeStyle
 
-    private fun isIpadStyle(): Boolean =
-        com.mizan.launcher.core.HomeStyle.isIpad(homeStyleKey())
-
     private fun isTrackerStyle(): Boolean =
         com.mizan.launcher.core.HomeStyle.isTracker(homeStyleKey())
 
-    /** The icon shape home tiles render with (iPad forces squircle). */
-    private fun effectiveIconShape(): String =
-        com.mizan.launcher.core.HomeStyle.effectiveIconShape(homeStyleKey(), prefs.iconShape)
+    private fun isIptvStyle(): Boolean =
+        com.mizan.launcher.core.HomeStyle.isIptv(homeStyleKey())
 
-    /**
-     * The iPad home, top to bottom: slim strip, first-run hint,
-     * widget rows (Continue Watching then Recently Used — fixed order
-     * in this style), the main grid, and the floating dock pinned to
-     * the root's bottom. Favorites live in the dock here (not a row);
-     * HDMI inputs join the grid (not a row); folders are grid tiles.
-     */
-    private fun buildIpadHome(root: FrameLayout, content: LinearLayout, stripHost: LinearLayout) {
-        // v1.9: the strip goes to the sticky header when sticky is on
-        // (stripHost == content otherwise — the v1.7 composition).
-        stripHost.addView(buildIpadStrip())
-        buildHomeHint()?.let { content.addView(it) }
-        if (layout.isRowVisible("continue")) {
+    /** The icon shape home tiles render with (the profile's preference, unmodified). */
+    private fun effectiveIconShape(): String = prefs.iconShape
+
+    // ---------------------------------------------------------------
+    // v2.2 IPTV home style — TV-style rows under the bar over the
+    // standard wallpaper frame: a Browse entry row, then the
+    // composed IPTV rows (core/IptvLogic.homeRows — Favorites,
+    // Live, Continue Watching, Movies, Series), then the profile's
+    // app rows (Favorites / All Apps) at the bottom like the
+    // Tracker style, so apps stay reachable. Fail-open: no account
+    // or no data renders the classified empty-state line
+    // (core/IptvStatus) above the app rows, never a crash.
+    // ---------------------------------------------------------------
+
+    private fun buildIptvHome(content: LinearLayout, barHost: LinearLayout) {
+        barHost.addView(buildTopBar())
+        IptvClient.refreshAsync(this) { if (isIptvStyle()) rebuild() }
+        IptvClient.epgIndex(this) { if (isIptvStyle()) rebuild() }
+
+        content.addView(buildIptvEntryRow())
+
+        val cats = IptvClient.cached(this)
+        val hidden = iptvHiddenCatKeys(cats)
+        val rows = IptvLogic.homeRows(
+            cats, prefs.iptvFavoriteList(), prefs.iptvResumeList(), hidden,
+            IptvClient.epgIndex(this), System.currentTimeMillis()
+        )
+        if (rows.isEmpty()) {
+            val lineText = IptvStatus.emptyLine(IptvClient.status(this))
+                ?: "Nothing to show here yet — IPTV rows appear when your catalogues load."
+            content.addView(trackerInfoLine(lineText))
+        }
+        for (row in rows) {
             try {
-                buildContinueSection()?.let { content.addView(it) }
+                content.addView(buildIptvRow(row, cats))
             } catch (e: Exception) {
-                Prefs.noteError(this, "row:continue", e)
+                Prefs.noteError(this, "row:iptv:${row.kind}", e)
             }
         }
-        if (layout.isRowVisible("recents")) {
+        if (layout.isRowVisible("favorites")) {
             try {
-                buildRecentsSection()?.let { content.addView(it) }
+                content.addView(buildFavoritesSection())
             } catch (e: Exception) {
-                Prefs.noteError(this, "row:recents", e)
+                Prefs.noteError(this, "row:iptv:favorites", e)
             }
         }
-        content.addView(buildIpadGrid())
-        root.addView(buildIpadDock())
-        updateClock()
+        if (layout.isRowVisible("apps")) {
+            try {
+                content.addView(buildAppsSection())
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:iptv:apps", e)
+            }
+        }
     }
 
-    /**
-     * The slim iPadOS-like top strip: date + clock on the left,
-     * weather / network / Bluetooth / Guest on the right — every
-     * element gated by the SAME StatusBarConfig switches the TV hero
-     * honours, so hiding the clock in Settings hides it here too.
-     * With the whole bar hidden the strip collapses to nothing (the
-     * corner gear + corner Guest pill in the frame still apply).
-     */
-    private fun buildIpadStrip(): View {
-        val cfg = layout.statusBar
-        val wrap = LinearLayout(this)
-        wrap.orientation = LinearLayout.VERTICAL
-        if (!cfg.showBar) return wrap
-        val scale = cfg.textScale()
-        val strip = LinearLayout(this)
-        strip.orientation = LinearLayout.HORIZONTAL
-        strip.gravity = Gravity.CENTER_VERTICAL
-        if (cfg.background != "transparent") {
-            val bg = GradientDrawable()
-            bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
-            // v1.9 polish: the strip wears the DOCK's lighter
-            // translucent material (one chrome language, wallpaper
-            // shows through), and sits slimmer.
-            bg.setColor(com.mizan.launcher.core.Design.DOCK_FILL)
-            strip.background = bg
-            strip.setPadding(
-                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
-                Ui.dp(this, com.mizan.launcher.core.Design.IPAD_STRIP_PAD_V_DP),
-                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
-                Ui.dp(this, com.mizan.launcher.core.Design.IPAD_STRIP_PAD_V_DP)
-            )
-        }
+    /** The category-lock hidden set over every IPTV category (both sources). */
+    private fun iptvHiddenCatKeys(cats: IptvLogic.Catalogues): Set<String> =
+        IptvLocks.hiddenKeys(
+            cats.liveCats + cats.vodCats + cats.seriesCats,
+            IptvLocks.decodeKeys(prefs.iptvLockedCats),
+            IptvLocks.decodeStamps(prefs.iptvCatUnlockStamps),
+            prefs.unlockGraceMinutes,
+            System.currentTimeMillis(),
+            IptvClient.sessionStartMs,
+            prefs.arrowPin.isNotEmpty()
+        )
 
-        val left = LinearLayout(this)
-        left.orientation = LinearLayout.HORIZONTAL
-        left.gravity = Gravity.CENTER_VERTICAL
-        strip.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
-
-        dateView = null
-        clockView = null
-        if (cfg.showDate) {
-            val d = TextView(this)
-            d.setTextColor(subColour)
-            // v1.9 polish: secondary strip text runs smaller and
-            // tracked-out — the clock stays the strip's one loud voice.
-            d.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
-            d.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
-            dateView = d
-            left.addView(d)
-        }
-        if (cfg.showClock) {
-            val c = TextView(this)
-            c.setTextColor(textColour)
-            c.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
-            c.typeface = android.graphics.Typeface.DEFAULT_BOLD
-            if (cfg.showDate) {
-                val lp = LinearLayout.LayoutParams(-2, -2)
-                lp.setMargins(Ui.dp(this, 12), 0, 0, 0)
-                c.layoutParams = lp
-            }
-            clockView = c
-            left.addView(c)
-        }
-        // v2.1: weather joins the LEFT cluster as plain text (same
-        // reorganization as the TV/Tracker bar — it was a focusable
-        // chip here too). The tag-"weather" wrapper hides whole when
-        // there is no weather; the text keeps tag "weather_text".
-        if (cfg.showWeather) {
-            val weatherWrap = LinearLayout(this)
-            weatherWrap.orientation = LinearLayout.HORIZONTAL
-            weatherWrap.gravity = Gravity.CENTER_VERTICAL
-            weatherWrap.tag = "weather"
-            weatherWrap.visibility = View.GONE
-            val sep = TextView(this)
-            sep.text = "·"
-            sep.setTextColor(subColour)
-            sep.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
-            val slp3 = LinearLayout.LayoutParams(-2, -2)
-            slp3.setMargins(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0)
-            sep.layoutParams = slp3
-            weatherWrap.addView(sep)
-            val w = TextView(this)
-            w.tag = "weather_text"
-            w.setTextColor(subColour)
-            w.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
-            w.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
-            weatherWrap.addView(w)
-            left.addView(weatherWrap)
-        }
-
-        // RIGHT (v2.1): status glyphs only — Wi-Fi / Bluetooth as
-        // compact dimmable glyphs, no word labels, then the Guest
-        // pill. (The strip has no action tiles; the dock has them.)
-        val right = LinearLayout(this)
-        right.orientation = LinearLayout.HORIZONTAL
-        right.gravity = Gravity.CENTER_VERTICAL
-        networkView = null
-        if (cfg.showNetwork) {
-            val n = TextView(this)
-            n.setTextColor(textColour)
-            n.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
-            networkView = n
-            right.addView(n)
-        }
-        if (cfg.showBluetooth) {
-            bluetoothGlyph()?.let { (glyphText, glyphAlpha) ->
-                val bt = TextView(this)
-                bt.text = glyphText
-                bt.alpha = glyphAlpha
-                bt.setTextColor(textColour)
-                bt.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
-                val lp = LinearLayout.LayoutParams(-2, -2)
-                lp.setMargins(Ui.dp(this, 10), 0, 0, 0)
-                bt.layoutParams = lp
-                right.addView(bt)
-            }
-        }
-        if (guestActive()) {
-            val pill = guestPill()
-            val lp = LinearLayout.LayoutParams(-2, -2)
-            lp.setMargins(Ui.dp(this, 12), 0, 0, 0)
-            pill.layoutParams = lp
-            right.addView(pill)
-        }
-        strip.addView(right)
-        wrap.addView(strip)
-        return wrap
+    /** The always-present entry row into the IPTV browser + guide. */
+    private fun buildIptvEntryRow(): View {
+        val rowLayout = LinearLayout(this)
+        rowLayout.orientation = LinearLayout.HORIZONTAL
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 4), 0, Ui.dp(this, 10))
+        rowLayout.layoutParams = lp
+        rowLayout.addView(iptvEntryButton("📺  Browse IPTV — live, movies, series") {
+            startActivity(IptvActivity.intent(this))
+        })
+        rowLayout.addView(iptvEntryButton("📖  Programme guide") {
+            startActivity(Intent(this, IptvGuideActivity::class.java))
+        })
+        return rowLayout
     }
 
-    /**
-     * The iPad main grid: centered rows of boosted cells in three
-     * composed segments (apps, root folders, inputs — see
-     * [com.mizan.launcher.core.HomeStyle.composeGrid]). Every tile
-     * carries its label under the icon, always.
-     */
-    private fun buildIpadGrid(): View {
-        val box = LinearLayout(this)
-        box.orientation = LinearLayout.VERTICAL
-        // v1.9 polish: NO background of any kind behind the grid
-        // (the frame's scrim is the only field — wallpaper-forward),
-        // and the grid is capped at Design.IPAD_GRID_WIDTH_FRACTION
-        // of the screen, centered, instead of spanning edge to edge.
-        val gridWidth = (resources.displayMetrics.widthPixels *
-            com.mizan.launcher.core.Design.IPAD_GRID_WIDTH_FRACTION).toInt()
-        val glp = LinearLayout.LayoutParams(gridWidth, -2)
-        glp.gravity = Gravity.CENTER_HORIZONTAL
-        glp.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.HERO_TO_ROWS_GAP_DP), 0, 0)
-        box.layoutParams = glp
-
-        val inputs = try { TvData.listInputs(this) } catch (e: Exception) { emptyList() }
-        DiagCache.inputsCount = inputs.size
-        val inputsById = inputs.associateBy { it.id }
-        val comp = com.mizan.launcher.core.HomeStyle.composeGrid(
-            installedOrder = orderedApps(apps).map { it.pkg },
-            hidden = layout.hidden.toSet(),
-            folders = layout.folders,
-            inputsEnabled = layout.isRowVisible("inputs"),
-            inputIds = inputs.map { it.id }
-        )
-        val cells = ArrayList<View>()
-        for (pkg in comp.appPkgs) {
-            appsByPkg[pkg]?.let { cells.add(appTile(it, Source.AllApps, ipad = true, large = true)) }
-        }
-        for (fid in comp.folderIds) {
-            com.mizan.launcher.core.FolderTree.byId(layout.folders, fid)?.let {
-                cells.add(folderTile(it, ipad = true, large = true, movable = true))
-            }
-        }
-        for (iid in comp.inputIds) {
-            inputsById[iid]?.let { cells.add(inputTile(it, ipad = true, large = true)) }
-        }
-        if (cells.isEmpty()) {
-            val hint = TextView(this)
-            hint.text = "No apps yet — open Settings to set up your home screen."
-            hint.setTextColor(subColour)
-            hint.textSize = 16f
-            hint.gravity = Gravity.CENTER
-            box.addView(hint)
-            return box
-        }
-        // v1.9 polish: airier cells — the iPad grid's margins run at
-        // Design.IPAD_GRID_GAP_SCALE × the shared tile margin (the
-        // TV rows keep the shared margin; only grid cells widen).
-        val gapPx = Ui.dp(
-            this,
-            (TileLayout.TILE_MARGIN_DP *
-                com.mizan.launcher.core.Design.IPAD_GRID_GAP_SCALE).toInt()
-        )
-        for (chunk in cells.chunked(prefs.columns)) {
-            val rowLayout = LinearLayout(this)
-            rowLayout.orientation = LinearLayout.HORIZONTAL
-            rowLayout.gravity = Gravity.CENTER
-            for (cell in chunk) {
-                (cell.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
-                    lp.setMargins(gapPx, gapPx, gapPx, gapPx)
-                }
-                rowLayout.addView(cell)
-            }
-            box.addView(rowLayout)
-        }
-        return box
-    }
-
-    /**
-     * The floating dock: a translucent rounded panel pinned
-     * bottom-center of the root — favorites (icons only), a divider,
-     * then the fixed glyph buttons (see
-     * [com.mizan.launcher.core.HomeStyle.composeDock]). Horizontally
-     * scrollable when its contents overflow the screen.
-     */
-    private fun buildIpadDock(): View {
-        val cfg = layout.statusBar
-        val favEntries = layout.favorites
-            .mapNotNull { appsByPkg[it] }
-            .filter { it.pkg !in layout.hidden }
-        val items = com.mizan.launcher.core.HomeStyle.composeDock(
-            favorites = favEntries.map { it.pkg },
-            showSearch = cfg.showTileSearch,
-            showAllApps = cfg.showTileAllApps
-        )
-        val byPkg = favEntries.associateBy { it.pkg }
-        val panel = LinearLayout(this)
-        panel.orientation = LinearLayout.HORIZONTAL
-        panel.gravity = Gravity.CENTER_VERTICAL
-        val bg = GradientDrawable()
-        bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.DOCK_RADIUS_DP).toFloat()
-        // v1.9 polish: lighter, more translucent material (the same
-        // DOCK_FILL the top strip now wears) + slimmer padding.
-        bg.setColor(com.mizan.launcher.core.Design.DOCK_FILL)
-        panel.background = bg
-        panel.elevation = Ui.dp(this, 8).toFloat()
-        panel.setPadding(
-            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_H_DP),
-            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_V_DP),
-            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_H_DP),
-            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_V_DP)
-        )
-        for (item in items) {
-            when (item.kind) {
-                com.mizan.launcher.core.HomeStyle.DockKind.FAVORITE ->
-                    byPkg[item.pkg]?.let {
-                        panel.addView(appTile(it, Source.Favorites, ipad = true, ipadLabel = false))
-                    }
-                com.mizan.launcher.core.HomeStyle.DockKind.DIVIDER -> {
-                    val m = currentTileMetrics()
-                    val div = View(this)
-                    div.setBackgroundColor(0x59FFFFFF)
-                    val dlp = LinearLayout.LayoutParams(
-                        Ui.dp(this, 1), m.tileHeightPx - Ui.dp(this, 36)
-                    )
-                    dlp.setMargins(Ui.dp(this, 8), 0, Ui.dp(this, 8), 0)
-                    div.layoutParams = dlp
-                    panel.addView(div)
-                }
-                com.mizan.launcher.core.HomeStyle.DockKind.SEARCH ->
-                    panel.addView(dockButton("🔍") {
-                        startActivity(Intent(this, SearchActivity::class.java))
-                    })
-                com.mizan.launcher.core.HomeStyle.DockKind.ALL_APPS ->
-                    panel.addView(dockButton("▦") {
-                        startActivity(Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java))
-                    })
-                com.mizan.launcher.core.HomeStyle.DockKind.PROFILE ->
-                    panel.addView(dockButton("👤", onLongClick = {
-                        showProfileSwitchMenu()
-                        true
-                    }) { showProfileSwitchMenu() })
-                com.mizan.launcher.core.HomeStyle.DockKind.SETTINGS ->
-                    panel.addView(dockButton("⚙") { openSettings() })
-            }
-        }
-        val scroller = HorizontalScrollView(this)
-        scroller.isHorizontalScrollBarEnabled = false
-        scroller.addView(panel)
-        val slp = FrameLayout.LayoutParams(-2, -2)
-        slp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        slp.setMargins(Ui.dp(this, 24), 0, Ui.dp(this, 24), Ui.dp(this, 18))
-        scroller.layoutParams = slp
-        return scroller
-    }
-
-    /** One fixed dock button: a glyph cell the height of a dock tile. */
-    private fun dockButton(
-        glyph: String,
-        onLongClick: (() -> Boolean)? = null,
-        onClick: () -> Unit
-    ): View {
-        val m = currentTileMetrics()
+    private fun iptvEntryButton(text: String, onClick: () -> Unit): TextView {
         val b = TextView(this)
-        b.text = glyph
-        b.setTextColor(textColour)
-        b.textSize = 30f
-        b.gravity = Gravity.CENTER
+        b.text = text
+        b.setTextColor(0xFFFFFFFF.toInt())
+        b.textSize = 16f
+        b.setTypeface(b.typeface, android.graphics.Typeface.BOLD)
+        b.gravity = Gravity.CENTER_VERTICAL
         b.isFocusable = true
         b.isClickable = true
-        val lp = LinearLayout.LayoutParams(Ui.dp(this, 68), m.tileHeightPx)
-        lp.setMargins(Ui.dp(this, 2), 0, Ui.dp(this, 2), 0)
+        b.setPadding(Ui.dp(this, 18), Ui.dp(this, 12), Ui.dp(this, 18), Ui.dp(this, 12))
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.setMargins(0, 0, Ui.dp(this, 12), 0)
         b.layoutParams = lp
-        b.background = Ui.tileBackground(accent, false, com.mizan.launcher.core.Design.RADIUS_PANEL, this)
-        Ui.focusLift(b, accent, com.mizan.launcher.core.Design.RADIUS_PANEL)
+        b.background = Ui.tileBackground(
+            accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this
+        )
+        Ui.focusLift(b, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
         b.setOnClickListener { onClick() }
-        if (onLongClick != null) b.setOnLongClickListener { onLongClick() }
         return b
     }
 
-    /**
-     * The always-on name under an iPad-style tile: single line,
-     * ellipsized, with a soft shadow so it stays readable over any
-     * wallpaper. Sits at the tile's bottom edge.
-     */
-    private fun ipadLabelView(name: String): TextView {
-        val label = TextView(this)
-        label.text = name
-        label.setTextColor(textColour)
-        label.textSize = com.mizan.launcher.core.Design.IPAD_LABEL_SP
-        label.gravity = Gravity.CENTER
-        label.maxLines = 1
-        label.ellipsize = android.text.TextUtils.TruncateAt.END
-        label.setShadowLayer(
-            Ui.dp(this, 2).toFloat(), 0f, Ui.dp(this, 1).toFloat(), 0x99000000.toInt()
+    /** One composed IPTV row: section header + a horizontal card scroller. */
+    private fun buildIptvRow(row: IptvLogic.HomeRow, cats: IptvLogic.Catalogues): View {
+        val box = section(row.title)
+        val rowLayout = LinearLayout(this)
+        rowLayout.orientation = LinearLayout.HORIZONTAL
+        for (card in row.cards) {
+            val view = IptvCards.build(
+                activity = this, prefs = prefs, accent = accent,
+                imageUrl = card.image, title = card.title, meta = card.meta,
+                line2 = card.nowTitle.ifEmpty { null },
+                glyph = if (card.kind == IptvLogic.KIND_VOD) "🎬"
+                else if (card.kind == IptvLogic.KIND_SERIES) "📚" else "📺",
+                wide = card.kind == IptvLogic.KIND_LIVE,
+                tag = card.key, progress = card.progress,
+                onClick = { iptvCardClicked(card, row, cats) },
+                onLong = { iptvCardMenu(card, row, cats) }
+            )
+            if (firstTile == null) firstTile = (view as LinearLayout).getChildAt(0)
+            rowLayout.addView(view)
+        }
+        box.addView(horizontalScroller(rowLayout))
+        return box
+    }
+
+    // ---------------------------------------------------------- IPTV actions
+
+    private fun iptvPlayItemOf(ch: IptvLogic.LiveChannel): PlayItem = PlayItem(
+        kind = IptvLogic.KIND_LIVE, source = ch.source, id = ch.id.toString(),
+        title = ch.name, icon = ch.icon, meta = ch.categoryName,
+        catKey = ch.catKey, directUrl = ch.directUrl,
+        tvArchive = ch.tvArchive, epgId = ch.epgId
+    )
+
+    private fun iptvPlayLive(channels: List<IptvLogic.LiveChannel>, start: IptvLogic.LiveChannel) {
+        PlayQueue.set(
+            channels.map { iptvPlayItemOf(it) },
+            channels.indexOf(start).coerceAtLeast(0)
         )
-        val llp = FrameLayout.LayoutParams(-1, -2)
-        llp.gravity = Gravity.BOTTOM
-        // v1.9 polish: the label sits a touch lower on the tile.
-        llp.setMargins(
-            Ui.dp(this, 4), 0, Ui.dp(this, 4),
-            Ui.dp(this, com.mizan.launcher.core.Design.IPAD_LABEL_BOTTOM_DP)
+        startActivity(PlayerActivity.intent(this, iptvPlayItemOf(start)))
+    }
+
+    /** Play straight from a composed card (it carries ext / direct URL). */
+    private fun iptvPlayCardItem(card: IptvLogic.Card) {
+        PlayQueue.set(emptyList(), 0)
+        startActivity(
+            PlayerActivity.intent(
+                this,
+                PlayItem(
+                    kind = card.kind, source = card.source, id = card.id,
+                    title = card.title, icon = card.image, meta = card.meta,
+                    ext = card.ext, catKey = card.catKey, directUrl = card.directUrl
+                )
+            )
         )
-        label.layoutParams = llp
-        return label
+    }
+
+    private fun iptvCardClicked(
+        card: IptvLogic.Card,
+        row: IptvLogic.HomeRow,
+        cats: IptvLogic.Catalogues
+    ) {
+        when (card.kind) {
+            IptvLogic.KIND_LIVE -> {
+                val ch = cats.live.firstOrNull { it.key == card.key }
+                if (ch != null) {
+                    val siblings = row.cards.mapNotNull { c ->
+                        cats.live.firstOrNull { it.key == c.key }
+                    }
+                    iptvPlayLive(if (siblings.isEmpty()) listOf(ch) else siblings, ch)
+                } else {
+                    iptvPlayCardItem(card)
+                }
+            }
+            IptvLogic.KIND_SERIES -> startActivity(
+                IptvActivity.intent(
+                    this, IptvActivity.TAB_SERIES, card.id.toLongOrNull() ?: 0L
+                )
+            )
+            else -> iptvPlayCardItem(card) // vod + episode (Continue) cards
+        }
+    }
+
+    private fun iptvCardMenu(
+        card: IptvLogic.Card,
+        row: IptvLogic.HomeRow,
+        cats: IptvLogic.Catalogues
+    ) {
+        val labels = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        val isSeries = card.kind == IptvLogic.KIND_SERIES
+        labels.add(if (isSeries) "Open" else "▶ Play")
+        actions.add { iptvCardClicked(card, row, cats) }
+        if (card.kind == IptvLogic.KIND_LIVE) {
+            val ch = cats.live.firstOrNull { it.key == card.key }
+            val shift = ch?.let { iptvCatchUpItem(it) }
+            if (shift != null) {
+                labels.add("⏮ Watch from start")
+                actions.add {
+                    PlayQueue.set(emptyList(), 0)
+                    startActivity(PlayerActivity.intent(this, shift))
+                }
+            }
+        }
+        val favEntry = iptvFavEntryFor(card, cats)
+        if (favEntry != null) {
+            val isFav = IptvLogic.isFavorite(prefs.iptvFavoriteList(), favEntry.key)
+            labels.add(if (isFav) "★ Remove from favorites" else "☆ Add to favorites")
+            actions.add {
+                prefs.setIptvFavoriteList(
+                    IptvLogic.toggleFavorite(prefs.iptvFavoriteList(), favEntry)
+                )
+                Toast.makeText(
+                    this,
+                    if (isFav) "Removed from favorites" else "Added to favorites",
+                    Toast.LENGTH_SHORT
+                ).show()
+                rebuild()
+            }
+        }
+        if (card.kind == IptvLogic.KIND_VOD || card.kind == IptvLogic.KIND_EPISODE) {
+            if (IptvLogic.resumeFor(prefs.iptvResumeList(), card.key) != null) {
+                labels.add("↺ Play from the beginning")
+                actions.add {
+                    prefs.setIptvResumeList(
+                        IptvLogic.withoutResume(prefs.iptvResumeList(), card.key)
+                    )
+                    iptvPlayCardItem(card)
+                }
+            }
+        }
+        AlertDialog.Builder(this).setTitle(card.title)
+            .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }
+            .show()
+    }
+
+    /** The favorite entry a card toggles (catalogue object when present, else the stored favorite). */
+    private fun iptvFavEntryFor(
+        card: IptvLogic.Card,
+        cats: IptvLogic.Catalogues
+    ): IptvLogic.FavEntry? = when (card.kind) {
+        IptvLogic.KIND_LIVE -> cats.live.firstOrNull { it.key == card.key }
+            ?.let { IptvLogic.favOf(it) }
+            ?: prefs.iptvFavoriteList().firstOrNull { it.key == card.key }
+        IptvLogic.KIND_VOD -> cats.vods.firstOrNull { it.key == card.key }
+            ?.let { IptvLogic.favOf(it) }
+            ?: prefs.iptvFavoriteList().firstOrNull { it.key == card.key }
+        IptvLogic.KIND_SERIES -> cats.series.firstOrNull { it.key == card.key }
+            ?.let { IptvLogic.favOf(it) }
+            ?: prefs.iptvFavoriteList().firstOrNull { it.key == card.key }
+        else -> null
+    }
+
+    /** The catch-up item for a channel right now, or null when it doesn't apply (§20.10). */
+    private fun iptvCatchUpItem(ch: IptvLogic.LiveChannel): PlayItem? {
+        if (!ch.hasArchive) return null
+        val (now, _) = IptvEpg.nowNext(
+            IptvLogic.epgFor(IptvClient.epgIndex(this), ch), System.currentTimeMillis()
+        )
+        if (now == null) return null
+        val durationMin = ((now.stopMs - now.startMs + 59_999L) / 60_000L).toInt().coerceAtLeast(1)
+        return iptvPlayItemOf(ch).copy(
+            kind = IptvClient.KIND_SHIFT,
+            title = ch.name + " — from the start",
+            meta = now.title,
+            shiftStartMs = now.startMs,
+            shiftDurationMin = durationMin
+        )
     }
 
 
@@ -1294,8 +1203,7 @@ class MainActivity : Activity() {
      * stock launcher for a second or two before the watcher pulls
      * Sreeb forward (Haythem's on-device report), and this hint is
      * the pointer to the real fix (Settings › Make Sreeb your home
-     * screen, Step 1). It renders in all three home styles: via the
-     * top bar (TV + Tracker) and explicitly in the iPad home.
+     * screen, Step 1). It renders in every home style via the top bar.
      */
     private fun buildHomeHint(): View? {
         if (prefs.safeMode || prefs.homeHintDismissed) return null
@@ -1577,7 +1485,7 @@ class MainActivity : Activity() {
         val result = LiveTv.cached()
         if (result == null) {
             // First build: probe in the background, rebuild when it lands.
-            LiveTv.refreshAsync(this) { if (!isTrackerStyle() && !isIpadStyle()) rebuild() }
+            LiveTv.refreshAsync(this) { if (!isTrackerStyle() && !isIptvStyle()) rebuild() }
             return null
         }
         if (result.state != LiveTvLogic.State.OK || result.channels.isEmpty()) return null
@@ -2695,12 +2603,8 @@ class MainActivity : Activity() {
      * applies identically in both styles. Inputs are never move-mode
      * reorderable: their tile has no menu at all.
      */
-    private fun inputTile(
-        info: android.media.tv.TvInputInfo,
-        ipad: Boolean = false,
-        large: Boolean = false
-    ): View {
-        val tile = glyphTile("📺", TvData.inputLabel(this, info), ipad = ipad, large = large)
+    private fun inputTile(info: android.media.tv.TvInputInfo): View {
+        val tile = glyphTile("📺", TvData.inputLabel(this, info))
         tile.setOnClickListener {
             // v1.6 gate audit: switching to an input starts an
             // activity inside the input's own package (e.g. the
@@ -2736,18 +2640,13 @@ class MainActivity : Activity() {
 
     private enum class Source { Favorites, AllApps, Folder, Recents }
 
-    /**
-     * The ONE tile size for the whole home screen (v1.2: core/TileLayout).
-     * [large] (v1.7) applies the iPad grid's boost on top of the
-     * profile's app-size scale; every other tile leaves it off.
-     */
-    private fun currentTileMetrics(wide: Boolean = false, large: Boolean = false): TileLayout.Metrics {
+    /** The ONE tile size for the whole home screen (v1.2: core/TileLayout). */
+    private fun currentTileMetrics(wide: Boolean = false): TileLayout.Metrics {
         val dm = resources.displayMetrics
-        val boost = if (large) com.mizan.launcher.core.Design.IPAD_TILE_BOOST else 1f
         return if (wide) {
-            TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns, boost)
+            TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         } else {
-            TileLayout.tileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns, boost)
+            TileLayout.tileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         }
     }
 
@@ -2756,8 +2655,8 @@ class MainActivity : Activity() {
      * background. The name label is added by [finishTile] as an overlay,
      * so it never affects the tile's size or the row's layout.
      */
-    private fun baseTile(wide: Boolean = false, large: Boolean = false): FrameLayout {
-        val m = currentTileMetrics(wide, large)
+    private fun baseTile(wide: Boolean = false): FrameLayout {
+        val m = currentTileMetrics(wide)
         val frame = FrameLayout(this)
         frame.isFocusable = true
         frame.isClickable = true
@@ -2798,22 +2697,16 @@ class MainActivity : Activity() {
     }
 
     /**
-     * One app tile. TV style: centered icon + focus-only name pill.
-     * iPad style ([ipad]): squircle icon in the tile's upper area +
-     * the name ALWAYS under it ([ipadLabel] off only in the dock,
-     * whose favorites are icons-only). Click/long-click (launch +
-     * the shared menu incl. Move) are identical in both styles.
+     * One app tile: centered icon + focus-only name pill.
+     * Click/long-click: launch + the shared menu (incl. Move).
      */
     private fun appTile(
         entry: AppEntry,
         source: Source,
-        folderId: String? = null,
-        ipad: Boolean = false,
-        large: Boolean = false,
-        ipadLabel: Boolean = true
+        folderId: String? = null
     ): View {
-        val m = currentTileMetrics(large = large)
-        val tile = baseTile(large = large)
+        val m = currentTileMetrics()
+        val tile = baseTile()
         // Move mode finds the grabbed tile by package after a rebuild.
         tile.tag = entry.pkg
         val iv = ImageView(this)
@@ -2837,12 +2730,7 @@ class MainActivity : Activity() {
             }
         }
         val ilp = FrameLayout.LayoutParams(m.iconPx, m.iconPx)
-        if (ipad) {
-            ilp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            ilp.setMargins(0, Ui.dp(this, 8), 0, 0)
-        } else {
-            ilp.gravity = Gravity.CENTER
-        }
+        ilp.gravity = Gravity.CENTER
         iv.layoutParams = ilp
         tile.addView(iv)
         if (prefs.lockedApps.contains(entry.pkg)) {
@@ -2859,12 +2747,7 @@ class MainActivity : Activity() {
             lock.layoutParams = llp
             tile.addView(lock)
         }
-        if (ipad) {
-            if (ipadLabel) tile.addView(ipadLabelView(entry.label))
-            Ui.focusLift(tile, accent, 16)
-        } else {
-            finishTile(tile, entry.label)
-        }
+        finishTile(tile, entry.label)
         tile.setOnClickListener { launchWithPin(entry) }
         tile.setOnLongClickListener { openAppMenu(entry, source, folderId); true }
         return tile
@@ -2874,33 +2757,21 @@ class MainActivity : Activity() {
     private fun glyphTile(
         glyph: String,
         name: String,
-        wide: Boolean = false,
-        ipad: Boolean = false,
-        large: Boolean = false
+        wide: Boolean = false
     ): FrameLayout {
-        val tile = baseTile(wide, large)
+        val tile = baseTile(wide)
         val centre = TextView(this)
         centre.text = glyph
         centre.setTextColor(textColour)
-        centre.textSize = if (ipad) 40f else 32f
+        centre.textSize = 32f
         centre.gravity = Gravity.CENTER
         val clp = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT
         )
-        if (ipad) {
-            clp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            clp.setMargins(0, Ui.dp(this, 14), 0, 0)
-        } else {
-            clp.gravity = Gravity.CENTER
-        }
+        clp.gravity = Gravity.CENTER
         centre.layoutParams = clp
         tile.addView(centre)
-        if (ipad) {
-            tile.addView(ipadLabelView(name))
-            Ui.focusLift(tile, accent, 16)
-        } else {
-            finishTile(tile, name)
-        }
+        finishTile(tile, name)
         return tile
     }
 
@@ -2940,13 +2811,10 @@ class MainActivity : Activity() {
      */
     /**
      * A folder tile's face: the 2×2 mini-grid of its first apps'
-     * icons (v1.6), or the 🗂 glyph when it holds no apps. [top]
-     * (v1.7 iPad style) parks the face in the tile's upper area so
-     * the always-on name can sit under it; otherwise it's centered.
-     * The mini icons use the effective shape, so in iPad style they
-     * are squircles too.
+     * icons (v1.6), or the 🗂 glyph when it holds no apps, centered.
+     * The mini icons use the profile's icon shape.
      */
-    private fun folderFace(folder: Folder, large: Boolean = false, top: Boolean = false): View {
+    private fun folderFace(folder: Folder): View {
         val contained = folder.appPackages.mapNotNull { appsByPkg[it] }
         if (contained.isEmpty()) {
             val centre = TextView(this)
@@ -2955,28 +2823,18 @@ class MainActivity : Activity() {
             centre.textSize = 32f
             centre.gravity = Gravity.CENTER
             val clp = FrameLayout.LayoutParams(-2, -2)
-            if (top) {
-                clp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                clp.setMargins(0, Ui.dp(this, 14), 0, 0)
-            } else {
-                clp.gravity = Gravity.CENTER
-            }
+            clp.gravity = Gravity.CENTER
             centre.layoutParams = clp
             return centre
         }
-        val m = currentTileMetrics(large = large)
+        val m = currentTileMetrics()
         val gap = Ui.dp(this, 4)
         val mini = ((m.iconPx - gap) / 2).coerceAtLeast(8)
         val grid = android.widget.GridLayout(this)
         grid.columnCount = 2
         grid.rowCount = 2
         val glp = FrameLayout.LayoutParams(-2, -2)
-        if (top) {
-            glp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            glp.setMargins(0, Ui.dp(this, 8), 0, 0)
-        } else {
-            glp.gravity = Gravity.CENTER
-        }
+        glp.gravity = Gravity.CENTER
         grid.layoutParams = glp
         for (i in 0 until 4) {
             val cell = FrameLayout(this)
@@ -3004,27 +2862,14 @@ class MainActivity : Activity() {
     }
 
     /**
-     * One folder tile. iPad style ([ipad]): face on top + name always
-     * under it. [movable] (the iPad grid's folders segment only) tags
-     * the tile with the folder id and adds the reorder Move entry —
-     * in TV style the Folders row deliberately has no reorder Move
-     * (folders there are ordered by creation/nesting, v1.3 rule).
+     * One folder tile: face + focus-only name. The Folders row
+     * deliberately has no reorder Move (folders are ordered by
+     * creation/nesting, v1.3 rule).
      */
-    private fun folderTile(
-        folder: Folder,
-        ipad: Boolean = false,
-        large: Boolean = false,
-        movable: Boolean = false
-    ): View {
-        val tile = baseTile(large = large)
-        if (movable) tile.tag = folder.id
-        tile.addView(folderFace(folder, large = large, top = ipad))
-        if (ipad) {
-            tile.addView(ipadLabelView(folder.name))
-            Ui.focusLift(tile, accent, 16)
-        } else {
-            finishTile(tile, "${folder.name} · ${folderContentsLabel(folder)}")
-        }
+    private fun folderTile(folder: Folder): View {
+        val tile = baseTile()
+        tile.addView(folderFace(folder))
+        finishTile(tile, "${folder.name} · ${folderContentsLabel(folder)}")
         // v1.3: locked folders carry the same 🔒 badge as locked apps.
         if (folder.locked) {
             val lock = TextView(this)
@@ -3042,9 +2887,6 @@ class MainActivity : Activity() {
         tile.setOnLongClickListener {
             val labels = mutableListOf<String>()
             val actions = mutableListOf<() -> Unit>()
-            if (movable) {
-                labels.add("Move"); actions.add { startRootFolderMove(folder) }
-            }
             labels.add("Rename folder"); actions.add { renameFolder(folder) }
             labels.add(if (folder.locked) "Unlock folder" else "Lock folder")
             actions.add { toggleFolderLock(folder) }
@@ -3251,45 +3093,8 @@ class MainActivity : Activity() {
         }
         currentFolderDialog = dlg
         currentFolderBox = box
-        // v1.7: in iPad style the overlay gets roomier padding, so
-        // the panel reads as a sheet rather than a cramped list.
-        if (isIpadStyle()) {
-            box.setPadding(
-                Ui.dp(this, 24), Ui.dp(this, 16), Ui.dp(this, 24), Ui.dp(this, 24)
-            )
-        }
         renderFolderOverlay()
         dlg.show()
-        if (isIpadStyle()) styleIpadFolderPanel(dlg)
-    }
-
-    /**
-     * iPad-style folder panel dressing (v1.7): the dialog window
-     * shrinks to ~70% of the screen width, gains the large-radius
-     * rounded panel background, and its title (the breadcrumb)
-     * centers. Purely cosmetic and fail-open — any failure leaves
-     * the stock dialog, which still works.
-     */
-    private fun styleIpadFolderPanel(dlg: AlertDialog) {
-        try {
-            val dm = resources.displayMetrics
-            val win = dlg.window ?: return
-            win.setLayout(
-                (dm.widthPixels * 0.70f).toInt(),
-                android.view.WindowManager.LayoutParams.WRAP_CONTENT
-            )
-            val bg = GradientDrawable()
-            bg.cornerRadius =
-                Ui.dp(this, com.mizan.launcher.core.Design.IPAD_FOLDER_PANEL_RADIUS_DP).toFloat()
-            bg.setColor(com.mizan.launcher.core.Design.IPAD_PANEL_FILL)
-            win.setBackgroundDrawable(bg)
-            val titleId = resources.getIdentifier("alertTitle", "id", "android")
-            if (titleId != 0) {
-                (dlg.findViewById(titleId) as? TextView)?.gravity = Gravity.CENTER
-            }
-        } catch (e: Exception) {
-            Prefs.noteError(this, "ipad-folder-panel", e)
-        }
     }
 
     private var currentFolderDialog: AlertDialog? = null
@@ -3322,17 +3127,13 @@ class MainActivity : Activity() {
         box.removeAllViews()
         // Tiles in entry order: apps resolve to app entries, folder
         // references to sub-folder tiles. Hidden apps stay hidden.
-        // In iPad style the tiles take the style's treatment
-        // (squircle + label under the icon) and rows center in the
-        // panel; the contents/order/gates are unchanged.
-        val ipad = isIpadStyle()
         val tiles = mutableListOf<View>()
         for (entry in folder.entries) {
             when (entry) {
                 is FolderEntry.App -> {
                     val app = appsByPkg[entry.pkg]
                     if (app != null && app.pkg !in layout.hidden) {
-                        tiles.add(appTile(app, Source.Folder, folder.id, ipad = ipad))
+                        tiles.add(appTile(app, Source.Folder, folder.id))
                     }
                 }
                 is FolderEntry.FolderRef -> {
@@ -3351,7 +3152,6 @@ class MainActivity : Activity() {
         var i = 0
         while (i < tiles.size) {
             val rowLayout = LinearLayout(this); rowLayout.orientation = LinearLayout.HORIZONTAL
-            if (ipad) rowLayout.gravity = Gravity.CENTER
             for (tile in tiles.subList(i, minOf(i + cols, tiles.size))) {
                 rowLayout.addView(tile)
             }
@@ -3370,18 +3170,8 @@ class MainActivity : Activity() {
      * contents intact), Lock/Unlock.
      */
     private fun subFolderTile(folder: Folder, parentId: String): View {
-        // v1.7: in iPad style a sub-folder tile matches the panel's
-        // other tiles (folder face + name always under it); in TV
-        // style it stays the glyph tile with the focus-only name.
-        val tile: FrameLayout = if (isIpadStyle()) {
-            val t = baseTile()
-            t.addView(folderFace(folder, top = true))
-            t.addView(ipadLabelView(folder.name))
-            Ui.focusLift(t, accent, 16)
-            t
-        } else {
+        val tile: FrameLayout =
             glyphTile("🗂", "${folder.name} · ${folderContentsLabel(folder)}")
-        }
         // The grabbed-tile search (move mode) finds tiles by entry key.
         tile.tag = FolderEntry.FolderRef(folder.id).key()
         if (folder.locked) {
@@ -3637,19 +3427,6 @@ class MainActivity : Activity() {
     private fun startEntryMove(entryKey: String, parentFolderId: String) {
         val folder = FolderTree.byId(layout.folders, parentFolderId) ?: return
         beginMoveSession(entryKey, MoveContainer.FOLDER, folder.entryKeys(), parentFolderId)
-    }
-
-    /**
-     * Enter move mode for a ROOT folder tile (v1.7, iPad grid only):
-     * the grabbed "item" is the folder's stable id and the session
-     * orders the root ids; write-back permutes the roots' slots in
-     * the flat folder list via FolderTree.reorderRoots, leaving
-     * nesting untouched. The grid tile carries the id as its tag, so
-     * the shared grabbed-tile search finds it like any app tile.
-     */
-    private fun startRootFolderMove(folder: Folder) {
-        val roots = FolderTree.rootFolders(layout.folders).map { it.id }
-        beginMoveSession(folder.id, MoveContainer.ROOT_FOLDERS, roots, null)
     }
 
     /** Shared session start for app moves and folder-entry moves. */
@@ -4064,11 +3841,7 @@ class MainActivity : Activity() {
             } else {
                 layout.statusBar
             }
-            // v1.7: the iPad strip's date is fixed iPadOS-style
-            // ("Tuesday, October 21") — the profile's date-format
-            // preference belongs to the TV hero. The clock keeps the
-            // profile's format in both styles.
-            val datePattern = if (isIpadStyle()) "EEEE, MMMM d" else cfg.datePattern()
+            val datePattern = cfg.datePattern()
             dateView?.text = SimpleDateFormat(datePattern, Locale.getDefault()).format(now)
             clockView?.text = SimpleDateFormat(cfg.clockPattern(), Locale.getDefault()).format(now)
             // v2.1: the network element is a GLYPH now (core/WifiLabel

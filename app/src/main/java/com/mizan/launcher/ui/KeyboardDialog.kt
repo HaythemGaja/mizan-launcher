@@ -30,6 +30,7 @@ object KeyboardDialog {
         initial: String,
         maxLen: Int,
         symbols: Boolean = false,
+        masked: Boolean = false,
         onDone: (String) -> Unit
     ) {
         val text = StringBuilder(initial.take(maxLen))
@@ -50,10 +51,14 @@ object KeyboardDialog {
 
         fun refreshValue() {
             if (text.isEmpty()) {
-                value.text = "Type a name…"
+                // v2.2: [masked] entries (the IPTV password) get a
+                // neutral prompt; the placeholder wording never echoes content.
+                value.text = if (masked) "Type…" else "Type a name…"
                 value.setTextColor(0x99FFFFFF.toInt())
             } else {
-                value.text = text.toString()
+                // Masked: one bullet per character — the real text
+                // stays in [text] and is only handed to onDone.
+                value.text = if (masked) "•".repeat(text.length) else text.toString()
                 value.setTextColor(0xFFFFFFFF.toInt())
             }
         }

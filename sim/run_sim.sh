@@ -5,6 +5,10 @@
 set -e
 cd "$(dirname "$0")/.."
 KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
+# v2.2: SimMain outgrew the default kotlinc heap (one giant main);
+# give the compiler room unless the caller already chose a heap.
+: "${JAVA_OPTS:=-Xmx6g}"
+export JAVA_OPTS
 [ -x "$KOTLINC" ] || KOTLINC="$(command -v kotlinc)"
 "$KOTLINC" \
   app/src/main/java/com/mizan/launcher/core/Themes.kt \
@@ -46,6 +50,10 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   app/src/main/java/com/mizan/launcher/core/ArtworkStore.kt \
   app/src/main/java/com/mizan/launcher/core/QuickSettings.kt \
   app/src/main/java/com/mizan/launcher/core/LiveTv.kt \
+  app/src/main/java/com/mizan/launcher/core/IptvLogic.kt \
+  app/src/main/java/com/mizan/launcher/core/IptvEpg.kt \
+  app/src/main/java/com/mizan/launcher/core/IptvLocks.kt \
+  app/src/main/java/com/mizan/launcher/core/IptvStatus.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -117,6 +125,25 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   echo "codec migration + nested round-trip, settings gate, All Apps"
   echo "tab list, status codec v1.5 (All Apps tile), move session by"
   echo "folder id + sub-folder entry moves (spec section 13)."
+  echo
+  echo "Note (v2.2): the iPad home style is REMOVED (Haythem: 'it is"
+  echo "bad'). Section 32 was rewritten in place: the label-rule,"
+  echo "squircle-override, grid-composition, dock-composition and"
+  echo "tile-boost checks are DELETED with the renderers they tested,"
+  echo "replaced by codec + migration checks (a saved 'ipad' decodes"
+  echo "to TV) and the value list [tv, tracker, iptv]; the root-"
+  echo "reorder checks stay (shared FolderTree machinery). Section"
+  echo "33's label/shape check went with them. New section 37 — IPTV:"
+  echo "server normalization, Xtream URL shapes (api/live/movie/"
+  echo "series/timeshift), auth probe, catalogue parsing (string +"
+  echo "numeric ids, malformed entries), series-info season/episode"
+  echo "ordering, the M3U parser, favorites + resume codecs and clear"
+  echo "rules, cross-catalogue search, home-row composition (empty"
+  echo "categories skipped, favorites first, locks applied), the"
+  echo "XMLTV parser (timezone offsets, entities, CDATA), now/next +"
+  echo "progress at a fixed clock, short-EPG base64 titles, category"
+  echo "pattern-locks (adult markers, stamp/grace rules), and the"
+  echo "iptv status classification + diagnostics line (spec S20)."
   echo
   echo '```'
   java -jar sim/sim.jar

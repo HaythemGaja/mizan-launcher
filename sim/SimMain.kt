@@ -40,6 +40,10 @@ import com.mizan.launcher.core.WeatherUnits
 import com.mizan.launcher.core.RedditCacheCodec
 import com.mizan.launcher.core.RedditWallpapers
 import com.mizan.launcher.core.HomeStyle
+import com.mizan.launcher.core.IptvLogic
+import com.mizan.launcher.core.IptvEpg
+import com.mizan.launcher.core.IptvLocks
+import com.mizan.launcher.core.IptvStatus
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.AppCategories
@@ -1387,67 +1391,31 @@ fun main() {
                 .startsWith("✗ r/wallpaper HTTP 403 · 0 photos"))
     }
 
-    // ---------- (32) Home style: codec, label rule, grid + dock composition (v1.7) ----------
+    // ---------- (32) Home style: codec + the v2.2 iPad migration (v1.7, reworked v2.2) ----------
     run {
-        // Codec: only the exact "ipad" key selects iPad — missing,
-        // empty or garbled values (and old backups) resolve to TV.
+        // Codec: only the exact "tracker"/"iptv" keys select those
+        // styles — missing, empty or garbled values (and old
+        // backups) resolve to TV.
         check("homestyle: missing/garbage decodes to tv",
             HomeStyle.normalize(null) == "tv" && HomeStyle.normalize("") == "tv" &&
                 HomeStyle.normalize("TV") == "tv" && HomeStyle.normalize("bogus") == "tv")
-        check("homestyle: ipad survives the codec",
-            HomeStyle.normalize("ipad") == "ipad" && HomeStyle.isIpad("ipad") &&
-                !HomeStyle.isIpad("tv"))
-        check("homestyle: value list is tv then ipad (v1.8: tracker appended)",
-            HomeStyle.VALUES == listOf("tv", "ipad", "tracker"))
+        // v2.2: the iPad style is REMOVED (Haythem: "it is bad").
+        // A profile saved as iPad migrates silently to TV through
+        // this same codec — Prefs reads/writes pass through
+        // normalize, so no other migration is needed and no profile
+        // data is reinterpreted (iPad never owned layout data).
+        check("homestyle: saved ipad migrates to tv (v2.2 removal)",
+            HomeStyle.normalize("ipad") == "tv" && HomeStyle.normalize("IPAD") == "tv")
+        check("homestyle: tracker and iptv survive the codec",
+            HomeStyle.normalize("tracker") == "tracker" && HomeStyle.isTracker("tracker") &&
+                HomeStyle.normalize("iptv") == "iptv" && HomeStyle.isIptv("iptv") &&
+                !HomeStyle.isIptv("tv") && !HomeStyle.isTracker("iptv"))
+        check("homestyle: value list is tv, tracker, iptv (the Settings picker order)",
+            HomeStyle.VALUES == listOf("tv", "tracker", "iptv"))
 
-        // Label rule truth table: TV = focus-only (the v1.2 rule),
-        // iPad = always under the icon.
-        check("homestyle: label rule — tv needs focus, ipad always shows",
-            !HomeStyle.labelVisible("tv", false) && HomeStyle.labelVisible("tv", true) &&
-                HomeStyle.labelVisible("ipad", false) && HomeStyle.labelVisible("ipad", true))
-
-        // Icon shape: iPad forces the squircle for ANY preference;
-        // TV passes the preference through untouched.
-        check("homestyle: ipad forces squircle, tv keeps the preference",
-            HomeStyle.effectiveIconShape("ipad", "circle") == "squircle" &&
-                HomeStyle.effectiveIconShape("ipad", "square") == "squircle" &&
-                HomeStyle.effectiveIconShape("tv", "circle") == "circle" &&
-                HomeStyle.effectiveIconShape("tv", "rounded") == "rounded")
-
-        // Grid composition: f1 Media (root, holds com.c + nested f3),
-        // f2 Games (root), f3 Clips (nested, holds com.e).
-        val gridFolders = listOf(
-            testFolder("f1", "Media", "com.c", "@f:f3"),
-            testFolder("f2", "Games", "com.g"),
-            testFolder("f3", "Clips", "com.e")
-        )
-        val gridAll = listOf("com.a", "com.b", "com.c", "com.d", "com.e", "com.g")
-        val grid = HomeStyle.composeGrid(
-            installedOrder = gridAll,
-            hidden = setOf("com.b"),
-            folders = gridFolders,
-            inputsEnabled = true,
-            inputIds = listOf("hdmi1", "hdmi2")
-        )
-        check("homestyle: grid apps exclude hidden and foldered (any depth), order kept",
-            grid.appPkgs == listOf("com.a", "com.d"))
-        check("homestyle: grid folders are the ROOTS in row order",
-            grid.folderIds == listOf("f1", "f2"))
-        check("homestyle: grid inputs appended when enabled and present",
-            grid.inputIds == listOf("hdmi1", "hdmi2") && grid.size == 6)
-        check("homestyle: grid apps keep the caller's order",
-            HomeStyle.composeGrid(
-                listOf("com.d", "com.a", "com.b", "com.c", "com.e", "com.g"),
-                setOf("com.b"), gridFolders, false, emptyList()
-            ).appPkgs == listOf("com.d", "com.a"))
-        check("homestyle: grid inputs empty when the row is disabled",
-            HomeStyle.composeGrid(gridAll, emptySet(), gridFolders, false, listOf("hdmi1"))
-                .inputIds.isEmpty())
-        check("homestyle: grid inputs empty when the device reports none",
-            HomeStyle.composeGrid(gridAll, emptySet(), gridFolders, true, emptyList())
-                .inputIds.isEmpty())
-
-        // Root reorder (the grid folders-segment move write-back):
+        // Root reorder (core/FolderTree write-back machinery —
+        // retained: the folder tree is shared by every style even
+        // though the iPad grid's move entry point is gone).
         // flat [A root, B root, C nested in A, D root], roots -> D,B,A.
         val reorderFolders = mutableListOf(
             testFolder("fa", "A", "@f:fc"),
@@ -1470,61 +1438,16 @@ fun main() {
         FolderTree.reorderRoots(noopFolders, listOf("fa", "fb"))
         check("homestyle: root reorder with the current order is a no-op",
             noopFolders.map { it.id } == listOf("fa", "fb", "fc"))
-
-        // Dock composition: cap, divider, fixed buttons.
-        val favs12 = (1..12).map { "com.fav$it" }
-        val dock = HomeStyle.composeDock(favs12, showSearch = true, showAllApps = true)
-        check("homestyle: dock caps favorites at 10, in order",
-            dock.take(10).all { it.kind == HomeStyle.DockKind.FAVORITE } &&
-                dock.take(10).map { it.pkg } == favs12.take(10) &&
-                dock.count { it.kind == HomeStyle.DockKind.FAVORITE } == 10)
-        check("homestyle: dock divider sits after the favorites",
-            dock[10].kind == HomeStyle.DockKind.DIVIDER)
-        check("homestyle: dock fixed buttons follow, profile + settings last",
-            dock.drop(11).map { it.kind } == listOf(
-                HomeStyle.DockKind.SEARCH, HomeStyle.DockKind.ALL_APPS,
-                HomeStyle.DockKind.PROFILE, HomeStyle.DockKind.SETTINGS
-            ))
-        check("homestyle: dock drops search/all-apps when their switches are off",
-            HomeStyle.composeDock(listOf("com.a"), showSearch = false, showAllApps = false)
-                .map { it.kind } == listOf(
-                    HomeStyle.DockKind.FAVORITE, HomeStyle.DockKind.DIVIDER,
-                    HomeStyle.DockKind.PROFILE, HomeStyle.DockKind.SETTINGS
-                ))
-        check("homestyle: dock with no favorites has no divider",
-            HomeStyle.composeDock(emptyList(), showSearch = true, showAllApps = true)
-                .map { it.kind } == listOf(
-                    HomeStyle.DockKind.SEARCH, HomeStyle.DockKind.ALL_APPS,
-                    HomeStyle.DockKind.PROFILE, HomeStyle.DockKind.SETTINGS
-                ))
-
-        // Tile boost: the iPad grid's cells render larger than the
-        // same profile's TV tiles at the same size setting.
-        val boostStd = TileLayout.tileMetrics(1920, 2f, "standard", 6)
-        val boostBig = TileLayout.tileMetrics(1920, 2f, "standard", 6,
-            com.mizan.launcher.core.Design.IPAD_TILE_BOOST)
-        check("homestyle: tile boost enlarges width and icon",
-            boostBig.tileWidthPx > boostStd.tileWidthPx &&
-                boostBig.iconPx > boostStd.iconPx)
-        check("homestyle: default boost leaves metrics unchanged",
-            TileLayout.tileMetrics(1920, 2f, "standard", 6) ==
-                TileLayout.tileMetrics(1920, 2f, "standard", 6, 1f))
     }
 
     // ---------- (33) Tracker view: codec v2, parsing, hero, dates, merge, movies, marked-set, search (v1.8) ----------
     run {
-        // Codec v2: "tracker" joins tv/ipad; everything else is TV.
+        // Codec: "tracker" is its own style (v2.2: "iptv" is too;
+        // the removed "ipad" is not — section 32 checks its migration).
         check("tracker: codec — tracker survives, garbage still decodes to tv",
             HomeStyle.normalize("tracker") == "tracker" && HomeStyle.isTracker("tracker") &&
-                !HomeStyle.isTracker("tv") && !HomeStyle.isTracker("ipad") &&
+                !HomeStyle.isTracker("tv") && !HomeStyle.isTracker("iptv") &&
                 HomeStyle.normalize("Tracker") == "tv" && HomeStyle.normalize("bogus") == "tv")
-        // Tracker style follows the TV label + icon-shape rules
-        // (focus-only names, the profile's own shape) — only iPad
-        // overrides them.
-        check("tracker: tracker style keeps tv label + shape rules",
-            !HomeStyle.labelVisible("tracker", false) && HomeStyle.labelVisible("tracker", true) &&
-                HomeStyle.effectiveIconShape("tracker", "circle") == "circle" &&
-                HomeStyle.effectiveIconShape("tracker", "rounded") == "rounded")
 
         // Snapshot parsing (JsonMini): full item, defaults, garbage.
         val upJson = """[{"title":"Silo","sub":"S2 E3 · Solo","date":"Nov 14 · in 3d","sort":"2026-11-14","poster":"/p1.jpg","backdrop":"/b1.jpg","overview":"In a silo…","season":2,"episode":3,"tmdbId":125988,"type":"tv"},{"title":"Bad","tmdbId":0}]"""
@@ -2408,6 +2331,300 @@ fun main() {
             TrackerLogic.heroCandidates(hUp, hCont).map { it.title to it.source } == listOf(
                 "U-Art" to "Up Next", "C-Art" to "Continue Watching", "U-NoArt" to "Up Next"
             ))
+    }
+
+    // ---------- (37) v2.2 IPTV: account + URL shapes, Xtream/M3U parsing, favorites + resume stores, home composition, EPG, category locks, status ----------
+    run {
+        val L = IptvLogic
+        val acct = L.account("panel.example:8080/", "user name", "p@ss")
+
+        // Account + server normalization.
+        check("iptv: bare host gains http:// and loses the trailing slash",
+            acct.server == "http://panel.example:8080" &&
+                L.normalizeServer("https://x.tv/") == "https://x.tv" &&
+                L.normalizeServer("  ") == "" &&
+                L.normalizeServer("EXAMPLE.tv") == "http://EXAMPLE.tv")
+        check("iptv: account needs server + user + pass",
+            acct.isConfigured &&
+                !L.account("http://x.tv", "u", "").isConfigured &&
+                !L.account("", "u", "p").isConfigured)
+
+        // URL shapes (the Xtream protocol shapes, from pure core).
+        check("iptv: api url is player_api.php with encoded credentials + action",
+            L.apiUrl(acct, null) ==
+                "http://panel.example:8080/player_api.php?username=user+name&password=p%40ss" &&
+                L.apiUrl(acct, "get_live_streams").endsWith("&action=get_live_streams") &&
+                L.apiUrl(acct, "get_series_info", mapOf("series_id" to "9"))
+                    .endsWith("&action=get_series_info&series_id=9"))
+        check("iptv: xmltv url shape",
+            L.xmltvUrl(acct) ==
+                "http://panel.example:8080/xmltv.php?username=user+name&password=p%40ss")
+        check("iptv: live url is /live/user/pass/id.m3u8",
+            L.liveUrl(acct, 42) == "http://panel.example:8080/live/user%20name/p@ss/42.m3u8")
+        check("iptv: vod url uses container_extension, defaulting to mp4",
+            L.vodUrl(acct, 7, "mkv") == "http://panel.example:8080/movie/user%20name/p@ss/7.mkv" &&
+                L.vodUrl(acct, 7, "") == "http://panel.example:8080/movie/user%20name/p@ss/7.mp4" &&
+                L.vodUrl(acct, 7, ".avi") == "http://panel.example:8080/movie/user%20name/p@ss/7.avi")
+        check("iptv: episode url is /series/user/pass/episodeId.ext",
+            L.episodeUrl(acct, "e 9", "") ==
+                "http://panel.example:8080/series/user%20name/p@ss/e%209.mp4")
+        val shiftStart = IptvEpg.parseXmltvTime("20261022173000 +0000")
+        check("iptv: timeshift url is /timeshift/user/pass/durationMin/startYmdHis/id.ts",
+            L.timeshiftUrl(acct, 42, shiftStart, 60) ==
+                "http://panel.example:8080/timeshift/user%20name/p@ss/60/20261022173000/42.ts")
+
+        // Auth probe parsing.
+        check("iptv: auth probe — 1 true, 0 false, string ids accepted, junk null",
+            L.parseAuth("""{"user_info":{"auth":1}}""") == true &&
+                L.parseAuth("""{"user_info":{"auth":0}}""") == false &&
+                L.parseAuth("""{"user_info":{"auth":"1"}}""") == true &&
+                L.parseAuth("""{"user_info":{}}""") == null &&
+                L.parseAuth("not json") == null)
+
+        // Catalogue parsing (ids as strings AND numbers; malformed entries skipped).
+        val liveCats = L.parseCategories(
+            """[{"category_id":"5","category_name":"News"},{"category_id":6,"category_name":"Sport"},{"category_id":"7","category_name":"  "}]""",
+            L.KIND_LIVE
+        )
+        check("iptv: categories parse (string+numeric ids, blank names skipped, key stamped)",
+            liveCats.size == 2 && liveCats[0].key == "xtream:live:5" &&
+                liveCats[1].id == "6" && liveCats[1].source == "xtream")
+        val live = L.parseLive(
+            """[{"stream_id":"101","name":"Chan A","stream_icon":"http://img/a.png","category_id":"5","epg_channel_id":"ch1","tv_archive":1,"tv_archive_duration":2},{"stream_id":102,"name":"Chan B","category_id":"5"},{"stream_id":0,"name":"Bad id"},{"stream_id":103,"name":"  "}]""",
+            liveCats.associate { it.id to it.name }
+        )
+        check("iptv: live parse skips bad ids + blank names, resolves category names",
+            live.size == 2 && live[0].categoryName == "News" && live[1].icon == "")
+        check("iptv: tv_archive flag drives catch-up availability",
+            live[0].hasArchive && live[0].archiveDays == 2 && !live[1].hasArchive)
+        val vods = L.parseVods(
+            """[{"stream_id":201,"name":"Film","stream_icon":"http://img/f.jpg","category_id":"7","container_extension":"mkv","rating":8.5},{"stream_id":"202","name":"Film 2","category_id":"7"}]""",
+            mapOf("7" to "Films")
+        )
+        check("iptv: vod parse keeps container_extension + numeric rating as text",
+            vods.size == 2 && vods[0].ext == "mkv" && vods[0].rating == "8.5" &&
+                vods[1].ext == "" && vods[1].key == "xtream:vod:202")
+        val seriesList = L.parseSeries(
+            """[{"series_id":"301","name":"Show","cover":"http://img/s.jpg","category_id":"8","rating":"9.1"}]""",
+            mapOf("8" to "Drama")
+        )
+        check("iptv: series list parse",
+            seriesList.size == 1 && seriesList[0].catKey == "xtream:series:8" &&
+                seriesList[0].categoryName == "Drama")
+
+        // Series info: numeric season sort ("10" after "2"), episode
+        // sort, blank episode ids skipped, duration from info.
+        val info = L.parseSeriesInfo(
+            """{"info":{"name":"Show","cover":"http://img/s.jpg","plot":"A plot."},"episodes":{"2":[{"id":"902","episode_num":1,"title":"Return","container_extension":"mp4","info":{"duration_secs":1800}}],"1":[{"id":"901","episode_num":2,"title":"Second","container_extension":"mkv","info":{"duration_secs":1500}},{"id":"900","episode_num":1,"title":"Pilot","container_extension":"mp4","info":{}},{"id":"","episode_num":3,"title":"Ghost"}],"10":[{"id":"910","episode_num":1,"title":"Finale","container_extension":"mp4","info":{}}]}}""",
+            301
+        )
+        check("iptv: series info — seasons sort numerically, ghost episodes skipped",
+            info != null && info.seasons.map { it.number } == listOf(1, 2, 10) &&
+                info.seasons[0].episodes.map { it.num } == listOf(1, 2))
+        check("iptv: series info — episode fields (ext, duration, plot)",
+            info != null && info.plot == "A plot." &&
+                info.seasons[0].episodes[1].ext == "mkv" &&
+                info.seasons[0].episodes[1].durationSecs == 1500 &&
+                info.seasons[1].episodes[0].durationSecs == 1800 &&
+                L.parseSeriesInfo("garbage", 1) == null)
+
+        // M3U parsing: attributes, quote-aware name split, group → category.
+        val m3uText = listOf(
+            "#EXTM3U",
+            "#EXTINF:-1 tvg-id=\"ch1\" tvg-logo=\"http://img/a.png\" group-title=\"News, World\",Chan A",
+            "http://streams.example/a.m3u8",
+            "#EXTINF:-1 tvg-id=\"ch2\" group-title=\"Sport\",Chan B, Live",
+            "http://streams.example/b.m3u8",
+            "#EXTINF:-1,Plain Chan",
+            "http://streams.example/c.m3u8"
+        ).joinToString("\n")
+        val (m3uCats, m3uLive) = L.parseM3u(m3uText)
+        check("iptv: m3u channels + groups (quote-aware name, ungrouped → Playlist)",
+            m3uLive.size == 3 && m3uLive[0].name == "Chan A" &&
+                m3uLive[1].name == "Chan B, Live" &&
+                m3uCats.map { it.name } == listOf("News, World", "Sport", "Playlist") &&
+                m3uLive[2].categoryName == "Playlist")
+        check("iptv: m3u channel identity — tvg-id/logo/direct url, stable ids",
+            m3uLive[0].epgId == "ch1" && m3uLive[0].icon == "http://img/a.png" &&
+                m3uLive[0].directUrl == "http://streams.example/a.m3u8" &&
+                m3uLive[0].source == "m3u" &&
+                L.parseM3u(m3uText).second.map { it.id } == m3uLive.map { it.id } &&
+                L.parseM3u("").second.isEmpty())
+
+        // Favorites codec: hostile names round-trip; toggle discipline.
+        val favLive = L.favOf(live[0])
+        val favWeird = IptvLogic.FavEntry(
+            L.KIND_VOD, "xtream", "55", "A|B%C\nD", "http://i/x.png", "mkv",
+            "xtream:vod:7", ""
+        )
+        val favRound = L.decodeFavorites(L.encodeFavorites(listOf(favLive, favWeird)))
+        check("iptv: favorites codec round-trips hostile names",
+            favRound == listOf(favLive, favWeird))
+        check("iptv: favorites toggle adds then removes by identity key",
+            L.toggleFavorite(emptyList(), favLive).size == 1 &&
+                L.toggleFavorite(listOf(favLive), favLive).isEmpty() &&
+                L.isFavorite(listOf(favLive), "xtream:live:101") &&
+                !L.isFavorite(listOf(favLive), "xtream:live:102"))
+        check("iptv: favorites decode is fail-open on garbage",
+            L.decodeFavorites("|||\n\nkind|only").isEmpty() &&
+                L.decodeFavorites(null).isEmpty())
+
+        // Resume store: clear rules, replacement, ordering, continue filter.
+        check("iptv: shouldClear — near the end or ≥95% is finished; unknown duration is not",
+            L.shouldClear(95_000, 100_000) && L.shouldClear(86_000, 100_000) &&
+                !L.shouldClear(50_000, 100_000) && !L.shouldClear(50_000, 0) &&
+                !L.shouldClear(0, 100_000))
+        fun resumeEntry(key: String, kind: String, pos: Long, at: Long) = IptvLogic.ResumeEntry(
+            key, kind, key.substringAfterLast(':'), "T", "", "", pos, 100_000, at, "", "", ""
+        )
+        val r1 = resumeEntry("xtream:vod:1", L.KIND_VOD, 40_000, 100)
+        val r2 = resumeEntry("xtream:episode:9", L.KIND_EPISODE, 30_000, 200)
+        val rLive = resumeEntry("xtream:live:5", L.KIND_LIVE, 30_000, 300)
+        var store = L.withResume(emptyList(), r1)
+        store = L.withResume(store, r2)
+        store = L.withResume(store, rLive)
+        check("iptv: resume store replaces by key and drops finished entries",
+            store.size == 3 &&
+                L.withResume(store, r1.copy(posMs = 99_000)).size == 2 &&
+                L.resumeFor(store, "xtream:vod:1")?.posMs == 40_000L)
+        check("iptv: resumeFor hides sub-threshold positions",
+            L.resumeFor(store, "xtream:vod:1") != null &&
+                L.resumeFor(listOf(r1.copy(posMs = 2_000)), "xtream:vod:1") == null)
+        check("iptv: continue list is vod/episode only, newest first",
+            L.continueList(store).map { it.key } ==
+                listOf("xtream:episode:9", "xtream:vod:1"))
+        val resumeRound = L.decodeResume(L.encodeResume(store))
+        check("iptv: resume codec round-trips",
+            resumeRound == store && resumeRound.toSet() == store.toSet())
+
+        // Search across catalogues with hidden categories excluded.
+        val catsAll = IptvLogic.Catalogues(
+            liveCats = liveCats, live = live, vodCats = emptyList(), vods = vods,
+            seriesCats = emptyList(), series = seriesList
+        )
+        check("iptv: search is case-insensitive across all three catalogues",
+            L.search(catsAll, "CHAN", emptySet()).live.size == 2 &&
+                L.search(catsAll, "film", emptySet()).vods.size == 2 &&
+                L.search(catsAll, "show", emptySet()).series.size == 1 &&
+                L.search(catsAll, "  ", emptySet()).isEmpty)
+        check("iptv: search excludes hidden categories",
+            L.search(catsAll, "chan", setOf("xtream:live:5")).live.isEmpty())
+
+        // Home composition: favorites first, empty categories skipped,
+        // locked content dropped, EPG now/next on live cards.
+        val progStart = IptvEpg.parseXmltvTime("20261022173000 +0000")
+        val progStop = IptvEpg.parseXmltvTime("20261022183000 +0000")
+        val epgMap = mapOf("ch1" to listOf(IptvEpg.Programme("ch1", progStart, progStop, "Evening News")))
+        val nowMs = IptvEpg.parseXmltvTime("20261022180000 +0000")
+        val chanSport = live[1].copy(categoryId = "6", categoryName = "Sport")
+        val catsHome = IptvLogic.Catalogues(
+            liveCats = liveCats,
+            live = listOf(live[0], chanSport),
+            vodCats = listOf(IptvLogic.Category("7", "Films", "xtream", L.KIND_VOD)), vods = vods,
+            seriesCats = listOf(IptvLogic.Category("8", "Drama", "xtream", L.KIND_SERIES)), series = seriesList
+        )
+        val rowsAll = L.homeRows(
+            catsHome, listOf(L.favOf(vods[0])), listOf(r2), emptySet(), epgMap, nowMs
+        )
+        check("iptv: home rows order — favorites, live categories, continue, movies, series",
+            rowsAll.map { it.kind } == listOf(
+                IptvLogic.RowKind.FAVORITES, IptvLogic.RowKind.LIVE, IptvLogic.RowKind.LIVE,
+                IptvLogic.RowKind.CONTINUE, IptvLogic.RowKind.MOVIES, IptvLogic.RowKind.SERIES
+            ) && rowsAll.map { it.title } ==
+                listOf("Favorites", "News", "Sport", "Continue watching", "Movies", "Series"))
+        check("iptv: home live card carries the EPG now title + progress",
+            rowsAll[1].cards[0].nowTitle == "Evening News" &&
+                rowsAll[1].cards[0].progress == 0.5f)
+        val rowsLocked = L.homeRows(
+            catsHome, emptyList(), emptyList(), setOf("xtream:live:6", "xtream:vod:7")
+        )
+        check("iptv: home rows drop locked categories (empty category rows never render)",
+            rowsLocked.none { it.title == "Sport" } && rowsLocked.none { it.title == "Movies" } &&
+                rowsLocked.any { it.title == "News" })
+        check("iptv: home rows with no data compose to nothing",
+            L.homeRows(IptvLogic.Catalogues(), emptyList(), emptyList(), emptySet()).isEmpty())
+
+        // XMLTV: offsets, entities, CDATA, broken entries.
+        val xmltv = listOf(
+            "<tv>",
+            "<programme start=\"20261022173000 +0000\" stop=\"20261022183000 +0000\" channel=\"ch1\"><title>News &amp; Weather</title></programme>",
+            "<programme start=\"20261022183000 +0000\" stop=\"20261022193000 +0000\" channel=\"ch1\"><title><![CDATA[Movie Time]]></title></programme>",
+            "<programme start=\"20261022193000 +0200\" stop=\"20261022203000 +0200\" channel=\"ch2\"><title>Late Show</title></programme>",
+            "<programme start=\"20261022100000 +0000\" stop=\"20261022090000 +0000\" channel=\"ch1\"><title>Broken</title></programme>",
+            "</tv>"
+        ).joinToString("\n")
+        val epgIndex = IptvEpg.parseXmltv(xmltv)
+        check("iptv: xmltv parses channels, unescapes entities, unwraps CDATA, skips broken spans",
+            epgIndex["ch1"]?.size == 2 && epgIndex["ch1"]?.get(0)?.title == "News & Weather" &&
+                epgIndex["ch1"]?.get(1)?.title == "Movie Time")
+        check("iptv: xmltv timezone offsets convert to the same absolute instant",
+            epgIndex["ch2"]?.get(0)?.startMs == epgIndex["ch1"]?.get(0)?.startMs &&
+                IptvEpg.parseXmltvTime("20261022193000 +0200") ==
+                IptvEpg.parseXmltvTime("20261022173000 +0000") &&
+                IptvEpg.formatYmdHis(epgIndex["ch1"]!![0].startMs) == "20261022173000")
+        val (nowP, nextP) = IptvEpg.nowNext(epgIndex["ch1"], nowMs)
+        check("iptv: now/next selection at a fixed clock + progress fraction",
+            nowP?.title == "News & Weather" && nextP?.title == "Movie Time" &&
+                IptvEpg.progress(nowP!!, nowMs) == 0.5f &&
+                IptvEpg.nowNext(epgIndex["ch1"], progStart - 1).first == null &&
+                IptvEpg.nowNext(epgIndex["ch1"], progStart - 1).second?.title == "News & Weather")
+        check("iptv: short epg — base64 titles, listing times read as UTC",
+            IptvEpg.parseShortEpg(
+                """{"epg_listings":[{"title":"SGVsbG8gV29ybGQ=","start":"2026-10-22 17:30:00","end":"2026-10-22 18:30:00"}]}""",
+                "ch9"
+            ).let { it.size == 1 && it[0].title == "Hello World" && it[0].startMs == progStart })
+
+        // Category locks: markers, codecs, stamp rules, the one decision.
+        check("iptv: adult markers match case-insensitively",
+            IptvLocks.adultLocked("XXX Movies") && IptvLocks.adultLocked("18+ Only") &&
+                IptvLocks.adultLocked("Adults") && !IptvLocks.adultLocked("Kids") &&
+                !IptvLocks.adultLocked("News"))
+        check("iptv: lock store codecs round-trip",
+            IptvLocks.decodeKeys(IptvLocks.encodeKeys(setOf("xtream:live:5", "m3u:live:Sport"))) ==
+                setOf("xtream:live:5", "m3u:live:Sport") &&
+                IptvLocks.decodeStamps(IptvLocks.encodeStamps(mapOf("xtream:live:5" to 123L))) ==
+                mapOf("xtream:live:5" to 123L))
+        check("iptv: stamp validity — grace window vs session rule",
+            IptvLocks.stampValid(1_000L, 5, 1_000L + 4 * 60_000L, 0L) &&
+                !IptvLocks.stampValid(1_000L, 5, 1_000L + 6 * 60_000L, 0L) &&
+                IptvLocks.stampValid(5_000L, 0, 9_000L, 5_000L) &&
+                !IptvLocks.stampValid(4_999L, 0, 9_000L, 5_000L) &&
+                !IptvLocks.stampValid(0L, 30, 9_000L, 0L))
+        val storedLocks = setOf("xtream:vod:7")
+        check("iptv: isLocked — no pattern means nothing locks; stored + adult lock; a valid stamp opens",
+            !IptvLocks.isLocked("xtream:vod:7", "Films", storedLocks, emptyMap(), 0, 10_000L, 0L, hasPattern = false) &&
+                IptvLocks.isLocked("xtream:vod:7", "Films", storedLocks, emptyMap(), 0, 10_000L, 0L, hasPattern = true) &&
+                IptvLocks.isLocked("xtream:vod:9", "XXX Zone", emptySet(), emptyMap(), 0, 10_000L, 0L, hasPattern = true) &&
+                !IptvLocks.isLocked("xtream:vod:9", "XXX Zone", emptySet(), mapOf("xtream:vod:9" to 10_000L), 0, 10_500L, 0L, hasPattern = true) &&
+                !IptvLocks.isLocked("xtream:vod:7", "Films", emptySet(), emptyMap(), 0, 10_000L, 0L, hasPattern = true))
+        check("iptv: hiddenKeys composes the decision over a category list",
+            IptvLocks.hiddenKeys(
+                listOf(
+                    IptvLogic.Category("7", "Films", "xtream", L.KIND_VOD),
+                    IptvLogic.Category("8", "Drama", "xtream", L.KIND_SERIES)
+                ),
+                storedLocks, emptyMap(), 0, 10_000L, 0L, hasPattern = true
+            ) == setOf("xtream:vod:7"))
+
+        // Status classification + the diagnostics line (counts only).
+        check("iptv: status classify precedence — unconfigured, data beats auth, auth, empty, error",
+            IptvStatus.classify(false, false, false, false) == IptvStatus.Kind.NOT_CONFIGURED &&
+                IptvStatus.classify(true, false, true, true) == IptvStatus.Kind.OK &&
+                IptvStatus.classify(true, true, true, false) == IptvStatus.Kind.AUTH &&
+                IptvStatus.classify(true, true, false, false) == IptvStatus.Kind.EMPTY &&
+                IptvStatus.classify(true, false, false, false) == IptvStatus.Kind.ERROR)
+        check("iptv: diag line carries counts + time, never credentials",
+            IptvStatus.diagText(IptvStatus.Kind.OK, 3, 2, 1, 4, 9, "2:41 PM") ==
+                "OK · live 3 · vod 2 · series 1 · fav 4 · epg 9 · 2:41 PM" &&
+                IptvStatus.diagText(IptvStatus.Kind.NOT_CONFIGURED, 0, 0, 0, 0, 0, "") ==
+                "not configured (Settings › IPTV)" &&
+                !IptvStatus.diagText(IptvStatus.Kind.AUTH, 0, 0, 0, 0, 0, "")
+                    .contains("password="))
+        check("iptv: empty-state lines per kind",
+            IptvStatus.emptyLine(IptvStatus.Kind.NOT_CONFIGURED) ==
+                "Add your IPTV account in Settings › IPTV" &&
+                IptvStatus.emptyLine(IptvStatus.Kind.OK) == null &&
+                IptvStatus.emptyLine(IptvStatus.Kind.NONE) == null)
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

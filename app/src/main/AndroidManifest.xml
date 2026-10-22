@@ -102,6 +102,26 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
+        <!-- v2.2: the IPTV browser + programme guide + player (IPTV
+             home style; Xtream + M3U sources). The player declares
+             picture-in-picture (scope addition 4): Home during
+             playback tries PiP; devices that refuse fall back to
+             normal behaviour. All non-exported; no new permissions
+             (INTERNET above covers the panel + streams). -->
+        <activity
+            android:name=".ui.IptvActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+        <activity
+            android:name=".ui.IptvGuideActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+        <activity
+            android:name=".ui.PlayerActivity"
+            android:exported="false"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden" />
+
         <!-- v1.4 Now Playing: passive notification listener whose only
              job is to authorize MediaSessionManager session queries
              (data/NowPlayingData). It reads no notification content

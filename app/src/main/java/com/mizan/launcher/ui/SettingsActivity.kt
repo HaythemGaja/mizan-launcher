@@ -96,13 +96,15 @@ class SettingsActivity : Activity() {
         "weather" to "Weather",
         "lockprofiles" to "Lock & profiles",
         "nowplaying" to "Now playing",
+        "iptv" to "IPTV",
         "data" to "Data & about"
     )
 
     /** v1.6: one glyph per category in the nav list (visual anchors). */
     private val categoryGlyphs: Map<String, String> = mapOf(
         "home" to "🏠", "look" to "🎨", "homescreen" to "▦", "statusbar" to "🕐",
-        "weather" to "🌦", "lockprofiles" to "🔒", "nowplaying" to "♪", "data" to "💾"
+        "weather" to "🌦", "lockprofiles" to "🔒", "nowplaying" to "♪",
+        "iptv" to "📺", "data" to "💾"
     )
 
     /** v1.6: one-line description under the category name in the detail header. */
@@ -114,6 +116,7 @@ class SettingsActivity : Activity() {
         "weather" to "Location and units for the home weather",
         "lockprofiles" to "Arrow pattern, app locks, profiles, Guest",
         "nowplaying" to "What's playing in other apps, shown at home",
+        "iptv" to "Your IPTV account, playlist, and catalogues",
         "data" to "Backup, safe mode, and diagnostics"
     )
 
@@ -543,6 +546,7 @@ class SettingsActivity : Activity() {
             "weather" -> buildWeatherDetail(content)
             "lockprofiles" -> buildLockProfilesDetail(content)
             "nowplaying" -> buildNowPlayingDetail(content)
+            "iptv" -> buildIptvDetail(content)
             "data" -> buildDataDetail(content)
             else -> {
                 content.addView(header("Settings"))
@@ -808,6 +812,82 @@ class SettingsActivity : Activity() {
                 content.addView(info("Switching TO Guest is always instant (profile tile in the status bar, or the row above). While Guest is active, a “Guest” pill shows in the status bar. If no arrow pattern is set, the guest lock fails open — nothing is gated — so set a pattern above for the gate to bite."))
     }
 
+    /**
+     * IPTV (v2.2): the sources behind the IPTV home style, browser
+     * and guide. HARD RULE (spec §20.2): the values edited here are
+     * credentials — they live only in prefs; this screen shows the
+     * server + username so the account can be checked (like his web
+     * player does), the password is never displayed, and NOTHING
+     * here reaches backups, diagnostics or logs.
+     */
+    private fun buildIptvDetail(content: LinearLayout) {
+        val acct = prefs.iptvAccount()
+        content.addView(header("IPTV account (Xtream)"))
+        content.addView(info("Use the same server, username and password as in your IPTV web player. They're stored only on this TV — never in backups, diagnostics or logs."))
+        content.addView(row("Server", acct.server.ifEmpty { "Not set" }) {
+            KeyboardDialog.show(this, "IPTV server", accent, prefs.iptvServer, 120, symbols = true) { text ->
+                prefs.iptvServer = text.trim()
+                com.mizan.launcher.data.IptvClient.invalidateEpg()
+                rebuild()
+            }
+        })
+        content.addView(row("Username", prefs.iptvUser.ifEmpty { "Not set" }) {
+            KeyboardDialog.show(this, "IPTV username", accent, prefs.iptvUser, 60, symbols = true) { text ->
+                prefs.iptvUser = text.trim()
+                rebuild()
+            }
+        })
+        content.addView(row("Password", if (prefs.iptvPass.isEmpty()) "Not set" else "•••••••• (set)") {
+            KeyboardDialog.show(this, "IPTV password", accent, prefs.iptvPass, 60, symbols = true, masked = true) { text ->
+                prefs.iptvPass = text
+                rebuild()
+            }
+        })
+        content.addView(header("Playlist (M3U)"))
+        content.addView(info("A second, independent source: paste a playlist URL and its channels join the Live tab and the IPTV home's Live rows (both sources can be on at once; channels are not merged or de-duplicated). The optional guide (XMLTV) URL feeds the programme guide for playlist channels, matched by tvg-id. Playlist and guide URLs can contain credentials of their own — same rule: stored only here, never exported or logged."))
+        content.addView(row("Playlist (M3U) URL", if (prefs.iptvM3uUrl.isEmpty()) "Not set" else "Set") {
+            KeyboardDialog.show(this, "M3U playlist URL", accent, prefs.iptvM3uUrl, 300, symbols = true) { text ->
+                prefs.iptvM3uUrl = text.trim()
+                rebuild()
+            }
+        })
+        content.addView(row("Guide (XMLTV) URL", if (prefs.iptvEpgUrl.isEmpty()) "Not set" else "Set") {
+            KeyboardDialog.show(this, "XMLTV guide URL", accent, prefs.iptvEpgUrl, 300, symbols = true) { text ->
+                prefs.iptvEpgUrl = text.trim()
+                com.mizan.launcher.data.IptvClient.invalidateEpg()
+                rebuild()
+            }
+        })
+        content.addView(header("Catalogue"))
+        val cats = com.mizan.launcher.data.IptvClient.cached(this)
+        val kind = com.mizan.launcher.data.IptvClient.status(this)
+        content.addView(info(
+            "Status: " + com.mizan.launcher.core.IptvStatus.diagText(
+                kind, cats.live.size, cats.vods.size, cats.series.size,
+                prefs.iptvFavoriteList().size,
+                com.mizan.launcher.data.IptvClient.epgChannelCount(this), ""
+            )
+        ))
+        content.addView(row("Refresh now", "Fetch the catalogues + programme guide again") {
+            com.mizan.launcher.data.IptvClient.refreshAsync(this, force = true) { rebuild() }
+            toast("Refreshing IPTV…")
+        })
+        if (prefs.iptvAnyConfigured()) {
+            content.addView(row("Clear IPTV sources…", "Removes the account and playlist URLs from this TV") {
+                AlertDialog.Builder(this).setTitle("Clear IPTV sources?")
+                    .setMessage("The Xtream account, playlist and guide URLs will be removed from this TV. Favorites and resume positions stay.")
+                    .setPositiveButton("Clear") { _, _ ->
+                        prefs.clearIptvAccount()
+                        com.mizan.launcher.data.IptvClient.invalidateEpg()
+                        rebuild()
+                        toast("IPTV sources cleared")
+                    }
+                    .setNegativeButton("Cancel", null).show()
+            })
+        }
+        content.addView(info("Category locks: hide any category behind your arrow pattern from the IPTV browser — hold OK on a category chip. Categories with adult names (adult, xxx, +18, 18+) start locked when a pattern is set."))
+    }
+
     /** Data & about (v1.5): the v1.4 Backup and Safe mode categories merged. */
     private fun buildDataDetail(content: LinearLayout) {
         content.addView(header("Backup & restore"))
@@ -824,7 +904,7 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        content.addView(header("Sreeb v2.0"))
+        content.addView(header("Sreeb v2.2"))
         content.addView(info(diagnosticsText()))
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
@@ -838,7 +918,7 @@ class SettingsActivity : Activity() {
         content.addView(header("Status bar"))
         val sb = layout.statusBar
         content.addView(toggleRow("Show status bar", sb.showBar, "Off = clean Apple-TV style, no top bar at all") { updateStatusBar { c -> c.copy(showBar = it) } })
-        content.addView(toggleRow("Sticky status bar", prefs.stickyStatusBar, "The bar stays pinned at the top while the home scrolls — in the TV, iPad and Tracker views") {
+        content.addView(toggleRow("Sticky status bar", prefs.stickyStatusBar, "The bar stays pinned at the top while the home scrolls — in the TV, Tracker and IPTV views") {
             prefs.stickyStatusBar = it
             rebuild()
         })
@@ -953,11 +1033,11 @@ class SettingsActivity : Activity() {
             .setNegativeButton("Cancel", null).show()
     }
 
-    /** The current home style with its one-line description (v1.7, v1.8). */
+    /** The current home style with its one-line description (v1.7, v1.8, v2.2). */
     private fun homeStyleLabel(): String =
         when {
-            com.mizan.launcher.core.HomeStyle.isIpad(prefs.homeStyle) ->
-                "iPad — big icon grid with a Favorites dock"
+            com.mizan.launcher.core.HomeStyle.isIptv(prefs.homeStyle) ->
+                "IPTV — live TV, movies & series from your IPTV account"
             com.mizan.launcher.core.HomeStyle.isTracker(prefs.homeStyle) ->
                 "Tracker — Netflix-style view of your shows & movies"
             else ->
@@ -965,21 +1045,22 @@ class SettingsActivity : Activity() {
         }
 
     /**
-     * Home style picker (v1.7, extended v1.8): three described
-     * choices, per profile. Switching is presentation-only —
-     * favorites, folders, order and locks are shared, so nothing is
-     * lost either way.
+     * Home style picker (v1.7, extended v1.8, reworked v2.2): three
+     * described choices, per profile. Switching is presentation-
+     * only — favorites, folders, order and locks are shared, so
+     * nothing is lost either way. (v2.2 removed the iPad style; a
+     * profile still set to it reads as TV — see core/HomeStyle.)
      */
     private fun pickHomeStyle() {
         val keys = listOf(
             com.mizan.launcher.core.HomeStyle.TV,
-            com.mizan.launcher.core.HomeStyle.IPAD,
-            com.mizan.launcher.core.HomeStyle.TRACKER
+            com.mizan.launcher.core.HomeStyle.TRACKER,
+            com.mizan.launcher.core.HomeStyle.IPTV
         )
         val labels = arrayOf(
             "TV — rows of apps under the hero bar",
-            "iPad — big icon grid with a Favorites dock",
-            "Tracker — Netflix-style view of your shows & movies (needs TV Shows & Movies Tracker)"
+            "Tracker — Netflix-style view of your shows & movies (needs TV Shows & Movies Tracker)",
+            "IPTV — live TV, movies & series (set up your account in Settings › IPTV)"
         )
         val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
         AlertDialog.Builder(this).setTitle("Home style")
@@ -1259,6 +1340,24 @@ class SettingsActivity : Activity() {
             // v2.0: the live tv: line — the Live TV probe's verdict
             // (channel count, or exactly why there is no row).
             append("\nlive tv: " + com.mizan.launcher.data.LiveTv.diagLine(this@SettingsActivity))
+            // v2.2: the iptv: line — classified state + counts only
+            // (core/IptvStatus). The server, credentials and playlist
+            // URLs NEVER appear here (or in any backup/log/file).
+            val iCats = com.mizan.launcher.data.IptvClient.cached(this@SettingsActivity)
+            val iKind = com.mizan.launcher.data.IptvClient.status(this@SettingsActivity)
+            val iFetchedAt = com.mizan.launcher.data.IptvClient.fetchedAt(this@SettingsActivity)
+            val iTime = if (iFetchedAt > 0) {
+                java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+                    .format(java.util.Date(iFetchedAt))
+            } else ""
+            append(
+                "\niptv: " + com.mizan.launcher.core.IptvStatus.diagText(
+                    iKind, iCats.live.size, iCats.vods.size, iCats.series.size,
+                    prefs.iptvFavoriteList().size,
+                    com.mizan.launcher.data.IptvClient.epgChannelCount(this@SettingsActivity),
+                    iTime
+                )
+            )
             val sbCfg = layout.statusBar
             append("\nQuick tiles: master ${if (sbCfg.showQuickTiles) "on" else "off"}" +
                 ", wifi ${onOff(sbCfg.showTileWifi)}, bt ${onOff(sbCfg.showTileBluetooth)}" +

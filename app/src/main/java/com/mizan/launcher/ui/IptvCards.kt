@@ -1,0 +1,147 @@
+package com.mizan.launcher.ui
+
+import android.app.Activity
+import android.graphics.Typeface
+import android.view.Gravity
+import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import com.mizan.launcher.core.TileLayout
+import com.mizan.launcher.data.Prefs
+import com.mizan.launcher.data.TmdbImages
+
+/**
+ * The IPTV card (v2.2) — PosterCards' visual language (poster fills
+ * the card edge-to-edge, focus lift, title + meta BELOW the card, a
+ * progress bar under the meta) with two differences: the image is a
+ * FULL URL from the IPTV source (a channel logo / poster the panel
+ * serves — loaded through TmdbImages' generic URL loader), and a
+ * [wide] variant renders a 16:9-ish card with the logo fitted
+ * inside (channel logos must never crop). [line2] carries the EPG
+ * NOW title on live cards; [progress] is the through-programme or
+ * resume fraction (-1 = no bar).
+ */
+object IptvCards {
+
+    fun columns(activity: Activity, prefs: Prefs, wide: Boolean): Int {
+        val dm = activity.resources.displayMetrics
+        val m = if (wide) {
+            TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        } else {
+            TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        }
+        val margin = Ui.dp(activity, 5)
+        val cell = m.tileWidthPx + margin * 2
+        if (cell <= 0) return 4
+        val usable = dm.widthPixels - Ui.dp(activity, 96)
+        return (usable / cell).coerceIn(1, 10)
+    }
+
+    fun build(
+        activity: Activity,
+        prefs: Prefs,
+        accent: Int,
+        imageUrl: String,
+        title: String,
+        meta: String,
+        line2: String? = null,
+        glyph: String,
+        wide: Boolean = false,
+        tag: String? = null,
+        progress: Float = -1f,
+        onFocus: (() -> Unit)? = null,
+        onClick: () -> Unit,
+        onLong: (() -> Unit)? = null
+    ): View {
+        val dm = activity.resources.displayMetrics
+        val m = if (wide) {
+            TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        } else {
+            TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        }
+        val col = LinearLayout(activity)
+        col.orientation = LinearLayout.VERTICAL
+        val colLp = LinearLayout.LayoutParams(m.tileWidthPx, -2)
+        val margin = Ui.dp(activity, 5)
+        colLp.setMargins(margin, margin, margin, margin)
+        col.layoutParams = colLp
+
+        val frame = FrameLayout(activity)
+        frame.isFocusable = true
+        frame.isClickable = true
+        if (tag != null) frame.tag = tag
+        frame.layoutParams = LinearLayout.LayoutParams(m.tileWidthPx, m.tileHeightPx)
+        frame.background = Ui.tileBackground(accent, false, 16, activity)
+        if (imageUrl.isNotBlank()) {
+            val iv = ImageView(activity)
+            iv.scaleType = if (wide) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
+            if (!wide) Ui.roundClip(iv, 16, activity)
+            frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
+            TmdbImages.load(imageUrl, iv)
+        } else {
+            val g = TextView(activity)
+            g.text = glyph
+            g.setTextColor(0xFFFFFFFF.toInt())
+            g.textSize = 44f
+            g.gravity = Gravity.CENTER
+            frame.addView(g, FrameLayout.LayoutParams(-1, -1))
+        }
+        Ui.focusLift(frame, accent, 16) { hasFocus -> if (hasFocus) onFocus?.invoke() }
+        frame.setOnClickListener { onClick() }
+        if (onLong != null) frame.setOnLongClickListener { onLong(); true }
+        col.addView(frame)
+
+        val t = TextView(activity)
+        t.text = title
+        t.setTextColor(0xFFFFFFFF.toInt())
+        t.textSize = 15f
+        t.setTypeface(t.typeface, Typeface.BOLD)
+        t.maxLines = 2
+        t.ellipsize = android.text.TextUtils.TruncateAt.END
+        val tlp = LinearLayout.LayoutParams(-1, -2)
+        tlp.setMargins(Ui.dp(activity, 2), Ui.dp(activity, 6), Ui.dp(activity, 2), 0)
+        t.layoutParams = tlp
+        col.addView(t)
+
+        if (meta.isNotBlank()) {
+            val s = TextView(activity)
+            s.text = meta
+            s.setTextColor(0xFFB3B3B3.toInt())
+            s.textSize = 13f
+            s.maxLines = 1
+            s.ellipsize = android.text.TextUtils.TruncateAt.END
+            val slp = LinearLayout.LayoutParams(-1, -2)
+            slp.setMargins(Ui.dp(activity, 2), Ui.dp(activity, 1), Ui.dp(activity, 2), 0)
+            s.layoutParams = slp
+            col.addView(s)
+        }
+        if (!line2.isNullOrBlank()) {
+            val s = TextView(activity)
+            s.text = line2
+            s.setTextColor(0xFF8C8C8C.toInt())
+            s.textSize = 12f
+            s.maxLines = 1
+            s.ellipsize = android.text.TextUtils.TruncateAt.END
+            val slp = LinearLayout.LayoutParams(-1, -2)
+            slp.setMargins(Ui.dp(activity, 2), Ui.dp(activity, 1), Ui.dp(activity, 2), 0)
+            s.layoutParams = slp
+            col.addView(s)
+        }
+        if (progress >= 0f) {
+            val barBg = FrameLayout(activity)
+            barBg.setBackgroundColor(0xFF404040.toInt())
+            val blp = LinearLayout.LayoutParams(-1, Ui.dp(activity, 4))
+            blp.setMargins(Ui.dp(activity, 2), Ui.dp(activity, 5), Ui.dp(activity, 2), 0)
+            barBg.layoutParams = blp
+            val fill = View(activity)
+            fill.setBackgroundColor(accent)
+            val fillW = (m.tileWidthPx * progress.coerceIn(0f, 1f)).toInt()
+            fill.layoutParams = FrameLayout.LayoutParams(fillW, -1)
+            barBg.addView(fill)
+            col.addView(barBg)
+        }
+        return col
+    }
+}
