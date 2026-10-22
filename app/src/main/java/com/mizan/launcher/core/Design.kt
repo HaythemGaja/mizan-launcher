@@ -112,6 +112,16 @@ object Design {
     const val HERO_WEATHER_SP = 20f
     const val HERO_STATUS_SP = 16f
 
+    // ---- status bar (v2.1 reorganization) ---------------------------
+    // The bar is ONE row now: a non-focusable info cluster (clock,
+    // date, weather as plain text, dot separators) and a right
+    // cluster of status glyphs + action tiles. The clock drops from
+    // the 54sp display size to a medium-weight ~27sp; date/weather
+    // run at the meta size in the secondary colour.
+    const val BAR_CLOCK_SP = 27f
+    const val BAR_META_SP = 16f
+    const val BAR_GLYPH_SP = 19f
+
     /** Small-caps section headers: letter spacing + size, one style. */
     const val SECTION_HEADER_SP = 15f
     const val SECTION_HEADER_TRACKING = 0.14f

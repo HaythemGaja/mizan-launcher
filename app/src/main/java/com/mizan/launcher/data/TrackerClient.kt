@@ -54,6 +54,13 @@ object TrackerClient {
         val tracked: List<TrackerLogic.TrackedShow>,
         /** v2.0: the /foryou picks (tracker ≥ 1.14.4; empty on older). */
         val forYou: List<TrackerLogic.ForYouPick> = emptyList(),
+        /**
+         * v2.1: the RAW /tracked JSON — the Library/details screens
+         * need watched episode SETS + muted flags, which the parsed
+         * [tracked] (watched counts, for search) doesn't carry.
+         * Parsed by core/LibraryLogic.parseLibShows at the call site.
+         */
+        val trackedJson: String = "",
         /** The provider's `updated` stamp (widget-refresh time), 0 if never. */
         val updated: Long,
         /** The /foryou mirror's own `updated` stamp (overlay pruning), 0 if never. */
@@ -67,7 +74,10 @@ object TrackerClient {
                 movies.isNotEmpty() || tracked.isNotEmpty()
 
         companion object {
-            val EMPTY = Snapshots(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), 0L, 0L, 0L)
+            val EMPTY = Snapshots(
+                upNext = emptyList(), cont = emptyList(), movies = emptyList(),
+                tracked = emptyList(), updated = 0L, fetchedAt = 0L
+            )
         }
     }
 
@@ -146,6 +156,7 @@ object TrackerClient {
                 movies = TrackerLogic.parseMovies(p.getString(K_MOVIES, null)),
                 tracked = TrackerLogic.parseTrackedShows(p.getString(K_TRACKED, null)),
                 forYou = TrackerLogic.parseForYou(p.getString(K_FORYOU, null)),
+                trackedJson = p.getString(K_TRACKED, null) ?: "",
                 updated = p.getLong(K_UPDATED, 0L),
                 forYouUpdated = p.getLong(K_FORYOU_UPDATED, 0L),
                 fetchedAt = p.getLong(K_FETCHED, 0L)
@@ -358,5 +369,187 @@ object TrackerClient {
         val extras = Bundle()
         extras.putString("type", if (type == "movie") "movie" else "tv")
         callAction(ctx, "dismiss_foryou", tmdbId, extras)
+    }
+
+    // ------------------------------------------------------------ v2.1 actions
+
+    /**
+     * v2.1: queue an unwatch action — one episode off a show, or a
+     * movie's watched flag cleared (season/episode 0 for movies).
+     */
+    fun unwatch(ctx: Context, tmdbId: Long, type: String, season: Int, episode: Int) {
+        val extras = Bundle()
+        extras.putString("type", if (type == "movie") "movie" else "tv")
+        extras.putInt("season", season)
+        extras.putInt("episode", episode)
+        callAction(ctx, "unwatch", tmdbId, extras)
+    }
+
+    /**
+     * v2.1: queue a mark_season action. [episodesCsv] is the
+     * authoritative episode list (core/LibraryLogic.seasonCsv of
+     * the TMDB season payload) — the drain quickWatches exactly
+     * those episodes.
+     */
+    fun markSeason(ctx: Context, tmdbId: Long, season: Int, episodesCsv: String) {
+        val extras = Bundle()
+        extras.putString("type", "tv")
+        extras.putInt("season", season)
+        extras.putString("episodes", episodesCsv)
+        callAction(ctx, "mark_season", tmdbId, extras)
+    }
+
+    /** v2.1: queue a remove_title action (watchlist + progress go). */
+    fun removeTitle(ctx: Context, tmdbId: Long, type: String) {
+        val extras = Bundle()
+        extras.putString("type", if (type == "movie") "movie" else "tv")
+        callAction(ctx, "remove_title", tmdbId, extras)
+    }
+
+    /** v2.1: queue a set_muted action ("1" mutes, "0" unmutes). */
+    fun setMuted(ctx: Context, tmdbId: Long, type: String, muted: Boolean) {
+        val extras = Bundle()
+        extras.putString("type", if (type == "movie") "movie" else "tv")
+        extras.putString("muted", if (muted) "1" else "0")
+        callAction(ctx, "set_muted", tmdbId, extras)
+    }
+
+    // ------------------------------------------------------------ v2.1 tmdb_get
+
+    /** Global pref: the last tmdb_get outcome ("ok" or the error string). */
+    private const val K_TMDB_LAST = "tracker_tmdb_last"
+    /** Global pref: poster paths learned from tmdb_get (core codec). */
+    private const val K_POSTER_CACHE = "tracker_poster_cache"
+
+    /** The last tmdb_get outcome for the diagnostics `tmdb:` line. */
+    fun lastTmdbOutcome(ctx: Context): String? {
+        return try {
+            prefs(ctx).getString(K_TMDB_LAST, null)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun noteTmdbOutcome(ctx: Context, outcome: String) {
+        try {
+            prefs(ctx).edit().putString(K_TMDB_LAST, outcome).apply()
+        } catch (e: Exception) {
+            // Diagnostics bookkeeping only.
+        }
+    }
+
+    /** Poster paths learned from tmdb_get detail fetches (may be empty). */
+    fun posterCache(ctx: Context): Map<String, String> {
+        return try {
+            com.mizan.launcher.core.LibraryLogic.decodePosterCache(
+                prefs(ctx).getString(K_POSTER_CACHE, null)
+            )
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    /** Learn one title's poster path (from a details fetch). */
+    fun notePoster(ctx: Context, type: String, tmdbId: Long, path: String) {
+        notePath(ctx, K_POSTER_CACHE, type, tmdbId, path) { posterCache(ctx) }
+    }
+
+    /** Global pref: backdrop paths learned from tmdb_get (core codec). */
+    private const val K_BACKDROP_CACHE = "tracker_backdrop_cache"
+
+    /**
+     * Backdrop paths learned from tmdb_get detail fetches. The hero
+     * pool consults this for For You picks — the /foryou contract
+     * carries no backdrop field, so a pick can only feature in the
+     * hero once its backdrop has been learned here.
+     */
+    fun backdropCache(ctx: Context): Map<String, String> {
+        return try {
+            com.mizan.launcher.core.LibraryLogic.decodePathCache(
+                prefs(ctx).getString(K_BACKDROP_CACHE, null)
+            )
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    /** Learn one title's backdrop path (from a details fetch). */
+    fun noteBackdrop(ctx: Context, type: String, tmdbId: Long, path: String) {
+        notePath(ctx, K_BACKDROP_CACHE, type, tmdbId, path) { backdropCache(ctx) }
+    }
+
+    private fun notePath(
+        ctx: Context,
+        prefKey: String,
+        type: String,
+        tmdbId: Long,
+        path: String,
+        current: () -> Map<String, String>
+    ) {
+        if (path.isBlank() || tmdbId <= 0) return
+        try {
+            val key = com.mizan.launcher.core.LibraryLogic.posterKey(
+                if (type == "movie") "movie" else "tv", tmdbId
+            )
+            val map = current()
+            if (map[key] == path) return
+            val next = LinkedHashMap(map)
+            next[key] = path
+            prefs(ctx).edit().putString(
+                prefKey,
+                com.mizan.launcher.core.LibraryLogic.encodePathCache(next)
+            ).apply()
+        } catch (e: Exception) {
+            // A cache miss just means a glyph card / no hero next time.
+        }
+    }
+
+    /**
+     * One synchronous tmdb_get through the tracker provider (the
+     * tracker's own key, never exposed). MUST be called off the main
+     * thread (the provider itself does up to 10 s of HTTP inline).
+     * Returns (json, null) on success or (null, error) with the
+     * contract's error string; local failures (provider missing,
+     * SecurityException) map to "io" for the caller's state machine
+     * and are recorded via Prefs.noteError. Every outcome is also
+     * persisted for the diagnostics `tmdb:` line.
+     */
+    fun tmdbGetBlocking(ctx: Context, path: String): Pair<String?, String?> {
+        val appCtx = ctx.applicationContext
+        val result: Pair<String?, String?> = try {
+            val bundle = appCtx.contentResolver.call(BASE, "tmdb_get", path, null)
+            val json = bundle?.getString("json")
+            val error = bundle?.getString("error")
+            when {
+                json != null -> json to null
+                error != null -> null to error
+                else -> null to "io"
+            }
+        } catch (e: SecurityException) {
+            saveKind(appCtx, TrackerStatus.Kind.PERMISSION)
+            Prefs.noteError(appCtx, "tmdbGet", e)
+            null to "io"
+        } catch (e: Exception) {
+            Prefs.noteError(appCtx, "tmdbGet", e)
+            null to "io"
+        }
+        noteTmdbOutcome(appCtx, result.first?.let { "ok" } ?: (result.second ?: "io"))
+        return result
+    }
+
+    /**
+     * tmdb_get on a background thread; [onResult] runs on the main
+     * thread with (json, error) — exactly one of the two is non-null.
+     */
+    fun tmdbGet(ctx: Context, path: String, onResult: (String?, String?) -> Unit) {
+        val appCtx = ctx.applicationContext
+        thread(name = "mizan-tmdb-get") {
+            val result = tmdbGetBlocking(appCtx, path)
+            Handler(Looper.getMainLooper()).post {
+                try { onResult(result.first, result.second) } catch (e: Exception) {
+                    Prefs.noteError(appCtx, "tmdbGetCallback", e)
+                }
+            }
+        }
     }
 }

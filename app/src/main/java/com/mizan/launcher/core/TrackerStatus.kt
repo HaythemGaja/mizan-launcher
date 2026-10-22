@@ -59,6 +59,10 @@ object TrackerStatus {
      * The Settings diagnostics line (the part after "tracker: ").
      * [timeText] is the snapshot `updated` stamp preformatted by the
      * caller ("2:41 PM"), or "" when there is no snapshot yet.
+     * v2.1: the OK form carries PER-SECTION counts (up / cont / mov /
+     * trk / foryou) so an empty section is provable from the line
+     * alone — e.g. "mov 0" with a working Up Next means the tracker
+     * isn't sending movies, not that the launcher filtered them.
      */
     fun diagText(
         kind: Kind,
@@ -66,6 +70,8 @@ object TrackerStatus {
         upCount: Int,
         contCount: Int,
         movieCount: Int,
+        trackedCount: Int,
+        forYouCount: Int,
         timeText: String
     ): String = when (kind) {
         Kind.NOT_INSTALLED -> "not installed"
@@ -73,7 +79,8 @@ object TrackerStatus {
         Kind.EMPTY -> "no data yet (open the tracker once)"
         Kind.OTHER -> "not answering — open the tracker once"
         Kind.NONE -> if (hasData) {
-            "OK · up $upCount · cont $contCount · movies $movieCount" +
+            "OK · up $upCount · cont $contCount · mov $movieCount · " +
+                "trk $trackedCount · foryou $forYouCount" +
                 if (timeText.isNotEmpty()) " · $timeText" else ""
         } else {
             "no data yet (open the tracker once)"

@@ -41,6 +41,7 @@ import com.mizan.launcher.core.RedditCacheCodec
 import com.mizan.launcher.core.RedditWallpapers
 import com.mizan.launcher.core.HomeStyle
 import com.mizan.launcher.core.TrackerLogic
+import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.AppCategories
 import com.mizan.launcher.core.ArtworkStore
 import com.mizan.launcher.core.Design
@@ -51,6 +52,7 @@ import com.mizan.launcher.core.QuickSettings
 import com.mizan.launcher.core.TrackerSections
 import com.mizan.launcher.core.StatusBarCodec
 import com.mizan.launcher.core.StatusBarConfig
+import com.mizan.launcher.core.StatusBarLogic
 import com.mizan.launcher.core.Themes
 import kotlin.math.abs
 
@@ -568,9 +570,9 @@ fun main() {
 
     // ---------- (13) Per-tile status-bar switches (v1.3) ----------
     run {
-        check("tileswitch: defaults all on",
+        check("tileswitch: defaults all on except the Wi-Fi tile (v2.1: glyph + popover cover it)",
             StatusBarConfig().let {
-                it.showTileWifi && it.showTileBluetooth && it.showTileSound &&
+                !it.showTileWifi && it.showTileBluetooth && it.showTileSound &&
                     it.showTilePicture && it.showTileSettings && it.showTileSearch &&
                     it.showTileAllApps
             })
@@ -581,17 +583,55 @@ fun main() {
             StatusBarCodec.decode(StatusBarCodec.encode(tilesOff)).let {
                 !it.showTileSound && it.showTileBluetooth && it.showTilePicture && it.showTileSettings
             })
-        // A v1.2 status line (5 fields, no tile segment) decodes all-on.
+        // A v1.2 status line (5 fields, no tile segment) decodes to
+        // the plain defaults — every tile on except Wi-Fi (v2.1).
         val v12 = StatusBarCodec.decode("111111111|iso|medium|black|solid")
-        check("tileswitch: v1.2 status strings decode to all tiles on",
-            v12.showTileWifi && v12.showTileBluetooth && v12.showTileSound &&
+        check("tileswitch: v1.2 status strings decode to defaults (Wi-Fi tile off since v2.1)",
+            !v12.showTileWifi && v12.showTileBluetooth && v12.showTileSound &&
                 v12.showTilePicture && v12.showTileSettings && v12.dateFormat == StatusBarConfig.DATE_ISO)
         check("tileswitch: tiles survive the layout codec",
             LayoutCodec.decode(LayoutCodec.encode(LayoutData().apply { statusBar = tilesOff })).statusBar == tilesOff)
-        check("tileswitch: garbage tiles segment fails open to on",
+        check("tileswitch: garbage tiles segment fails open to defaults (Wi-Fi off, others on — v2.1)",
             StatusBarCodec.decode("111111111|xx|iso|medium|black|solid").let {
-                it.showTileWifi && it.showTileSound
+                !it.showTileWifi && it.showTileSound
             })
+
+        // v2.1: codec migration — a pre-v2.1 7-char tile segment whose
+        // Wi-Fi char said ON must decode OFF (the reorganized bar
+        // lands on saved profiles); the grown 8-char segment's last
+        // char is authoritative, and round-trips a re-enabled tile.
+        check("tilecodec: v2.0 7-char segment migrates the Wi-Fi tile to off",
+            !StatusBarCodec.decode("111111111|1111111|iso|medium|black|solid").showTileWifi)
+        check("tilecodec: 8-char segment honours the Wi-Fi flag",
+            StatusBarCodec.decode("111111111|00000001|iso|medium|black|solid").showTileWifi &&
+                !StatusBarCodec.decode("111111111|00000000|iso|medium|black|solid").showTileWifi)
+        check("tilecodec: re-enabled Wi-Fi tile survives encode/decode",
+            StatusBarCodec.decode(StatusBarCodec.encode(StatusBarConfig(showTileWifi = true))).showTileWifi)
+
+        // v2.1: bar composition (core/StatusBarLogic) — the exact
+        // cluster MainActivity renders.
+        val bart = StatusBarLogic.BarTile.values()
+        fun tiles(cfg: StatusBarConfig, safe: Boolean) = StatusBarLogic.barTiles(cfg, safe)
+        check("bartiles: default bar = All Apps, Search, Profile, Settings",
+            tiles(StatusBarConfig(), false) == listOf(
+                bart[0], bart[1], bart[3], bart[4]))
+        check("bartiles: re-enabled Wi-Fi tile sits between Search and Profile",
+            tiles(StatusBarConfig(showTileWifi = true), false) == listOf(
+                bart[0], bart[1], bart[2], bart[3], bart[4]))
+        check("bartiles: master tiles off leaves Profile + Settings",
+            tiles(StatusBarConfig(showQuickTiles = false), false) == listOf(bart[3], bart[4]))
+        check("bartiles: safe mode shows the Settings tile only",
+            tiles(StatusBarConfig(), true) == listOf(bart[4]))
+        check("bartiles: Settings switch off drops the tile (corner gear covers it)",
+            tiles(StatusBarConfig(showTileSettings = false), false) == listOf(
+                bart[0], bart[1], bart[3]))
+
+        // v2.1: status glyphs (core/WifiLabel) — symbol + dimming.
+        check("statusglyph: Wi-Fi full alpha, Ethernet globe, offline dimmed",
+            WifiLabel.glyph(WifiLabel.Kind.WIFI) == "📶" &&
+                WifiLabel.glyphAlpha(WifiLabel.Kind.WIFI) == 1f &&
+                WifiLabel.glyph(WifiLabel.Kind.ETHERNET) == "🌐" &&
+                WifiLabel.glyphAlpha(WifiLabel.Kind.OFFLINE) == 0.35f)
     }
 
     // ---------- (14) Settings fit metrics (v1.3) ----------
@@ -908,8 +948,8 @@ fun main() {
         // decode with Search ON; the flag itself round-trips.
         val searchOff = StatusBarConfig(showTileSearch = false)
         val decodedOff = StatusBarCodec.decode(StatusBarCodec.encode(searchOff))
-        check("statusbar: search tile flag round-trips",
-            !decodedOff.showTileSearch && decodedOff.showTileWifi)
+        check("statusbar: search tile flag round-trips (Wi-Fi tile flag is the v2.1 default-off)",
+            !decodedOff.showTileSearch && !decodedOff.showTileWifi)
         val v13 = "111111100|11111|weekday_month_day|medium|transparent|solid"
         check("statusbar: v1.3 string decodes with search tile on",
             StatusBarCodec.decode(v13).showTileSearch &&
@@ -1755,20 +1795,20 @@ fun main() {
                 ts.classify(installed = true, anyAnswered = false, securityError = false, hasData = false) ==
                 com.mizan.launcher.core.TrackerStatus.Kind.OTHER)
         check("tracker status: diag line forms for every state",
-            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NOT_INSTALLED, false, 0, 0, 0, "") == "not installed" &&
-                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION, false, 0, 0, 0, "")
+            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NOT_INSTALLED, false, 0, 0, 0, 0, 0, "") == "not installed" &&
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION, false, 0, 0, 0, 0, 0, "")
                     .startsWith("permission blocked") &&
-                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.EMPTY, false, 0, 0, 0, "") ==
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.EMPTY, false, 0, 0, 0, 0, 0, "") ==
                 "no data yet (open the tracker once)" &&
-                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.OTHER, false, 0, 0, 0, "")
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.OTHER, false, 0, 0, 0, 0, 0, "")
                     .startsWith("not answering"))
-        check("tracker status: diag OK form carries counts and the snapshot time",
-            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, true, 3, 2, 5, "2:41 PM") ==
-                "OK · up 3 · cont 2 · movies 5 · 2:41 PM" &&
-                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, true, 0, 1, 0, "") ==
-                "OK · up 0 · cont 1 · movies 0")
+        check("tracker status: diag OK form carries per-section counts and the snapshot time (v2.1)",
+            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, true, 3, 2, 5, 59, 8, "2:41 PM") ==
+                "OK · up 3 · cont 2 · mov 5 · trk 59 · foryou 8 · 2:41 PM" &&
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, true, 0, 1, 0, 13, 0, "") ==
+                "OK · up 0 · cont 1 · mov 0 · trk 13 · foryou 0")
         check("tracker status: diag NONE without data reads as the empty state",
-            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, false, 0, 0, 0, "") ==
+            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, false, 0, 0, 0, 0, 0, "") ==
                 "no data yet (open the tracker once)")
         check("tracker status: fallback line — absent tracker shows NO line",
             ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.NOT_INSTALLED, installed = true) == null &&
@@ -2023,6 +2063,351 @@ fun main() {
                 lt.diagText(LiveTvLogic.State.BLOCKED, 0) == "blocked (permission)" &&
                 lt.diagText(LiveTvLogic.State.NO_CHANNELS, 0) == "no tuner channels" &&
                 lt.diagText(LiveTvLogic.State.NOT_SUPPORTED, 0) == "not supported")
+    }
+
+    // ---------- (36) v2.1: library merge/sort/progress, TMDB parsing + errors, pending overlay ----------
+    run {
+        val ll = LibraryLogic
+
+        // --- /tracked full parse ---
+        val trackedJson = """
+            [{"tmdbId": 125988, "name": "Silo", "muted": true, "planned": false,
+              "watched": ["1x1", "1x2", " 1x3 "]},
+             {"tmdbId": 94997, "name": "Plunder", "muted": false, "planned": true,
+              "watched": []},
+             {"tmdbId": 0, "name": "Bad id", "watched": []},
+             {"tmdbId": 7, "name": "", "watched": []}]
+        """.trimIndent()
+        val libShows = ll.parseLibShows(trackedJson)
+        check("library: tracked parse keeps watched set + muted + planned, drops bad rows",
+            libShows.size == 2 &&
+                libShows[0].watched == setOf("1x1", "1x2", "1x3") &&
+                libShows[0].muted && !libShows[0].planned &&
+                libShows[1].planned && libShows[1].watched.isEmpty())
+        check("library: tracked parse fails open",
+            ll.parseLibShows(null).isEmpty() && ll.parseLibShows("junk").isEmpty() &&
+                ll.parseLibShows("{}").isEmpty())
+
+        // --- next-coords from a continue sub ---
+        check("library: next coords parse from continue sub",
+            ll.parseNextFromSub("Next S1 E4 · 3 of 20 watched") == (1 to 4) &&
+                ll.parseNextFromSub("Next S12 E103 · 5 watched") == (12 to 103))
+        check("library: caught-up / garbage subs yield no next coords",
+            ll.parseNextFromSub("✓ All caught up") == null &&
+                ll.parseNextFromSub("") == null &&
+                ll.parseNextFromSub("Next episode soon") == null &&
+                ll.parseNextFromSub("Next S0 E0") == null)
+
+        // --- library merge + sort + progress ---
+        val contJson = """
+            [{"title": "Silo", "sub": "Next S1 E4 · 3 of 20 watched", "watched": 3,
+              "total": 20, "poster": "/silo.jpg", "backdrop": "", "overview": "o",
+              "tmdbId": 125988, "type": "tv"},
+             {"title": "Done Show", "sub": "✓ All caught up", "watched": 8, "total": 8,
+              "poster": "/done.jpg", "backdrop": "", "overview": "",
+              "tmdbId": 555, "type": "tv"}]
+        """.trimIndent()
+        val upJson = """
+            [{"title": "Plunder", "sub": "S1 E2 · Ep", "sort": "2026-11-01",
+              "poster": "/pl.jpg", "backdrop": "", "overview": "", "season": 1,
+              "episode": 2, "tmdbId": 94997, "type": "tv"}]
+        """.trimIndent()
+        val moviesJson = """
+            [{"tmdbId": 693134, "title": "Dune: Part Two", "releaseDate": "2024-03-01",
+              "planned": false, "poster": "/dune.jpg", "watched": false},
+             {"tmdbId": 100, "title": "Old Film", "releaseDate": "1999-01-01",
+              "planned": false, "poster": "", "watched": true}]
+        """.trimIndent()
+        val shows2 = libShows + LibraryLogic.LibShow(555, "Done Show", false, false, (1..8).map { "1x$it" }.toSet())
+        val movies2 = TrackerLogic.parseMovies(moviesJson)
+        val cont2 = TrackerLogic.parseContinue(contJson)
+        val up2 = TrackerLogic.parseUpNext(upJson)
+        val lib = ll.buildLibrary(shows2, movies2, cont2, up2, emptyList(), emptyMap())
+        check("library: shows + movies merge into one grid",
+            lib.size == 5 && lib.map { it.key() }.toSet().size == 5, lib.toString())
+        check("library: sort - in-progress first (continue order), then up-next, then A-Z, finished last",
+            lib.map { it.title } == listOf("Silo", "Plunder", "Dune: Part Two", "Done Show", "Old Film"),
+            lib.map { it.title }.toString())
+        val silo = lib.first { it.tmdbId == 125988L }
+        check("library: progress derives from continue (count/total/next) + poster",
+            silo.watchedCount == 3 && silo.totalCount == 20 &&
+                silo.nextSeason == 1 && silo.nextEpisode == 4 &&
+                silo.poster == "/silo.jpg" && silo.muted,
+            silo.toString())
+        check("library: caught-up show detected from the continue sub",
+            lib.first { it.tmdbId == 555L }.caughtUp &&
+                !lib.first { it.tmdbId == 555L }.let { it.nextSeason > 0 })
+        check("library: progress line + fraction",
+            ll.progressLine(silo) == "Next S1 E4 · 3 of 20 watched" &&
+                ll.progressFraction(silo) == 0.15f &&
+                ll.progressLine(lib.first { it.tmdbId == 693134L }) == "2024" &&
+                ll.progressLine(lib.first { it.tmdbId == 100L }) == "✓ Watched" &&
+                ll.progressFraction(lib.first { it.tmdbId == 100L }) < 0f)
+        check("library: poster cache fills a poster the snapshots lack",
+            ll.buildLibrary(
+                listOf(LibraryLogic.LibShow(42, "Ghost", false, false, emptySet())),
+                emptyList(), emptyList(), emptyList(), emptyList(),
+                mapOf("tv|42" to "/ghost.jpg")
+            ).single().poster == "/ghost.jpg")
+
+        // --- overlay application in the grid ---
+        var ov = emptyList<LibraryLogic.PendingTitle>()
+        ov = ll.withRemoved(ov, "movie", 693134, 1_000)
+        ov = ll.withAdded(ov, "tv", 777, "New Show", "/new.jpg", "", 1_000)
+        ov = ll.withMuted(ov, "tv", 94997, true, 1_000)
+        ov = ll.withMovieToggle(ov, 100, false, 1_000)
+        val libOv = ll.buildLibrary(shows2, movies2, cont2, up2, ov, emptyMap())
+        check("library overlay: removed title vanishes from the grid",
+            libOv.none { it.tmdbId == 693134L })
+        check("library overlay: added title appears as pending (planned)",
+            libOv.firstOrNull { it.tmdbId == 777L }?.let {
+                it.pending && it.planned && it.poster == "/new.jpg" &&
+                    ll.progressLine(it).startsWith("Pending")
+            } == true)
+        check("library overlay: mute + movie-unwatch override the snapshot",
+            libOv.first { it.tmdbId == 94997L }.muted &&
+                !libOv.first { it.tmdbId == 100L }.movieWatched)
+        check("library overlay: marking the known next episode clears the next claim",
+            ll.buildLibrary(
+                shows2, movies2, cont2, up2,
+                ll.withEpisodeToggle(emptyList(), 125988, 1, 4, true, 5L),
+                emptyMap()
+            ).first { it.tmdbId == 125988L }.let {
+                it.nextSeason == 0 && it.watchedCount == 4
+            })
+
+        // --- overlay codec + toggle discipline ---
+        val nasty = ll.withAdded(
+            emptyList(), "tv", 5, "A | B % C\nD", "/p|q.jpg", "2024-01-01", 42L
+        )
+        val nastyRt = ll.decodePending(ll.encodePending(nasty))
+        check("overlay: codec round-trips escaped titles/posters",
+            nastyRt == nasty, nastyRt.toString())
+        check("overlay: codec fails open on garbage",
+            ll.decodePending("a|b|c").isEmpty() && ll.decodePending(null).isEmpty() &&
+                ll.decodePending("").isEmpty())
+        var tog = ll.withEpisodeToggle(emptyList(), 9, 1, 1, true, 10L)
+        tog = ll.withEpisodeToggle(tog, 9, 1, 1, false, 20L)
+        val togEntry = ll.overlayEntry(tog, "tv", 9)!!
+        check("overlay: newest toggle wins (mark then unmark leaves only the remove)",
+            togEntry.watchedAdd.isEmpty() && togEntry.watchedRemove == setOf("1x1") &&
+                togEntry.at == 20L)
+        check("overlay: effective watched = snapshot plus adds minus removes",
+            ll.effectiveWatched(
+                LibraryLogic.LibShow(9, "X", false, false, setOf("1x1", "1x2")),
+                ll.withEpisodeToggle(
+                    ll.withEpisodeToggle(emptyList(), 9, 1, 3, true, 1L),
+                    9, 1, 1, false, 2L
+                ).single()
+            ) == setOf("1x2", "1x3"))
+        check("overlay: season mark adds every listed episode (and un-marks none)",
+            ll.overlayEntry(
+                ll.withSeasonMark(emptyList(), 9, 2, listOf(3, 1, 2), 7L), "tv", 9
+            )!!.watchedAdd == setOf("2x1", "2x2", "2x3"))
+
+        // --- overlay convergence (prune) ---
+        val snapShows = listOf(
+            LibraryLogic.LibShow(125988, "Silo", muted = true, planned = false, watched = setOf("1x1", "1x4"))
+        )
+        val snapMovies = listOf(
+            TrackerLogic.MovieItem(693134, "Dune: Part Two", "2024-03-01", false, "/d.jpg", watched = true)
+        )
+        var pend = emptyList<LibraryLogic.PendingTitle>()
+        pend = ll.withEpisodeToggle(pend, 125988, 1, 4, true, 100L)   // in snapshot → retires
+        pend = ll.withEpisodeToggle(pend, 125988, 1, 9, true, 100L)   // not in snapshot → stays
+        pend = ll.withMuted(pend, "tv", 125988, true, 100L)           // snapshot muted=true → retires
+        pend = ll.withMovieToggle(pend, 693134, true, 100L)           // snapshot watched → retires
+        val prunedFresh = ll.prunePending(pend, snapShows, snapMovies, snapshotUpdated = 200L)
+        val prunedEntry = ll.overlayEntry(prunedFresh, "tv", 125988)
+        check("overlay prune: converged parts retire, unconverged stay",
+            prunedEntry != null && prunedEntry.watchedAdd == setOf("1x9") &&
+                prunedEntry.muted == null &&
+                ll.overlayEntry(prunedFresh, "movie", 693134) == null,
+            prunedFresh.toString())
+        check("overlay prune: a stale snapshot retires nothing",
+            ll.prunePending(pend, snapShows, snapMovies, snapshotUpdated = 100L) == pend &&
+                ll.prunePending(pend, snapShows, snapMovies, snapshotUpdated = 0L) == pend)
+        val addPend = ll.withAdded(emptyList(), "tv", 777, "New Show", "", "", 100L)
+        check("overlay prune: an add retires when the title reaches the snapshot",
+            ll.prunePending(
+                addPend, listOf(LibraryLogic.LibShow(777, "New Show", false, true, emptySet())),
+                emptyList(), 200L
+            ).isEmpty() &&
+                ll.prunePending(addPend, emptyList(), emptyList(), 200L) == addPend)
+        val removePend = ll.withRemoved(emptyList(), "movie", 693134, 100L)
+        check("overlay prune: a remove retires when the title leaves the snapshot",
+            ll.prunePending(removePend, emptyList(), snapMovies, 200L) == removePend &&
+                ll.prunePending(removePend, emptyList(), emptyList(), 200L).isEmpty())
+        val addRemove = ll.withRemoved(
+            ll.withAdded(emptyList(), "tv", 888, "Flip", "", "", 100L), "tv", 888, 110L
+        )
+        check("overlay prune: add-then-remove settles whole once snapshots are fresher",
+            ll.prunePending(addRemove, emptyList(), emptyList(), 200L).isEmpty())
+        check("overlay prune: an unwatch retires when the episode leaves the watched set",
+            ll.overlayEntry(
+                ll.prunePending(
+                    ll.withEpisodeToggle(emptyList(), 125988, 1, 7, false, 100L),
+                    snapShows, snapMovies, 200L
+                ), "tv", 125988
+            ) == null)
+
+        // --- TMDB details parsing ---
+        val tvDetailsJson = """
+            {"id": 125988, "name": "Silo", "overview": "Underground…",
+             "vote_average": 8.2, "poster_path": "/siloP.jpg",
+             "backdrop_path": "/siloB.jpg", "first_air_date": "2023-05-05",
+             "status": "Returning Series",
+             "seasons": [{"season_number": 1, "episode_count": 10, "name": "Season 1"},
+                          {"season_number": 0, "episode_count": 3, "name": "Specials"},
+                          {"season_number": 2, "episode_count": 0, "name": "Season 2"}]}
+        """.trimIndent()
+        val tvDetails = ll.parseDetails(tvDetailsJson, "tv")!!
+        check("tmdb: tv details parse (fields, year, seasons sorted, empty season dropped)",
+            tvDetails.title == "Silo" && tvDetails.year == "2023" &&
+                tvDetails.voteAverage == 8.2 && tvDetails.poster == "/siloP.jpg" &&
+                tvDetails.backdrop == "/siloB.jpg" &&
+                tvDetails.seasons.map { it.number } == listOf(0, 1),
+            tvDetails.toString())
+        val movieDetails = ll.parseDetails(
+            """{"id": 693134, "title": "Dune: Part Two", "overview": "Sand…",
+                "vote_average": 8.3, "poster_path": "/d.jpg", "backdrop_path": "",
+                "release_date": "2024-03-01", "status": "Released"}""", "movie"
+        )!!
+        check("tmdb: movie details parse (title/release year, no seasons)",
+            movieDetails.title == "Dune: Part Two" && movieDetails.year == "2024" &&
+                movieDetails.seasons.isEmpty())
+        check("tmdb: details parse fails open",
+            ll.parseDetails(null, "tv") == null && ll.parseDetails("junk", "tv") == null &&
+                ll.parseDetails("""{"name": "No id"}""", "tv") == null)
+
+        // --- season episodes + the mark_season payload ---
+        val seasonJson = """
+            {"season_number": 1, "episodes": [
+              {"episode_number": 2, "name": "Holston's Pick", "air_date": "2023-05-05", "overview": ""},
+              {"episode_number": 1, "name": "Freedom Day", "air_date": "2023-05-05", "overview": ""},
+              {"episode_number": 2, "name": "Dup", "air_date": "", "overview": ""}]}
+        """.trimIndent()
+        val episodes = ll.parseSeasonEpisodes(seasonJson)
+        check("tmdb: season episodes parse ascending",
+            episodes.map { it.number } == listOf(1, 2, 2) &&
+                episodes.first().name == "Freedom Day")
+        check("tmdb: mark_season CSV is sorted, deduped, positive-only",
+            ll.seasonCsv(episodes) == "1,2" &&
+                ll.seasonCsv(listOf(LibraryLogic.EpisodeInfo(0, "", "", ""), LibraryLogic.EpisodeInfo(3, "", "", ""))) == "3" &&
+                ll.seasonCsv(emptyList()) == "")
+        check("tmdb: season parse fails open",
+            ll.parseSeasonEpisodes(null).isEmpty() && ll.parseSeasonEpisodes("{}").isEmpty())
+
+        // --- search parsing ---
+        val searchJson = """
+            {"results": [
+              {"media_type": "tv", "id": 125988, "name": "Silo", "poster_path": "/s.jpg",
+               "vote_average": 8.2, "first_air_date": "2023-05-05", "overview": "o"},
+              {"media_type": "person", "id": 31, "name": "Some Actor", "poster_path": ""},
+              {"media_type": "movie", "id": 693134, "title": "Dune: Part Two",
+               "poster_path": "/d.jpg", "vote_average": 8.3, "release_date": "2024-03-01",
+               "overview": ""},
+              {"media_type": "tv", "id": 0, "name": "Bad"}]}
+        """.trimIndent()
+        val hits = ll.parseSearch(searchJson)
+        check("tmdb: search keeps tv+movie, drops persons and bad rows",
+            hits.size == 2 && hits[0].type == "tv" && hits[0].title == "Silo" &&
+                hits[0].year == "2023" && hits[1].type == "movie" &&
+                hits[1].title == "Dune: Part Two" && hits[1].year == "2024",
+            hits.toString())
+        check("tmdb: search parse fails open",
+            ll.parseSearch(null).isEmpty() && ll.parseSearch("{}").isEmpty())
+
+        // --- tmdb_get paths + error mapping ---
+        check("tmdb: proxy paths (details / season / search with encoding)",
+            ll.detailsPath("tv", 125988) == "tv/125988" &&
+                ll.detailsPath("movie", 693134) == "movie/693134" &&
+                ll.seasonPath(125988, 2) == "tv/125988/season/2" &&
+                ll.searchPath("the matrix") == "search/multi?query=the%20matrix" &&
+                ll.searchPath("Lupin & Co") == "search/multi?query=Lupin%20%26%20Co")
+        check("tmdb: error kinds + http code",
+            ll.tmdbErrorKind(null) == LibraryLogic.TmdbError.NONE &&
+                ll.tmdbErrorKind("no_key") == LibraryLogic.TmdbError.NO_KEY &&
+                ll.tmdbErrorKind("bad_path") == LibraryLogic.TmdbError.BAD_PATH &&
+                ll.tmdbErrorKind("io") == LibraryLogic.TmdbError.IO &&
+                ll.tmdbErrorKind("http_503") == LibraryLogic.TmdbError.HTTP &&
+                ll.tmdbHttpCode("http_503") == 503 && ll.tmdbHttpCode("io") == 0 &&
+                ll.tmdbErrorKind("weird") == LibraryLogic.TmdbError.UNKNOWN)
+        check("tmdb: retryable = http/io/unknown only",
+            ll.tmdbRetryable("http_500") && ll.tmdbRetryable("io") &&
+                ll.tmdbRetryable("weird") && !ll.tmdbRetryable("no_key") &&
+                !ll.tmdbRetryable("bad_path") && !ll.tmdbRetryable(null))
+        check("tmdb: user lines (no_key names the fix; http carries the code)",
+            ll.tmdbUserLine("no_key").contains("TMDB key") &&
+                ll.tmdbUserLine("no_key").contains("tracker app") &&
+                ll.tmdbUserLine("http_404").contains("404") &&
+                ll.tmdbUserLine("io").contains("reach TMDB") &&
+                ll.tmdbUserLine(null) == "")
+        check("tmdb: diagnostics wording",
+            ll.tmdbDiagText(null) == "not used yet" && ll.tmdbDiagText("ok") == "ok" &&
+                ll.tmdbDiagText("no_key") == "no key in tracker" &&
+                ll.tmdbDiagText("bad_path") == "bad path (bug)" &&
+                ll.tmdbDiagText("http_500") == "http 500" &&
+                ll.tmdbDiagText("io") == "network error")
+
+        // --- poster cache codec ---
+        val cache = mapOf("tv|125988" to "/silo.jpg", "movie|693134" to "/dune.jpg")
+        check("poster cache: codec round-trips, garbage dropped",
+            ll.decodePosterCache(ll.encodePosterCache(cache)) == cache &&
+                ll.decodePosterCache("tv|x|/a.jpg\nmovie|5").isEmpty() &&
+                ll.decodePosterCache(null).isEmpty())
+
+        // --- Movie Night hardening (v2.1): a numeric-STRING tmdbId
+        // must still parse — a bridge serializing ids as strings
+        // would otherwise silently empty the whole row. ---
+        val stringIdMovies =
+            """[{"tmdbId":"303","title":"Strung","releaseDate":"2024-03-03","planned":true,"poster":"/s.jpg","watched":false}]"""
+        check("movie night: numeric-string tmdbId still parses",
+            TrackerLogic.parseMovies(stringIdMovies).let {
+                it.size == 1 && it[0].tmdbId == 303L && it[0].title == "Strung" && !it[0].watched
+            })
+
+        // --- hero pool widening + source tags (spec section 19) ---
+        val hUp = listOf(
+            TrackerLogic.UpNextItem(1, "U-NoArt", "S1 E1", "2026-11-01", "", "", "", 1, 1, "tv"),
+            TrackerLogic.UpNextItem(2, "U-Art", "S1 E2", "2026-11-02", "", "/u2.jpg", "", 1, 2, "tv")
+        )
+        val hCont = listOf(
+            TrackerLogic.ContinueItem(3, "C-Art", "Next S1 E1", 1, 9, "", "/c3.jpg", "", "tv")
+        )
+        val hMovies = listOf(
+            TrackerLogic.MovieItem(4, "M-One", "2026-12-01", false, "/m4.jpg", false),
+            TrackerLogic.MovieItem(5, "M-Two", "", true, "", false)
+        )
+        val hPicks = listOf(
+            TrackerLogic.ForYouPick(6, "tv", "P-Art", "/p6.jpg", 7.5, "Because you watched X", listOf("Drama"), 9.0),
+            TrackerLogic.ForYouPick(7, "movie", "P-NoArt", "/p7.jpg", 6.0, "Trending", emptyList(), 5.0)
+        )
+        val pool = TrackerLogic.heroCandidates(
+            hUp, hCont, hMovies, hPicks, mapOf("tv|6" to "/p6-back.jpg")
+        )
+        check("hero pool: order is Up Next, Continue, Movie Night, For You (backdrop-first in section)",
+            pool.map { it.title } == listOf("U-Art", "C-Art", "U-NoArt", "M-One", "M-Two", "P-Art"),
+            pool.map { it.title }.toString())
+        check("hero pool: every candidate carries its exact section name as source",
+            pool.map { it.source } == listOf(
+                "Up Next", "Continue Watching", "Up Next",
+                "Movie Night", "Movie Night", "For You"
+            ),
+            pool.map { it.source }.toString())
+        check("hero pool: poster-only For You pick stays out; a known backdrop lets it in",
+            pool.none { it.title == "P-NoArt" } &&
+                pool.first { it.title == "P-Art" }.backdrop == "/p6-back.jpg" &&
+                pool.first { it.title == "P-Art" }.sub == "Because you watched X")
+        check("hero pool: movie hero uses the movie path (type movie, release date, no fake backdrop)",
+            pool.first { it.title == "M-One" }.let {
+                it.type == "movie" && it.dateIso == "2026-12-01" && it.backdrop.isEmpty()
+            } &&
+                pool.first { it.title == "M-Two" }.sub == "Planned")
+        check("hero pool: two-source overload keeps the v1.8 order and tags",
+            TrackerLogic.heroCandidates(hUp, hCont).map { it.title to it.source } == listOf(
+                "U-Art" to "Up Next", "C-Art" to "Continue Watching", "U-NoArt" to "Up Next"
+            ))
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

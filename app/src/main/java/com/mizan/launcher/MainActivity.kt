@@ -57,6 +57,7 @@ import com.mizan.launcher.data.MostUsed
 import com.mizan.launcher.data.NowPlayingData
 import com.mizan.launcher.data.Prefs
 import com.mizan.launcher.data.TmdbImages
+import com.mizan.launcher.data.TrackerActions
 import com.mizan.launcher.data.TrackerClient
 import com.mizan.launcher.data.TvData
 import com.mizan.launcher.data.WallpaperRotator
@@ -557,7 +558,14 @@ class MainActivity : Activity() {
             overlay = prunedOverlay
         }
         tPicks = TrackerLogic.filterForYou(snap.forYou, snap.tracked, snap.movies, overlay)
-        tHeroCandidates = TrackerLogic.heroCandidates(tUpNext, tCont)
+        // v2.1: the hero pool spans all four sections (Up Next →
+        // Continue → Movie Night → For You), each list already
+        // filtered exactly as its row is. For You picks join only
+        // with a backdrop learned from a details fetch (the pick
+        // shape carries none) — see TrackerLogic.heroCandidates.
+        tHeroCandidates = TrackerLogic.heroCandidates(
+            tUpNext, tCont, tMovies, tPicks, TrackerClient.backdropCache(this)
+        )
     }
 
     /**
@@ -600,13 +608,15 @@ class MainActivity : Activity() {
         lslp.gravity = Gravity.TOP or Gravity.START
         leftScrim.layoutParams = lslp
         root.addView(leftScrim)
-        // Top shade so the transparent status bar reads over bright art.
+        // Top shade so the transparent status bar reads over bright
+        // art. v2.1: sized to the reorganized SINGLE-row bar (the
+        // old 190dp covered the two-line hero block).
         val topShade = View(this)
         topShade.background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(0x66000000, 0x00000000)
         )
-        val tslp = FrameLayout.LayoutParams(-1, Ui.dp(this, 190))
+        val tslp = FrameLayout.LayoutParams(-1, Ui.dp(this, 120))
         tslp.gravity = Gravity.TOP
         topShade.layoutParams = tslp
         root.addView(topShade)
@@ -733,47 +743,56 @@ class MainActivity : Activity() {
             clockView = c
             left.addView(c)
         }
+        // v2.1: weather joins the LEFT cluster as plain text (same
+        // reorganization as the TV/Tracker bar — it was a focusable
+        // chip here too). The tag-"weather" wrapper hides whole when
+        // there is no weather; the text keeps tag "weather_text".
+        if (cfg.showWeather) {
+            val weatherWrap = LinearLayout(this)
+            weatherWrap.orientation = LinearLayout.HORIZONTAL
+            weatherWrap.gravity = Gravity.CENTER_VERTICAL
+            weatherWrap.tag = "weather"
+            weatherWrap.visibility = View.GONE
+            val sep = TextView(this)
+            sep.text = "·"
+            sep.setTextColor(subColour)
+            sep.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
+            val slp3 = LinearLayout.LayoutParams(-2, -2)
+            slp3.setMargins(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0)
+            sep.layoutParams = slp3
+            weatherWrap.addView(sep)
+            val w = TextView(this)
+            w.tag = "weather_text"
+            w.setTextColor(subColour)
+            w.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
+            w.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
+            weatherWrap.addView(w)
+            left.addView(weatherWrap)
+        }
 
+        // RIGHT (v2.1): status glyphs only — Wi-Fi / Bluetooth as
+        // compact dimmable glyphs, no word labels, then the Guest
+        // pill. (The strip has no action tiles; the dock has them.)
         val right = LinearLayout(this)
         right.orientation = LinearLayout.HORIZONTAL
         right.gravity = Gravity.CENTER_VERTICAL
-        if (cfg.showWeather) {
-            val w = TextView(this)
-            w.tag = "weather"
-            w.setTextColor(textColour)
-            w.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
-            w.isFocusable = true
-            w.isClickable = true
-            w.background = Ui.tileBackground(accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this)
-            w.setPadding(Ui.dp(this, 10), Ui.dp(this, 4), Ui.dp(this, 10), Ui.dp(this, 4))
-            Ui.focusLift(w, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
-            w.setOnClickListener {
-                startActivity(Intent(this, ForecastActivity::class.java))
-            }
-            val lp = LinearLayout.LayoutParams(-2, -2)
-            lp.setMargins(0, 0, Ui.dp(this, 12), 0)
-            w.layoutParams = lp
-            right.addView(w)
-        }
         networkView = null
         if (cfg.showNetwork) {
             val n = TextView(this)
-            n.setTextColor(subColour)
-            n.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
-            n.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
+            n.setTextColor(textColour)
+            n.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
             networkView = n
             right.addView(n)
         }
         if (cfg.showBluetooth) {
-            val btText = bluetoothLabel()
-            if (btText.isNotEmpty()) {
+            bluetoothGlyph()?.let { (glyphText, glyphAlpha) ->
                 val bt = TextView(this)
-                bt.text = btText
-                bt.setTextColor(subColour)
-                bt.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
-                bt.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
+                bt.text = glyphText
+                bt.alpha = glyphAlpha
+                bt.setTextColor(textColour)
+                bt.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
                 val lp = LinearLayout.LayoutParams(-2, -2)
-                lp.setMargins(Ui.dp(this, 12), 0, 0, 0)
+                lp.setMargins(Ui.dp(this, 10), 0, 0, 0)
                 bt.layoutParams = lp
                 right.addView(bt)
             }
@@ -1032,15 +1051,18 @@ class MainActivity : Activity() {
         wrap.orientation = LinearLayout.VERTICAL
 
         if (cfg.showBar) {
-            // v1.6 HERO zone: one composed block instead of a loose
-            // strip of floating items. LEFT = the big clock + date with
-            // a status line (weather, network, Bluetooth) beneath;
-            // RIGHT = every quick tile + profile + Settings grouped in
-            // ONE translucent rounded panel. The config toggles govern
-            // exactly the same elements as the v1.1–v1.5 bar did.
+            // v2.1 REORGANIZED (Haythem's photo: the giant clock, the
+            // weather as a focusable CHIP holding focus, floating
+            // "• Wi-Fi BT" text, Wi-Fi twice). The bar is ONE row:
+            // LEFT = an info cluster of NON-focusable plain text
+            // (clock · date · weather, dot separators, no chips);
+            // RIGHT = status glyphs (Wi-Fi / Bluetooth, no words)
+            // then the action tiles in one panel — composition from
+            // core/StatusBarLogic.barTiles. Focus never lands in the
+            // info cluster.
             val hero = LinearLayout(this)
             hero.orientation = LinearLayout.HORIZONTAL
-            hero.gravity = Gravity.TOP
+            hero.gravity = Gravity.CENTER_VERTICAL
 
             // Hero background follows the bar background config:
             // transparent (wallpaper + scrim show through), the
@@ -1077,89 +1099,101 @@ class MainActivity : Activity() {
                 )
             }
 
-            // LEFT: clock + date (each independently toggleable),
-            // then the status line, then the Guest pill.
+            // LEFT (v2.1): the info cluster — clock · date · weather
+            // on ONE baseline, plain text, dot separators. The
+            // weather segment lives in a tag-"weather" wrapper so
+            // refreshWeather can hide it whole (separator included)
+            // when there is no weather; its text view keeps the tag
+            // "weather_text" for findWeatherView.
             val left = LinearLayout(this)
-            left.orientation = LinearLayout.VERTICAL
+            left.orientation = LinearLayout.HORIZONTAL
+            left.gravity = Gravity.BOTTOM
             clockView = null
             dateView = null
+            var infoItems = 0
+            fun infoSep(target: LinearLayout) {
+                val sep = TextView(this)
+                sep.text = "·"
+                sep.setTextColor(subColour)
+                sep.textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
+                val slp2 = LinearLayout.LayoutParams(-2, -2)
+                slp2.setMargins(Ui.dp(this, 10), 0, Ui.dp(this, 10), 0)
+                sep.layoutParams = slp2
+                target.addView(sep)
+            }
             if (cfg.showClock) {
                 clockView = TextView(this).apply {
                     setTextColor(textColour)
-                    textSize = com.mizan.launcher.core.Design.HERO_CLOCK_SP * scale
-                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    textSize = com.mizan.launcher.core.Design.BAR_CLOCK_SP * scale
+                    typeface = android.graphics.Typeface.create(
+                        "sans-serif-medium", android.graphics.Typeface.NORMAL
+                    )
                 }
                 left.addView(clockView)
+                infoItems++
             }
             if (cfg.showDate) {
+                if (infoItems > 0) infoSep(left)
                 dateView = TextView(this).apply {
                     setTextColor(subColour)
-                    textSize = com.mizan.launcher.core.Design.HERO_DATE_SP * scale
+                    textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
                 }
                 left.addView(dateView)
+                infoItems++
             }
-
-            val statusLine = LinearLayout(this)
-            statusLine.orientation = LinearLayout.HORIZONTAL
-            statusLine.gravity = Gravity.CENTER_VERTICAL
-            val slp = LinearLayout.LayoutParams(-2, -2)
-            slp.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S), 0, 0)
-            statusLine.layoutParams = slp
-            left.addView(statusLine)
-
             if (!prefs.safeMode && cfg.showWeather) {
-                // Weather widget — text filled by refreshWeather(); hidden if empty.
-                // v1.4: OK on the widget opens the full forecast screen.
-                val weather = TextView(this).apply {
-                    setTextColor(textColour)
-                    textSize = com.mizan.launcher.core.Design.HERO_WEATHER_SP * scale
-                    setPadding(Ui.dp(this@MainActivity, 12), Ui.dp(this@MainActivity, 4), Ui.dp(this@MainActivity, 12), Ui.dp(this@MainActivity, 4))
-                    tag = "weather"
-                    isFocusable = true
-                    isClickable = true
-                    background = Ui.tileBackground(accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this@MainActivity)
-                    setOnClickListener {
-                        try { startActivity(Intent(this@MainActivity, ForecastActivity::class.java)) }
-                        catch (e: Exception) { Prefs.noteError(this@MainActivity, "forecastOpen", e) }
-                    }
-                }
-                Ui.focusLift(weather, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
-                statusLine.addView(weather)
+                val weatherWrap = LinearLayout(this)
+                weatherWrap.orientation = LinearLayout.HORIZONTAL
+                weatherWrap.gravity = Gravity.BOTTOM
+                weatherWrap.tag = "weather"
+                weatherWrap.visibility = View.GONE
+                if (infoItems > 0) infoSep(weatherWrap)
+                val weather = TextView(this)
+                weather.tag = "weather_text"
+                weather.setTextColor(subColour)
+                weather.textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
+                if (overHero) weather.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
+                weatherWrap.addView(weather)
+                left.addView(weatherWrap)
+                infoItems++
+            }
+            hero.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
+            // RIGHT (v2.1): the status GLYPHS first (Guest pill,
+            // Wi-Fi, Bluetooth — non-focusable, no word labels,
+            // dimmed when off), then the action tiles in ONE
+            // translucent panel, composed by core/StatusBarLogic.
+            val right = LinearLayout(this)
+            right.orientation = LinearLayout.HORIZONTAL
+            right.gravity = Gravity.CENTER_VERTICAL
+
+            // Guest pill (v1.4): while the Guest profile is active.
+            // (Bar hidden → the pill moves to the top-left corner;
+            // see buildRoot.)
+            if (!prefs.safeMode && guestActive()) {
+                right.addView(guestPill())
             }
             networkView = null
             if (cfg.showNetwork) {
-                networkView = TextView(this).apply {
-                    setTextColor(subColour)
-                    textSize = com.mizan.launcher.core.Design.HERO_STATUS_SP * scale
-                    setPadding(Ui.dp(this@MainActivity, 10), 0, Ui.dp(this@MainActivity, 10), 0)
-                }
-                statusLine.addView(networkView)
+                val glyph = TextView(this)
+                glyph.setTextColor(textColour)
+                glyph.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
+                glyph.setPadding(Ui.dp(this, 6), 0, Ui.dp(this, 6), 0)
+                networkView = glyph
+                right.addView(glyph)
             }
             if (!prefs.safeMode && cfg.showBluetooth) {
-                val bt = TextView(this)
-                bt.setTextColor(subColour)
-                bt.textSize = com.mizan.launcher.core.Design.HERO_STATUS_SP * scale
-                bt.setPadding(Ui.dp(this, 4), 0, Ui.dp(this, 12), 0)
-                bt.text = bluetoothLabel()
-                if (overHero) bt.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
-                statusLine.addView(bt)
+                bluetoothGlyph()?.let { (glyphText, glyphAlpha) ->
+                    val bt = TextView(this)
+                    bt.text = glyphText
+                    bt.alpha = glyphAlpha
+                    bt.setTextColor(textColour)
+                    bt.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
+                    bt.setPadding(Ui.dp(this, 6), 0, Ui.dp(this, 6), 0)
+                    if (overHero) bt.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
+                    right.addView(bt)
+                }
             }
 
-            // Guest pill (v1.4): while the Guest profile is active, a
-            // subtle "Guest" tag sits under the status line. (Bar
-            // hidden → the pill moves to the top-left corner; see
-            // buildRoot.)
-            if (!prefs.safeMode && guestActive()) {
-                val pill = guestPill()
-                (pill.layoutParams as? LinearLayout.LayoutParams)
-                    ?.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S), 0, 0)
-                left.addView(pill)
-            }
-            hero.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
-            // RIGHT: ONE translucent rounded panel grouping the
-            // quick tiles, the profile tile and the Settings tile —
-            // a single organized block instead of loose floating
-            // buttons scattered across the top of the screen.
             val panel = LinearLayout(this)
             panel.orientation = LinearLayout.HORIZONTAL
             panel.gravity = Gravity.CENTER_VERTICAL
@@ -1168,34 +1202,37 @@ class MainActivity : Activity() {
             panelBg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
             panel.background = panelBg
             panel.setPadding(Ui.dp(this, 10), Ui.dp(this, 8), Ui.dp(this, 10), Ui.dp(this, 8))
-            if (!prefs.safeMode && cfg.showQuickTiles) {
-                panel.addView(buildQuickTiles())
-            }
-
-            // Profile tile (v1.4): the one consistent place profile
-            // switching lives on the home screen. Click or hold-OK
-            // opens the switch menu; switching TO Guest is instant,
-            // switching AWAY from Guest may ask for the arrow pattern
-            // (see requestProfileSwitch / core/GuestGate).
-            if (!prefs.safeMode) {
-                val profileTile = quickTile("👤 " + prefs.profileDisplayName(prefs.currentProfile)) {
-                    showProfileSwitchMenu()
+            for (tile in com.mizan.launcher.core.StatusBarLogic.barTiles(cfg, prefs.safeMode)) {
+                when (tile) {
+                    com.mizan.launcher.core.StatusBarLogic.BarTile.ALL_APPS ->
+                        panel.addView(barTileAllApps())
+                    com.mizan.launcher.core.StatusBarLogic.BarTile.SEARCH ->
+                        panel.addView(barTileSearch())
+                    com.mizan.launcher.core.StatusBarLogic.BarTile.WIFI ->
+                        barTileWifi()?.let { panel.addView(it) }
+                    // Profile tile (v1.4): the one consistent place
+                    // profile switching lives on the home screen.
+                    // Click or hold-OK opens the switch menu;
+                    // switching TO Guest is instant, switching AWAY
+                    // may ask for the pattern (core/GuestGate).
+                    com.mizan.launcher.core.StatusBarLogic.BarTile.PROFILE -> {
+                        val profileTile = quickTile(
+                            "👤 " + prefs.profileDisplayName(prefs.currentProfile)
+                        ) { showProfileSwitchMenu() }
+                        profileTile.setOnLongClickListener { showProfileSwitchMenu(); true }
+                        panel.addView(profileTile)
+                    }
+                    // The bar's Settings tile (v2.0: hold-OK opens
+                    // the Quick settings popover).
+                    com.mizan.launcher.core.StatusBarLogic.BarTile.SETTINGS -> {
+                        val settingsTile = quickTile("⚙  Settings") { openSettings() }
+                        settingsTile.setOnLongClickListener { showQuickSettings(); true }
+                        panel.addView(settingsTile)
+                    }
                 }
-                profileTile.setOnLongClickListener { showProfileSwitchMenu(); true }
-                panel.addView(profileTile)
             }
-
-            // The bar's Settings tile: always present in Safe mode;
-            // otherwise governed by its own per-tile switch (v1.3).
-            // When it's off, the corner gear in buildRoot() takes over
-            // as the way into Settings.
-            if (prefs.safeMode || cfg.showTileSettings) {
-                val settingsTile = quickTile("⚙  Settings") { openSettings() }
-                // v2.0: hold-OK on the gear opens Quick settings.
-                settingsTile.setOnLongClickListener { showQuickSettings(); true }
-                panel.addView(settingsTile)
-            }
-            hero.addView(panel)
+            right.addView(panel)
+            hero.addView(right)
             wrap.addView(hero)
         }
 
@@ -1248,16 +1285,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /** "ᛒ BT on/off" label; empty when the device has no Bluetooth at all. */
-    private fun bluetoothLabel(): String {
-        return try {
-            @Suppress("DEPRECATION")
-            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter() ?: return ""
-            if (adapter.isEnabled) "ᛒ BT" else "ᛒ BT off"
-        } catch (e: Exception) {
-            ""
-        }
-    }
+    /** (v2.1: the wordy "ᛒ BT" label retired with the bar reorganization — see bluetoothGlyph.) */
 
     /**
      * One-line dismissible hint shown whenever Sreeb is not the
@@ -1310,51 +1338,55 @@ class MainActivity : Activity() {
      * intent resolves nowhere, and (v1.3) each is gated by its own
      * per-tile switch under the showQuickTiles master.
      */
-    private fun buildQuickTiles(): View {
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        val cfg = layout.statusBar
-        // v1.5: the All Apps tile opens the full-screen All Apps tab
-        // (every installed app, foldered ones included). Same master +
-        // per-tile rule as the other tiles via showTileAllApps.
-        if (cfg.showTileAllApps) {
-            row.addView(quickTile("▦ All Apps") {
-                try {
-                    startActivity(
-                        Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java)
-                    )
-                } catch (e: Exception) { Prefs.noteError(this, "allAppsTile", e) }
-            })
-        }
-        // v1.4: the Search tile opens Sreeb's own Search screen (not a
-        // system settings page); it follows the same master + per-tile
-        // rule as the system tiles via showTileSearch.
-        if (cfg.showTileSearch) {
-            row.addView(quickTile("Search") {
-                try { startActivity(Intent(this, SearchActivity::class.java)) }
-                catch (e: Exception) { Prefs.noteError(this, "searchTile", e) }
-            })
-        }
-        val candidates = listOf(
-            Triple("Wi-Fi", Settings.ACTION_WIFI_SETTINGS, cfg.showTileWifi),
-            Triple("Bluetooth", Settings.ACTION_BLUETOOTH_SETTINGS, cfg.showTileBluetooth),
-            Triple("Sound", Settings.ACTION_SOUND_SETTINGS, cfg.showTileSound),
-            Triple("Picture", Settings.ACTION_DISPLAY_SETTINGS, cfg.showTilePicture)
-        )
-        for ((label, action, enabled) in candidates) {
-            if (!enabled) continue
-            try {
-                val intent = Intent(action)
-                if (intent.resolveActivity(packageManager) == null) continue
-                row.addView(quickTile(label) {
+    /** v2.1 bar tile: All Apps — opens the full-screen tab (v1.5). */
+    private fun barTileAllApps(): View = quickTile("▦ All Apps") {
+        try {
+            startActivity(Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java))
+        } catch (e: Exception) { Prefs.noteError(this, "allAppsTile", e) }
+    }
+
+    /** v2.1 bar tile: Search — opens Sreeb's own Search screen (v1.4). */
+    private fun barTileSearch(): View = quickTile("Search") {
+        try { startActivity(Intent(this, SearchActivity::class.java)) }
+        catch (e: Exception) { Prefs.noteError(this, "searchTile", e) }
+    }
+
+    /**
+     * v2.1 bar tile: Wi-Fi settings. Default OFF since v2.1 (the
+     * status glyph + the gear's quick-settings popover cover it);
+     * renders only when the profile re-enabled the tile switch, and
+     * only when the settings screen resolves (fail-open).
+     */
+    private fun barTileWifi(): View? {
+        return try {
+            val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
+            if (intent.resolveActivity(packageManager) == null) {
+                null
+            } else {
+                quickTile("Wi-Fi") {
                     try { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                    catch (e: Exception) { Prefs.noteError(this, "quickTile:$label", e) }
-                })
-            } catch (e: Exception) {
-                // Fail-open: a broken tile simply doesn't appear.
+                    catch (e: Exception) { Prefs.noteError(this, "quickTile:Wi-Fi", e) }
+                }
             }
+        } catch (e: Exception) {
+            null
         }
-        return row
+    }
+
+    /**
+     * The Bluetooth status glyph for the bar/strip clusters (v2.1):
+     * "ᛒ" at full alpha when Bluetooth is on, dimmed when off; null
+     * when the device has no Bluetooth adapter at all.
+     */
+    private fun bluetoothGlyph(): Pair<String, Float>? {
+        return try {
+            @Suppress("DEPRECATION")
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                ?: return null
+            if (adapter.isEnabled) "ᛒ" to 1f else "ᛒ" to 0.35f
+        } catch (e: Exception) {
+            null
+        }
     }
 
     // ------------------------------------------------------- guest / profiles (v1.4)
@@ -1864,6 +1896,14 @@ class MainActivity : Activity() {
             }
         }
 
+        // v2.1: with no hero to carry the My Library button (hero
+        // hidden in section controls, or no candidates), the entry
+        // renders as its own row whenever the snapshots hold any
+        // library data at all.
+        if (hero == null && tSnap.hasData) {
+            content.addView(buildLibraryEntryRow())
+        }
+
         for (key in order) {
             try {
                 when (key) {
@@ -1888,6 +1928,30 @@ class MainActivity : Activity() {
             }
         }
         startHeroRotation()
+    }
+
+    /** v2.1: the standalone My Library entry row (no-hero case). */
+    private fun buildLibraryEntryRow(): View {
+        val row = TextView(this)
+        row.text = "▦  My Library — all your shows & movies"
+        row.setTextColor(0xFFFFFFFF.toInt())
+        row.textSize = 17f
+        row.setTypeface(row.typeface, android.graphics.Typeface.BOLD)
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.isFocusable = true
+        row.isClickable = true
+        row.setPadding(Ui.dp(this, 18), Ui.dp(this, 13), Ui.dp(this, 18), Ui.dp(this, 13))
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 4), Ui.dp(this, 60), Ui.dp(this, 12))
+        row.layoutParams = lp
+        row.background = Ui.tileBackground(
+            accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this
+        )
+        Ui.focusLift(row, accent, com.mizan.launcher.core.Design.RADIUS_CHIP)
+        row.setOnClickListener {
+            startActivity(Intent(this, com.mizan.launcher.ui.LibraryActivity::class.java))
+        }
+        return row
     }
 
     /** A small informational line in the Tracker view (fallback states). */
@@ -1932,6 +1996,24 @@ class MainActivity : Activity() {
     /** (Re)fill the hero text block for [hero] — rotation's text half. */
     private fun fillHeroText(host: LinearLayout, hero: TrackerLogic.HeroItem) {
         heroButtonViews = mutableListOf()
+        // v2.1: the source label — which section this hero was
+        // pulled from ("UP NEXT" / "CONTINUE WATCHING" / "MOVIE
+        // NIGHT" / "FOR YOU"), small + letter-spaced over the
+        // backdrop, above the title. Rebuilt with the text block, so
+        // it follows rotation and › Next automatically. (The
+        // no-data clock/weather fallback has no hero and no label.)
+        val sourceLabel = TextView(this)
+        sourceLabel.text = hero.source.uppercase()
+        sourceLabel.setTextColor(0xB3FFFFFF.toInt())
+        sourceLabel.textSize = 12f
+        sourceLabel.setTypeface(sourceLabel.typeface, android.graphics.Typeface.BOLD)
+        sourceLabel.letterSpacing = 0.18f
+        sourceLabel.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
+        val slp = LinearLayout.LayoutParams(-2, -2)
+        slp.setMargins(0, 0, 0, Ui.dp(this, 6))
+        sourceLabel.layoutParams = slp
+        host.addView(sourceLabel)
+
         // Red NEW badge when the featured item airs today.
         if (hero.dateIso.isNotBlank() && hero.dateIso.trim() == todayIso()) {
             val badge = TextView(this)
@@ -1963,7 +2045,11 @@ class MainActivity : Activity() {
 
         val metaParts = ArrayList<String>()
         if (hero.sub.isNotBlank()) metaParts.add(hero.sub)
-        val countdown = TrackerLogic.countdownLabel(hero.dateIso, todayIso())
+        var countdown = TrackerLogic.countdownLabel(hero.dateIso, todayIso())
+        // Movies don't "air": a past release date reads "Released".
+        if (hero.source == TrackerLogic.SOURCE_MOVIE_NIGHT && countdown == "Aired") {
+            countdown = "Released"
+        }
         if (countdown.isNotEmpty()) metaParts.add(countdown)
         if (metaParts.isNotEmpty()) {
             val meta = TextView(this)
@@ -2015,17 +2101,39 @@ class MainActivity : Activity() {
         buttons.layoutParams = btnLp
         val trackerHere = TrackerClient.isInstalled(this) ||
             appsByPkg.containsKey(TrackerClient.TRACKER_PKG)
-        if (trackerHere) {
+        if (hero.source == TrackerLogic.SOURCE_FOR_YOU) {
+            // v2.1 For You hero: a pick has nothing to mark watched —
+            // primary opens its in-launcher details, secondary adds
+            // it to the list (queued + overlays, like the row's menu).
+            buttons.addView(
+                heroButton("ⓘ Details", "details", primary = true) {
+                    openTitleDetails(hero.tmdbId, hero.type, hero.title, hero.poster)
+                }
+            )
+            buttons.addView(
+                heroButton("＋ Add to my list", "add", primary = false) {
+                    addForYouHero(hero)
+                }
+            )
+            buttons.addView(
+                heroButton("▦ My Library", "library", primary = false) {
+                    startActivity(
+                        Intent(this, com.mizan.launcher.ui.LibraryActivity::class.java)
+                    )
+                }
+            )
+        } else if (trackerHere) {
             buttons.addView(
                 heroButton("▶ Open Tracker", "open", primary = true) { openTracker() }
             )
             // Mark watched needs episode coordinates: Up Next heroes
             // carry their own; a Continue hero borrows them from the
-            // same show's Up Next item. No coordinates → no button.
-            val coords: Pair<Int, Int>? = if (!hero.fromContinue) {
-                hero.season to hero.episode
-            } else {
-                tSnap.upNext.firstOrNull { it.tmdbId == hero.tmdbId }
+            // same show's Up Next item; a Movie Night hero uses the
+            // movie path (0, 0). No coordinates → no button.
+            val coords: Pair<Int, Int>? = when {
+                hero.type == "movie" -> 0 to 0
+                !hero.fromContinue -> hero.season to hero.episode
+                else -> tSnap.upNext.firstOrNull { it.tmdbId == hero.tmdbId }
                     ?.let { it.season to it.episode }
             }
             if (coords != null) {
@@ -2035,6 +2143,16 @@ class MainActivity : Activity() {
                     }
                 )
             }
+            // v2.1: the My Library entry — the whole tracked library
+            // (details, episode checklists, add/remove) now lives in
+            // the launcher; the tracker app is only for its Settings.
+            buttons.addView(
+                heroButton("▦ My Library", "library", primary = false) {
+                    startActivity(
+                        Intent(this, com.mizan.launcher.ui.LibraryActivity::class.java)
+                    )
+                }
+            )
         }
         if (tHeroCandidates.size > 1) {
             buttons.addView(
@@ -2222,10 +2340,23 @@ class MainActivity : Activity() {
         rebuild()
     }
 
-    /** Hold-OK menu for a tracker card: Open Tracker (+ Mark watched when offered). */
-    private fun openTrackerCardMenu(title: String, onMark: (() -> Unit)?) {
-        val labels = mutableListOf("Open Tracker")
-        val actions = mutableListOf<() -> Unit>({ openTracker() })
+    /**
+     * Hold-OK menu for a tracker card: Details (v2.1, in-launcher) /
+     * Open Tracker (+ Mark watched when offered).
+     */
+    private fun openTrackerCardMenu(
+        title: String,
+        onMark: (() -> Unit)?,
+        onDetails: (() -> Unit)? = null
+    ) {
+        val labels = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        if (onDetails != null) {
+            labels.add("Details")
+            actions.add(onDetails)
+        }
+        labels.add("Open Tracker")
+        actions.add { openTracker() }
         if (onMark != null) {
             labels.add("Mark watched")
             actions.add(onMark)
@@ -2234,6 +2365,11 @@ class MainActivity : Activity() {
             .setTitle(title)
             .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }
             .show()
+    }
+
+    /** v2.1: open the in-launcher details screen for a tracker title. */
+    private fun openTitleDetails(tmdbId: Long, type: String, title: String, poster: String) {
+        startActivity(TrackerActions.detailsIntent(this, tmdbId, type, title, poster))
     }
 
     /**
@@ -2340,9 +2476,15 @@ class MainActivity : Activity() {
                 glyph = "📺",
                 onClick = { openTracker() },
                 onLong = {
-                    openTrackerCardMenu(item.title) {
-                        markWatched(item.tmdbId, item.type, item.season, item.episode)
-                    }
+                    openTrackerCardMenu(
+                        item.title,
+                        onMark = {
+                            markWatched(item.tmdbId, item.type, item.season, item.episode)
+                        },
+                        onDetails = {
+                            openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+                        }
+                    )
                 }
             )
             row.addView(card)
@@ -2375,7 +2517,18 @@ class MainActivity : Activity() {
                     meta = trackerItem.sub,
                     glyph = "📺",
                     onClick = { openTracker() },
-                    onLong = { openTrackerCardMenu(trackerItem.title, null) }
+                    onLong = {
+                        openTrackerCardMenu(
+                            trackerItem.title,
+                            onMark = null,
+                            onDetails = {
+                                openTitleDetails(
+                                    trackerItem.tmdbId, trackerItem.type,
+                                    trackerItem.title, trackerItem.poster
+                                )
+                            }
+                        )
+                    }
                 )
                 row.addView(view)
             } else {
@@ -2402,9 +2555,13 @@ class MainActivity : Activity() {
                 glyph = "🎬",
                 onClick = { openTracker() },
                 onLong = {
-                    openTrackerCardMenu(movie.title) {
-                        markWatched(movie.tmdbId, "movie", 0, 0)
-                    }
+                    openTrackerCardMenu(
+                        movie.title,
+                        onMark = { markWatched(movie.tmdbId, "movie", 0, 0) },
+                        onDetails = {
+                            openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
+                        }
+                    )
                 }
             )
             row.addView(card)
@@ -2441,6 +2598,31 @@ class MainActivity : Activity() {
         return box
     }
 
+    /**
+     * "Add to my list" from a For You HERO (v2.1): the same writes
+     * as the row menu's add — the For You overlay hides the pick
+     * everywhere (hero pool included) and TrackerActions queues the
+     * add + mirrors it into the generalized pending overlay, so the
+     * title appears in My Library as Pending at once.
+     */
+    private fun addForYouHero(hero: TrackerLogic.HeroItem) {
+        val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
+        prefs.forYouOverlay = TrackerLogic.encodeForYouOverlay(
+            TrackerLogic.withForYouMark(
+                overlay,
+                TrackerLogic.ForYouMark(
+                    hero.tmdbId, hero.type, added = true, System.currentTimeMillis()
+                )
+            )
+        )
+        TrackerActions.addTitle(this, prefs, hero.tmdbId, hero.type, hero.title, hero.poster, "")
+        Toast.makeText(
+            this, "Added to your list — applies next time the tracker opens",
+            Toast.LENGTH_SHORT
+        ).show()
+        rebuild()
+    }
+
     /** Hold-OK on a For You card: open / add to list / not interested. */
     private fun openForYouMenu(pick: TrackerLogic.ForYouPick) {
         val labels = listOf("Open Tracker", "Add to my list", "Not interested")
@@ -2461,8 +2643,11 @@ class MainActivity : Activity() {
                             )
                         )
                         // For You picks carry no release date — "" per contract.
-                        TrackerClient.addTitle(
-                            this, pick.id, pick.type, pick.title, pick.poster, ""
+                        // v2.1: routed through TrackerActions so the title
+                        // ALSO lands in the generalized pending overlay —
+                        // it shows in My Library as Pending right away.
+                        TrackerActions.addTitle(
+                            this, prefs, pick.id, pick.type, pick.title, pick.poster, ""
                         )
                         Toast.makeText(
                             this, "Added to your list — applies next time the tracker opens",
@@ -3886,39 +4071,38 @@ class MainActivity : Activity() {
             val datePattern = if (isIpadStyle()) "EEEE, MMMM d" else cfg.datePattern()
             dateView?.text = SimpleDateFormat(datePattern, Locale.getDefault()).format(now)
             clockView?.text = SimpleDateFormat(cfg.clockPattern(), Locale.getDefault()).format(now)
-            networkView?.text = networkLabel()
+            // v2.1: the network element is a GLYPH now (core/WifiLabel
+            // mapping) — symbol + dimming, no SSID/word text.
+            networkView?.let { glyph ->
+                val kind = networkKind()
+                glyph.text = WifiLabel.glyph(kind)
+                glyph.alpha = WifiLabel.glyphAlpha(kind)
+            }
         } catch (e: Exception) {
             // Clock is cosmetic; never let it take the launcher down.
         }
     }
 
     /**
-     * Status-bar network text. v1.3: on Wi-Fi, the connected network's
-     * name rides next to the icon when Android will share it
-     * (WifiLabel handles "<unknown ssid>" → generic label). Many Google
-     * TV builds hide the SSID unless location permission is granted —
-     * we never ask for it from the home screen; the label simply falls
-     * back to "● Wi-Fi" (fail-open, same as before v1.3). Refreshed on
-     * the existing clock tick + onResume (updateClock path).
+     * The active network's transport kind for the status glyph.
+     * (v1.3–v2.0 showed the SSID as text next to the glyph; v2.1's
+     * reorganization keeps the bar glanceable — glyph only. The
+     * WifiLabel text mapping survives in core for the sim and any
+     * future surface that wants words.)
      */
-    private fun networkLabel(): String {
+    private fun networkKind(): WifiLabel.Kind {
         return try {
             val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             val caps = cm.getNetworkCapabilities(cm.activeNetwork)
-                ?: return WifiLabel.label(WifiLabel.Kind.OFFLINE, null)
+                ?: return WifiLabel.Kind.OFFLINE
             when {
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> {
-                    val wm = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
-                    @Suppress("DEPRECATION")
-                    val ssid = try { wm?.connectionInfo?.ssid } catch (e: Exception) { null }
-                    WifiLabel.label(WifiLabel.Kind.WIFI, ssid)
-                }
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> WifiLabel.Kind.WIFI
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ->
-                    WifiLabel.label(WifiLabel.Kind.ETHERNET, null)
-                else -> WifiLabel.label(WifiLabel.Kind.OTHER, null)
+                    WifiLabel.Kind.ETHERNET
+                else -> WifiLabel.Kind.OTHER
             }
         } catch (e: Exception) {
-            ""
+            WifiLabel.Kind.OFFLINE
         }
     }
 
@@ -3932,7 +4116,7 @@ class MainActivity : Activity() {
         if (weatherView != null && cached.isNotEmpty()) weatherView.text = cached
         val stale = System.currentTimeMillis() - prefs.lastWeatherFetch > 30 * 60 * 1000
         if (!stale) {
-            weatherView?.visibility = if (cached.isEmpty()) View.GONE else View.VISIBLE
+            setWeatherVisibility(if (cached.isEmpty()) View.GONE else View.VISIBLE)
             return
         }
         Weather.fetch(prefs.weatherLat, prefs.weatherLon, prefs.weatherUnits) { snap ->
@@ -3945,12 +4129,12 @@ class MainActivity : Activity() {
                         val v = findWeatherView()
                         if (v != null) {
                             v.text = snap.text
-                            v.visibility = View.VISIBLE
+                            setWeatherVisibility(View.VISIBLE)
                         }
                         // Fresh conditions may change the background.
                         if (prefs.wallpaperKind == "weather") rebuild()
                     } else if (cached.isEmpty()) {
-                        findWeatherView()?.visibility = View.GONE // hide quietly offline (fail-open)
+                        setWeatherVisibility(View.GONE) // hide quietly offline (fail-open)
                     }
                 } catch (e: Exception) {
                     // Widget/background only — ignore.
@@ -3962,8 +4146,26 @@ class MainActivity : Activity() {
     private fun findWeatherView(): TextView? {
         return try {
             val root = window?.decorView as? ViewGroup ?: return null
-            findTagged(root, "weather") as? TextView
+            findTagged(root, "weather_text") as? TextView
         } catch (e: Exception) { null }
+    }
+
+    /**
+     * v2.1: weather visibility applies to the tag-"weather" WRAPPER
+     * (text + its dot separator), so an empty weather never leaves a
+     * stray separator in the info cluster. Falls back to the text
+     * view itself when no wrapper exists.
+     */
+    private fun setWeatherVisibility(visibility: Int) {
+        try {
+            val root = window?.decorView as? ViewGroup ?: return
+            val wrap = findTagged(root, "weather")
+            if (wrap != null) {
+                wrap.visibility = visibility
+            } else {
+                findWeatherView()?.visibility = visibility
+            }
+        } catch (e: Exception) { /* cosmetic only */ }
     }
 
     private fun findTagged(group: ViewGroup, tag: String): View? {

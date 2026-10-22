@@ -138,6 +138,19 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putString(k("foryou_overlay"), v).apply() }
 
     /**
+     * The generalized pending-actions overlay (v2.1), encoded by
+     * core/LibraryLogic: every write queued from the Library /
+     * details / TMDB-search screens (episode toggles, season marks,
+     * unwatch, add, remove, mute, movie toggles) renders instantly
+     * from here and retires part-by-part as the tracker's snapshots
+     * converge (LibraryLogic.prunePending). Like the marked-set,
+     * optimistic local state — not part of backups.
+     */
+    var pendingOverlay: String
+        get() = sp.getString(k("pending_overlay"), "") ?: ""
+        set(v) { sp.edit().putString(k("pending_overlay"), v).apply() }
+
+    /**
      * Custom app artwork (v2.0), encoded by core/ArtworkStore
      * (per package: PRESET index or image URL). Part of backups.
      */

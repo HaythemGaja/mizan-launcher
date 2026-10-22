@@ -23,8 +23,14 @@ data class StatusBarConfig(
     /** The quick-settings tiles group (Wi-Fi/Bluetooth/Sound/Picture). */
     val showQuickTiles: Boolean = true,
     /** Per-tile switches (v1.3): a tile renders only when the master
-     * [showQuickTiles] AND its own switch are both on. */
-    val showTileWifi: Boolean = true,
+     * [showQuickTiles] AND its own switch are both on.
+     * v2.1: the Wi-Fi tile defaults OFF — Wi-Fi status is a glyph in
+     * the bar's status cluster now, and the Wi-Fi settings screen
+     * lives in the gear's hold-OK quick-settings popover. The switch
+     * still works: re-enabling it brings the tile back (the codec
+     * stores that choice in the segment's 8th char; pre-v2.1 strings
+     * decode with the tile OFF — see StatusBarCodec). */
+    val showTileWifi: Boolean = false,
     val showTileBluetooth: Boolean = true,
     /** Sound tile — independently hideable (Haythem's v1.3 ask). */
     val showTileSound: Boolean = true,
@@ -115,13 +121,49 @@ data class StatusBarConfig(
 }
 
 /**
+ * The status bar's tile composition (v2.1 reorganization) — pure,
+ * so the sim pins the cluster the bar builder renders. The bar is
+ * ONE row: a non-focusable info cluster on the left (clock, date,
+ * weather as plain text) and, on the right, status glyphs followed
+ * by these ACTION tiles in this order. The Bluetooth / Sound /
+ * Picture tiles retired from the bar in v2.1 — those screens live
+ * in the gear's hold-OK quick-settings popover (as does Wi-Fi's;
+ * the Wi-Fi TILE remains available behind its switch, default off).
+ */
+object StatusBarLogic {
+
+    enum class BarTile { ALL_APPS, SEARCH, WIFI, PROFILE, SETTINGS }
+
+    /**
+     * The bar's action tiles, in render order. The quick tiles are
+     * gated by the master switch + their per-tile switches; the
+     * profile tile exists only outside safe mode; the Settings tile
+     * is always present in safe mode and switch-gated otherwise
+     * (the corner gear covers Settings when it is off).
+     */
+    fun barTiles(cfg: StatusBarConfig, safeMode: Boolean): List<BarTile> {
+        val out = ArrayList<BarTile>()
+        if (!safeMode && cfg.showQuickTiles) {
+            if (cfg.showTileAllApps) out.add(BarTile.ALL_APPS)
+            if (cfg.showTileSearch) out.add(BarTile.SEARCH)
+            if (cfg.showTileWifi) out.add(BarTile.WIFI)
+        }
+        if (!safeMode) out.add(BarTile.PROFILE)
+        if (safeMode || cfg.showTileSettings) out.add(BarTile.SETTINGS)
+        return out
+    }
+}
+
+/**
  * Codec for [StatusBarConfig] inside the layout string: one line.
  * v1.5 format: `status=<9 flags>|<7 tile flags>|<date>|<size>|<bg>|<opacity>`.
  * The tile segment only ever GROWS at the end: v1.4's 6-char segment
  * decodes with the All Apps tile ON (v1.5's default), v1.3's 5-char
  * segment with Search AND All Apps ON. v1.1/v1.2 format has no tile
  * segment (5 fields instead of 6) and decodes with every tile switch
- * ON (their behaviour). Values are validated against the known key
+ * at its default. v2.1 appends an 8th tile char (the authoritative
+ * Wi-Fi tile flag; pre-v2.1 segments decode with that tile OFF —
+ * the v2.1 default). Values are validated against the known key
  * lists; unknown values fall back to defaults field-by-field
  * (fail-open), never throw.
  */
@@ -135,7 +177,13 @@ object StatusBarCodec {
         }
         val tiles = StringBuilder()
         for (b in listOf(c.showTileWifi, c.showTileBluetooth, c.showTileSound,
-            c.showTilePicture, c.showTileSettings, c.showTileSearch, c.showTileAllApps)) {
+            c.showTilePicture, c.showTileSettings, c.showTileSearch, c.showTileAllApps,
+            // v2.1: the tile segment grows at the end (the codec's own
+            // rule) — char 8 is the AUTHORITATIVE Wi-Fi tile flag.
+            // Char 1 mirrors it for pre-v2.1 readers. Pre-v2.1 strings
+            // (7 chars, char 1 usually '1' from the old default) must
+            // NOT resurrect the tile: v2.1 turned it off by default.
+            c.showTileWifi)) {
             tiles.append(if (b) '1' else '0')
         }
         // Date/size/bg/opacity keys come from closed lists (letters, digits,
@@ -173,7 +221,15 @@ object StatusBarCodec {
             showQuickTiles = flag(6, d.showQuickTiles),
             clock24h = flag(7, d.clock24h),
             showSeconds = flag(8, d.showSeconds),
-            showTileWifi = tile(0, d.showTileWifi),
+            // v2.1 Wi-Fi tile migration (see the property's doc):
+            // an 8-char segment's last char decides; a pre-v2.1
+            // segment means OFF (the new default lands on saved
+            // configs); no segment at all means the plain default.
+            showTileWifi = when {
+                !hasTiles -> d.showTileWifi
+                tiles.length >= 8 -> tile(7, false)
+                else -> false
+            },
             showTileBluetooth = tile(1, d.showTileBluetooth),
             showTileSound = tile(2, d.showTileSound),
             showTilePicture = tile(3, d.showTilePicture),

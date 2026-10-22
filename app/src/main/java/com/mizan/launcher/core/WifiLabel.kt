@@ -45,4 +45,25 @@ object WifiLabel {
         Kind.OTHER -> "● Online"
         Kind.OFFLINE -> "● Offline"
     }
+
+    /**
+     * The v2.1 status-cluster glyph for a transport kind: a compact
+     * symbol with NO word label (the wordy "• Wi-Fi" text beside the
+     * weather was the clutter Haythem's photo called out). [glyphAlpha]
+     * dims it when the transport is off/absent.
+     */
+    fun glyph(kind: Kind): String = when (kind) {
+        Kind.WIFI -> "📶"
+        Kind.ETHERNET -> "🌐"
+        Kind.OTHER -> "🌐"
+        Kind.OFFLINE -> "📶"
+    }
+
+    /** Opacity for [glyph]: connected = full, other = soft, offline = dim. */
+    fun glyphAlpha(kind: Kind): Float = when (kind) {
+        Kind.WIFI -> 1f
+        Kind.ETHERNET -> 1f
+        Kind.OTHER -> 0.7f
+        Kind.OFFLINE -> 0.35f
+    }
 }

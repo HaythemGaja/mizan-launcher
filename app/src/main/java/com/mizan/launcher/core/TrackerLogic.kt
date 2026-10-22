@@ -75,11 +75,18 @@ object TrackerLogic {
     )
 
     /**
-     * A hero-panel candidate, unified from Up Next and Continue
-     * items. Continue items carry no episode coordinates and no air
-     * date (season/episode 0, dateIso ""), so a mark-watched from a
-     * Continue-sourced hero resolves its coordinates through the
-     * matching Up Next item when one exists (see MainActivity).
+     * A hero-panel candidate, unified from the four Tracker
+     * sections (v2.1 pool widening). [source] is the EXACT on-screen
+     * section name the candidate came from ("Up Next", "Continue
+     * Watching", "Movie Night", "For You") — the hero panel renders
+     * it as a small source label above the title. Continue items
+     * carry no episode coordinates and no air date (season/episode
+     * 0, dateIso ""), so a mark-watched from a Continue-sourced hero
+     * resolves its coordinates through the matching Up Next item
+     * when one exists (see MainActivity). Movie heroes use the
+     * movie mark path (season/episode 0, type "movie"); For You
+     * heroes have nothing to mark — their actions are Details +
+     * Add to my list.
      */
     data class HeroItem(
         val tmdbId: Long,
@@ -92,8 +99,15 @@ object TrackerLogic {
         val type: String,
         val season: Int,
         val episode: Int,
-        val fromContinue: Boolean
+        val fromContinue: Boolean,
+        val source: String
     )
+
+    /** Hero source labels — the exact section names, one per source. */
+    const val SOURCE_UP_NEXT = "Up Next"
+    const val SOURCE_CONTINUE = "Continue Watching"
+    const val SOURCE_MOVIE_NIGHT = "Movie Night"
+    const val SOURCE_FOR_YOU = "For You"
 
     /**
      * One locally-marked item: the user tapped "Mark watched" in the
@@ -134,7 +148,14 @@ object TrackerLogic {
 
     // ------------------------------------------------------------ parsing
 
-    private fun num(v: Any?): Long = (v as? Number)?.toLong() ?: 0L
+    /**
+     * A TMDB id from a snapshot value. v2.1: numeric STRINGS are
+     * accepted too (defensive — a bridge that serializes ids as
+     * strings must not silently empty a whole section; that failure
+     * mode is exactly what the Movie Night investigation chased).
+     */
+    private fun num(v: Any?): Long =
+        (v as? Number)?.toLong() ?: (v as? String)?.trim()?.toLongOrNull() ?: 0L
     private fun str(o: Map<String, Any?>, k: String): String = o[k].asStr() ?: ""
 
     fun parseUpNext(json: String?): List<UpNextItem> {
@@ -232,30 +253,87 @@ object TrackerLogic {
 
     // ------------------------------------------------------------ hero
 
-    /**
-     * The hero cycle list, in priority order: Up Next items WITH a
-     * backdrop, then Continue items WITH a backdrop, then the
-     * remaining Up Next items, then the remaining Continue items.
-     * Index 0 is therefore exactly the brief's featured pick: first
-     * Up Next item with a backdrop, else first Continue item with a
-     * backdrop, else the first Up Next item.
-     */
+    /** The v1.8 two-source pool (kept for the original callers/tests). */
     fun heroCandidates(
         upNext: List<UpNextItem>,
         cont: List<ContinueItem>
+    ): List<HeroItem> = heroCandidates(upNext, cont, emptyList(), emptyList(), emptyMap())
+
+    /**
+     * The hero cycle list (v2.1: pool widened to all four Tracker
+     * sections). Priority order: Up Next → Continue Watching →
+     * Movie Night → For You; within Up Next and Continue, items WITH
+     * a backdrop come before those without (the v1.8 rule), so
+     * index 0 is still "first Up Next item with a backdrop, else
+     * first Continue item with a backdrop, else the first Up Next
+     * item". Callers pass the ALREADY-FILTERED section lists
+     * (marked-set / overlay filtering happens upstream, identically
+     * for the new sources).
+     *
+     * Movie Night: /movies carries NO backdrop, so movie heroes
+     * render over the page gradient (their poster is NOT stretched
+     * into a fake backdrop); their order is the Movie Night order
+     * as supplied. [MovieItem.releaseDate] becomes dateIso, so a
+     * movie releasing today earns the NEW badge.
+     *
+     * For You: the /foryou pick shape has NO backdrop field either —
+     * a pick joins the pool only when a backdrop path is known for
+     * it from [backdrops] (keyed "type|id", learned from tmdb_get
+     * details fetches). Poster-only picks stay out, per the brief.
+     */
+    fun heroCandidates(
+        upNext: List<UpNextItem>,
+        cont: List<ContinueItem>,
+        movies: List<MovieItem>,
+        picks: List<ForYouPick>,
+        backdrops: Map<String, String>
     ): List<HeroItem> {
         fun UpNextItem.hero() = HeroItem(
             tmdbId, title, sub, dateIso, poster, backdrop, overview,
-            type, season, episode, fromContinue = false
+            type, season, episode, fromContinue = false, source = SOURCE_UP_NEXT
         )
         fun ContinueItem.hero() = HeroItem(
             tmdbId, title, sub, "", poster, backdrop, overview,
-            type, season = 0, episode = 0, fromContinue = true
+            type, season = 0, episode = 0, fromContinue = true, source = SOURCE_CONTINUE
         )
+        fun MovieItem.hero() = HeroItem(
+            tmdbId = tmdbId,
+            title = title,
+            sub = if (planned) "Planned" else "Movie",
+            dateIso = releaseDate,
+            poster = poster,
+            backdrop = "",
+            overview = "",
+            type = "movie",
+            season = 0,
+            episode = 0,
+            fromContinue = false,
+            source = SOURCE_MOVIE_NIGHT
+        )
+        fun ForYouPick.hero(backdropPath: String) = HeroItem(
+            tmdbId = id,
+            title = title,
+            sub = reason,
+            dateIso = "",
+            poster = poster,
+            backdrop = backdropPath,
+            overview = "",
+            type = type,
+            season = 0,
+            episode = 0,
+            fromContinue = false,
+            source = SOURCE_FOR_YOU
+        )
+        val forYouHeroes = picks.mapNotNull { pick ->
+            val bd = backdrops[pick.key()].orEmpty()
+            if (bd.isBlank()) null else pick.hero(bd)
+        }
         return upNext.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
             cont.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
             upNext.filter { it.backdrop.isBlank() }.map { it.hero() } +
-            cont.filter { it.backdrop.isBlank() }.map { it.hero() }
+            cont.filter { it.backdrop.isBlank() }.map { it.hero() } +
+            movies.map { it.hero() } +
+            forYouHeroes
     }
 
     /** The hero at [index] in the cycle (wraps in both directions). */

@@ -368,7 +368,12 @@ class SearchActivity : Activity() {
         resultRows = rows
     }
 
-    /** One "In your tracker" result row: title + tracker detail; OK opens the tracker. */
+    /**
+     * One "In your tracker" result row: title + tracker detail.
+     * v2.1: OK opens the title's in-launcher DETAILS (which carries
+     * its own gated "Open in Tracker") instead of jumping straight
+     * to the tracker app — the §16 behaviour, upgraded.
+     */
     private fun trackerHitRow(hit: TrackerLogic.TrackerHit): View {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
@@ -394,7 +399,13 @@ class SearchActivity : Activity() {
         detail.setTextColor(subColour); detail.textSize = 16f
         row.addView(detail)
 
-        row.setOnClickListener { openTrackerGated() }
+        row.setOnClickListener {
+            startActivity(
+                com.mizan.launcher.data.TrackerActions.detailsIntent(
+                    this, hit.tmdbId, hit.type, hit.title, ""
+                )
+            )
+        }
         return row
     }
 

@@ -1244,7 +1244,16 @@ class SettingsActivity : Activity() {
             append(
                 "\ntracker: " + com.mizan.launcher.core.TrackerStatus.diagText(
                     tState.kind, tSnap.hasData, tSnap.upNext.size,
-                    tSnap.cont.size, tSnap.movies.size, tTime
+                    tSnap.cont.size, tSnap.movies.size, tSnap.tracked.size,
+                    tSnap.forYou.size, tTime
+                )
+            )
+            // v2.1: the tmdb: line — the last tmdb_get outcome through
+            // the tracker's proxy (first build to exercise it), so a
+            // details/search failure is diagnosable, incl. bad_path.
+            append(
+                "\ntmdb: " + com.mizan.launcher.core.LibraryLogic.tmdbDiagText(
+                    com.mizan.launcher.data.TrackerClient.lastTmdbOutcome(this@SettingsActivity)
                 )
             )
             // v2.0: the live tv: line — the Live TV probe's verdict

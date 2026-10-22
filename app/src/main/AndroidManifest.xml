@@ -86,6 +86,22 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
+        <!-- v2.1: the tracker inside the launcher — My Library grid,
+             in-launcher title details, TMDB search + add. All fed by
+             the tracker's sync bridge; no new permissions. -->
+        <activity
+            android:name=".ui.LibraryActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+        <activity
+            android:name=".ui.DetailsActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+        <activity
+            android:name=".ui.TmdbSearchActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+
         <!-- v1.4 Now Playing: passive notification listener whose only
              job is to authorize MediaSessionManager session queries
              (data/NowPlayingData). It reads no notification content

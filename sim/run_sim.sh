@@ -35,6 +35,7 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   app/src/main/java/com/mizan/launcher/core/AppCatalogue.kt \
   app/src/main/java/com/mizan/launcher/core/HomeStyle.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerLogic.kt \
+  app/src/main/java/com/mizan/launcher/core/LibraryLogic.kt \
   app/src/main/java/com/mizan/launcher/core/ProfileNames.kt \
   app/src/main/java/com/mizan/launcher/core/UnlockGrace.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerStatus.kt \
@@ -88,6 +89,15 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   echo "Netflix design tokens + poster metrics (spec section 18). The"
   echo "section-24 row-normalize expectations grew in place: the row"
   echo "set gained mostused (after recents) and livetv (after inputs)."
+  echo
+  echo "Note (v2.1): new section — library logic: full /tracked parse"
+  echo "(watched sets + muted), library merge/sort/progress (continue"
+  echo "order approximates recently-progressed; the payload has no"
+  echo "timestamps), TMDB details/season/search parsing for the"
+  echo "tracker's tmdb_get proxy, its error mapping (no_key/http_/io/"
+  echo "bad_path), the mark_season CSV payload, and the generalized"
+  echo "pending-actions overlay (codec, newest-toggle-wins, snapshot"
+  echo "convergence prune) (spec section 19). All v2.0 tests carry over."
   echo
   echo "Note (v1.7): new section — home style (codec/default, label"
   echo "rule, squircle override), iPad grid composition (apps + root"

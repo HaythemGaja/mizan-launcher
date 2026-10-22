@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-22 03:28 UTC
+Date: 2026-10-22 04:14 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -38,6 +38,15 @@ codec + presets, quick-settings table, live TV state mapping,
 Netflix design tokens + poster metrics (spec section 18). The
 section-24 row-normalize expectations grew in place: the row
 set gained mostused (after recents) and livetv (after inputs).
+
+Note (v2.1): new section — library logic: full /tracked parse
+(watched sets + muted), library merge/sort/progress (continue
+order approximates recently-progressed; the payload has no
+timestamps), TMDB details/season/search parsing for the
+tracker's tmdb_get proxy, its error mapping (no_key/http_/io/
+bad_path), the mark_season CSV payload, and the generalized
+pending-actions overlay (codec, newest-toggle-wins, snapshot
+convergence prune) (spec section 19). All v2.0 tests carry over.
 
 Note (v1.7): new section — home style (codec/default, label
 rule, squircle override), iPad grid composition (apps + root
@@ -212,12 +221,21 @@ PASS  gridmove: single item list never moves
 PASS  gridmove: invalid index/columns are no-ops
 PASS  gridmove: cancel restores the exact snapshot
 PASS  gridmove: drop-commit keeps all items exactly once
-PASS  tileswitch: defaults all on
+PASS  tileswitch: defaults all on except the Wi-Fi tile (v2.1: glyph + popover cover it)
 PASS  tileswitch: codec round-trip with tiles off
 PASS  tileswitch: sound independently off, others on
-PASS  tileswitch: v1.2 status strings decode to all tiles on
+PASS  tileswitch: v1.2 status strings decode to defaults (Wi-Fi tile off since v2.1)
 PASS  tileswitch: tiles survive the layout codec
-PASS  tileswitch: garbage tiles segment fails open to on
+PASS  tileswitch: garbage tiles segment fails open to defaults (Wi-Fi off, others on ? v2.1)
+PASS  tilecodec: v2.0 7-char segment migrates the Wi-Fi tile to off
+PASS  tilecodec: 8-char segment honours the Wi-Fi flag
+PASS  tilecodec: re-enabled Wi-Fi tile survives encode/decode
+PASS  bartiles: default bar = All Apps, Search, Profile, Settings
+PASS  bartiles: re-enabled Wi-Fi tile sits between Search and Profile
+PASS  bartiles: master tiles off leaves Profile + Settings
+PASS  bartiles: safe mode shows the Settings tile only
+PASS  bartiles: Settings switch off drops the tile (corner gear covers it)
+PASS  statusglyph: Wi-Fi full alpha, Ethernet globe, offline dimmed
 PASS  fit: 1920x1080 is normal (not compact)
 PASS  fit: left pane is 30% clamped to 260..360dp
 PASS  fit: 1280x720 is compact with smaller type/padding
@@ -295,7 +313,7 @@ PASS  rows: stored order gains new rows after their anchors
 PASS  rows: normalize is idempotent
 PASS  rows: custom order preserved, insertions follow their anchors
 PASS  rows: empty order gains the inserted rows
-PASS  statusbar: search tile flag round-trips
+PASS  statusbar: search tile flag round-trips (Wi-Fi tile flag is the v2.1 default-off)
 PASS  statusbar: v1.3 string decodes with search tile on
 PASS  statusbar: v1.4 default round-trips with search on
 PASS  statusbar: v1.3 string decodes with All Apps tile on
@@ -458,7 +476,7 @@ PASS  tracker status: classify ? not installed beats everything
 PASS  tracker status: classify ? a permission refusal is reported even with cached data
 PASS  tracker status: classify ? answered+data is NONE, answered-empty is EMPTY, silent is OTHER
 PASS  tracker status: diag line forms for every state
-PASS  tracker status: diag OK form carries counts and the snapshot time
+PASS  tracker status: diag OK form carries per-section counts and the snapshot time (v2.1)
 PASS  tracker status: diag NONE without data reads as the empty state
 PASS  tracker status: fallback line ? absent tracker shows NO line
 PASS  tracker status: fallback line ? permission state is actionable
@@ -507,5 +525,50 @@ PASS  quicksettings: six system targets then Sreeb Settings, actions distinct
 PASS  quicksettings: unresolvable targets are filtered, Sreeb Settings stays
 PASS  livetv: state precedence (feature, security, failure, count)
 PASS  livetv: diagnostics wording
-RESULT: 447 passed, 0 failed, 447 total
+PASS  library: tracked parse keeps watched set + muted + planned, drops bad rows
+PASS  library: tracked parse fails open
+PASS  library: next coords parse from continue sub
+PASS  library: caught-up / garbage subs yield no next coords
+PASS  library: shows + movies merge into one grid
+PASS  library: sort - in-progress first (continue order), then up-next, then A-Z, finished last
+PASS  library: progress derives from continue (count/total/next) + poster
+PASS  library: caught-up show detected from the continue sub
+PASS  library: progress line + fraction
+PASS  library: poster cache fills a poster the snapshots lack
+PASS  library overlay: removed title vanishes from the grid
+PASS  library overlay: added title appears as pending (planned)
+PASS  library overlay: mute + movie-unwatch override the snapshot
+PASS  library overlay: marking the known next episode clears the next claim
+PASS  overlay: codec round-trips escaped titles/posters
+PASS  overlay: codec fails open on garbage
+PASS  overlay: newest toggle wins (mark then unmark leaves only the remove)
+PASS  overlay: effective watched = snapshot plus adds minus removes
+PASS  overlay: season mark adds every listed episode (and un-marks none)
+PASS  overlay prune: converged parts retire, unconverged stay
+PASS  overlay prune: a stale snapshot retires nothing
+PASS  overlay prune: an add retires when the title reaches the snapshot
+PASS  overlay prune: a remove retires when the title leaves the snapshot
+PASS  overlay prune: add-then-remove settles whole once snapshots are fresher
+PASS  overlay prune: an unwatch retires when the episode leaves the watched set
+PASS  tmdb: tv details parse (fields, year, seasons sorted, empty season dropped)
+PASS  tmdb: movie details parse (title/release year, no seasons)
+PASS  tmdb: details parse fails open
+PASS  tmdb: season episodes parse ascending
+PASS  tmdb: mark_season CSV is sorted, deduped, positive-only
+PASS  tmdb: season parse fails open
+PASS  tmdb: search keeps tv+movie, drops persons and bad rows
+PASS  tmdb: search parse fails open
+PASS  tmdb: proxy paths (details / season / search with encoding)
+PASS  tmdb: error kinds + http code
+PASS  tmdb: retryable = http/io/unknown only
+PASS  tmdb: user lines (no_key names the fix; http carries the code)
+PASS  tmdb: diagnostics wording
+PASS  poster cache: codec round-trips, garbage dropped
+PASS  movie night: numeric-string tmdbId still parses
+PASS  hero pool: order is Up Next, Continue, Movie Night, For You (backdrop-first in section)
+PASS  hero pool: every candidate carries its exact section name as source
+PASS  hero pool: poster-only For You pick stays out; a known backdrop lets it in
+PASS  hero pool: movie hero uses the movie path (type movie, release date, no fake backdrop)
+PASS  hero pool: two-source overload keeps the v1.8 order and tags
+RESULT: 501 passed, 0 failed, 501 total
 ```
