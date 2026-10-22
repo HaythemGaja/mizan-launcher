@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import com.mizan.launcher.core.TrackerLogic
+import com.mizan.launcher.core.TrackerStatus
 import kotlin.concurrent.thread
 
 /**
@@ -20,8 +21,18 @@ import kotlin.concurrent.thread
  * missing, SecurityException, empty or malformed snapshots — all of
  * it reads as "no data" and the Tracker view falls back to the plain
  * clock/weather home. Queries run on a background thread only; the
- * view renders from the last-good cache in prefs, refreshed on
- * launcher resume when older than [REFRESH_MIN_AGE_MS].
+ * view renders from the last-good cache in prefs.
+ *
+ * v1.9 hardening (Haythem's TV: tracker fine, launcher showed
+ * NOTHING, silently): every fetch is now CLASSIFIED
+ * (core/TrackerStatus.Kind) and the kind is persisted — the
+ * diagnostics `tracker:` line and the Tracker view's fallback line
+ * are worded from it, so no failure is silent anymore. And the
+ * resume throttle stamps ONLY a successful fetch WITH data
+ * ([K_LAST_OK]): v1.8 stamped the attempt time even when every
+ * query failed, so one permission-blocked first fetch poisoned
+ * retries for a minute at a time. After an error or an empty
+ * result, EVERY resume retries.
  */
 object TrackerClient {
 
@@ -66,6 +77,55 @@ object TrackerClient {
     private const val K_TRACKED = "tracker_cache_tracked"
     private const val K_UPDATED = "tracker_cache_updated"
     private const val K_FETCHED = "tracker_cache_fetched"
+    /** v1.9: the classified outcome of the last fetch (TrackerStatus.Kind name). */
+    private const val K_STATE = "tracker_state"
+    /** v1.9: last fetch that returned DATA — the only throttle stamp. */
+    private const val K_LAST_OK = "tracker_last_ok"
+
+    /** The persisted fetch state, for diagnostics + the fallback line. */
+    data class Status(
+        val kind: TrackerStatus.Kind,
+        val installed: Boolean
+    )
+
+    /**
+     * The last fetch's classified state. Before any fetch has run,
+     * the state is derived: not installed → NOT_INSTALLED, installed
+     * with an empty cache → EMPTY, installed with cached data → NONE.
+     */
+    fun status(ctx: Context): Status {
+        val installed = isInstalled(ctx)
+        val stored = try {
+            prefs(ctx).getString(K_STATE, null)
+        } catch (e: Exception) {
+            null
+        }
+        val kind = when {
+            stored != null -> try {
+                TrackerStatus.Kind.valueOf(stored)
+            } catch (e: Exception) {
+                null
+            }
+            !installed -> TrackerStatus.Kind.NOT_INSTALLED
+            cached(ctx).hasData -> TrackerStatus.Kind.NONE
+            else -> TrackerStatus.Kind.EMPTY
+        } ?: if (!installed) {
+            TrackerStatus.Kind.NOT_INSTALLED
+        } else if (cached(ctx).hasData) {
+            TrackerStatus.Kind.NONE
+        } else {
+            TrackerStatus.Kind.EMPTY
+        }
+        return Status(kind, installed)
+    }
+
+    private fun saveKind(ctx: Context, kind: TrackerStatus.Kind) {
+        try {
+            prefs(ctx).edit().putString(K_STATE, kind.name).apply()
+        } catch (e: Exception) {
+            // State is diagnostics bookkeeping; never break a fetch.
+        }
+    }
 
     private fun prefs(ctx: Context) =
         ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
@@ -101,10 +161,13 @@ object TrackerClient {
     private var inFlight = false
 
     /**
-     * Refresh the cache from the provider on a background thread when
-     * the cache is older than [REFRESH_MIN_AGE_MS] (or [force]).
-     * [onChanged] runs on the main thread ONLY when the snapshots
-     * actually changed, so callers can rebuild without looping.
+     * Refresh the cache from the provider on a background thread.
+     * The [REFRESH_MIN_AGE_MS] throttle applies ONLY after a
+     * successful fetch WITH data (v1.9): after an error or an empty
+     * result every call retries, so a transient or permission state
+     * can never strand the view on a stale "nothing". [onChanged]
+     * runs on the main thread when the snapshots changed OR the
+     * classified state changed (the fallback wording depends on it).
      */
     fun refreshAsync(ctx: Context, force: Boolean = false, onChanged: () -> Unit) {
         val appCtx = ctx.applicationContext
@@ -117,45 +180,64 @@ object TrackerClient {
         } catch (e: Exception) {
             null
         }
-        val fetchedAt = try {
-            prefs(appCtx).getLong(K_FETCHED, 0L)
+        if (inFlight) return
+        val lastOk = try {
+            prefs(appCtx).getLong(K_LAST_OK, 0L)
         } catch (e: Exception) {
             0L
         }
-        if (inFlight) return
-        if (!force && fetchedAt > 0 &&
-            System.currentTimeMillis() - fetchedAt < REFRESH_MIN_AGE_MS
+        if (!force && lastOk > 0 &&
+            System.currentTimeMillis() - lastOk < REFRESH_MIN_AGE_MS
         ) {
             return
         }
+        val kindBefore = status(appCtx).kind
         inFlight = true
         thread(name = "mizan-tracker-fetch") {
             try {
-                val up = queryPath(appCtx, "upnext")
-                val cont = queryPath(appCtx, "continue")
-                val mov = queryPath(appCtx, "movies")
-                val trk = queryPath(appCtx, "tracked")
+                val results = listOf(
+                    queryPath(appCtx, "upnext"),
+                    queryPath(appCtx, "continue"),
+                    queryPath(appCtx, "movies"),
+                    queryPath(appCtx, "tracked")
+                )
                 val now = System.currentTimeMillis()
                 val editor = prefs(appCtx).edit()
                 editor.putLong(K_FETCHED, now)
-                var changed = false
-                if (up != null || cont != null || mov != null || trk != null) {
-                    // At least one path answered: store what we got
-                    // (a path that failed keeps its last-good value).
-                    var updated = 0L
-                    if (up != null) { editor.putString(K_UPNEXT, up.first); updated = maxOf(updated, up.second) }
-                    if (cont != null) { editor.putString(K_CONTINUE, cont.first); updated = maxOf(updated, cont.second) }
-                    if (mov != null) { editor.putString(K_MOVIES, mov.first); updated = maxOf(updated, mov.second) }
-                    if (trk != null) { editor.putString(K_TRACKED, trk.first); updated = maxOf(updated, trk.second) }
-                    if (updated > 0) editor.putLong(K_UPDATED, updated)
-                    val after = listOf(
-                        up?.first ?: before?.get(0), cont?.first ?: before?.get(1),
-                        mov?.first ?: before?.get(2), trk?.first ?: before?.get(3)
-                    )
-                    changed = after != before
+                val keys = listOf(K_UPNEXT, K_CONTINUE, K_MOVIES, K_TRACKED)
+                var updated = 0L
+                var anyAnswered = false
+                var security = false
+                for ((i, r) in results.withIndex()) {
+                    if (r.security) security = true
+                    val json = r.json ?: continue
+                    anyAnswered = true
+                    editor.putString(keys[i], json)
+                    updated = maxOf(updated, r.updated)
                 }
+                if (updated > 0) editor.putLong(K_UPDATED, updated)
                 editor.apply()
-                if (changed) {
+                val snap = cached(appCtx)
+                val kind = TrackerStatus.classify(
+                    installed = isInstalled(appCtx),
+                    anyAnswered = anyAnswered,
+                    securityError = security,
+                    hasData = snap.hasData
+                )
+                saveKind(appCtx, kind)
+                // The throttle stamp is earned only by data (v1.9).
+                if (snap.hasData) {
+                    try {
+                        prefs(appCtx).edit().putLong(K_LAST_OK, now).apply()
+                    } catch (e: Exception) {
+                        // Bookkeeping only.
+                    }
+                }
+                val after = listOf(
+                    results[0].json ?: before?.get(0), results[1].json ?: before?.get(1),
+                    results[2].json ?: before?.get(2), results[3].json ?: before?.get(3)
+                )
+                if (after != before || kind != kindBefore) {
                     Handler(Looper.getMainLooper()).post {
                         try { onChanged() } catch (e: Exception) {
                             // A caller's rebuild must never kill the poster.
@@ -170,20 +252,31 @@ object TrackerClient {
         }
     }
 
-    /** One provider path → (json, updated); null on ANY failure (fail-open). */
-    private fun queryPath(ctx: Context, path: String): Pair<String, Long>? {
+    /** One provider path's outcome: the JSON when it answered, plus
+     * whether the failure was a SecurityException (v1.9 classification). */
+    private data class PathResult(
+        val json: String?,
+        val updated: Long,
+        val security: Boolean
+    )
+
+    /** One provider path → its [PathResult]; never throws (fail-open). */
+    private fun queryPath(ctx: Context, path: String): PathResult {
         return try {
-            ctx.contentResolver.query(BASE.buildUpon().appendPath(path).build(),
+            val got = ctx.contentResolver.query(BASE.buildUpon().appendPath(path).build(),
                 null, null, null, null)?.use { c ->
-                if (!c.moveToFirst()) return null
+                if (!c.moveToFirst()) return@use null
                 val jsonIdx = c.getColumnIndex("json")
                 val updIdx = c.getColumnIndex("updated")
                 val json = if (jsonIdx >= 0) c.getString(jsonIdx) else null
                 val updated = if (updIdx >= 0) c.getLong(updIdx) else 0L
                 (json ?: "[]") to updated
             }
+            PathResult(got?.first, got?.second ?: 0L, security = false)
+        } catch (e: SecurityException) {
+            PathResult(null, 0L, security = true)
         } catch (e: Exception) {
-            null
+            PathResult(null, 0L, security = false)
         }
     }
 
@@ -202,6 +295,11 @@ object TrackerClient {
                 extras.putInt("season", season)
                 extras.putInt("episode", episode)
                 appCtx.contentResolver.call(BASE, "mark_watched", tmdbId.toString(), extras)
+            } catch (e: SecurityException) {
+                // The read permission is missing, so writes are too —
+                // record the state the diagnostics line reports (v1.9).
+                saveKind(appCtx, TrackerStatus.Kind.PERMISSION)
+                Prefs.noteError(appCtx, "trackerMark", e)
             } catch (e: Exception) {
                 Prefs.noteError(appCtx, "trackerMark", e)
             }

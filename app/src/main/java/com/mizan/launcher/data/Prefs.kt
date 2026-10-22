@@ -208,9 +208,90 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("guest_lock_settings", true)
         set(v) { sp.edit().putBoolean("guest_lock_settings", v).apply() }
 
-    /** How a profile is named on screen: a guest-flagged profile shows as "Guest". */
+    // ---- per-profile custom name (v1.9) ----
+    /**
+     * The user-chosen name for [profile], stored RAW under that
+     * profile's own key (independent of which profile is active);
+     * "" = no custom name. All interpretation lives in
+     * core/ProfileNames — this is storage only.
+     */
+    fun profileName(profile: Int): String =
+        sp.getString("p$profile.profile_name", "") ?: ""
+
+    fun setProfileName(profile: Int, raw: String) {
+        sp.edit().putString(
+            "p$profile.profile_name",
+            com.mizan.launcher.core.ProfileNames.normalize(raw)
+        ).apply()
+    }
+
+    /**
+     * How a profile is named on screen (v1.9: a custom name wins;
+     * otherwise a guest-flagged profile shows as "Guest", a personal
+     * one as "Profile N" — the rule core/ProfileNames owns).
+     */
     fun profileDisplayName(profile: Int): String =
-        if (guestProfile != 0 && profile == guestProfile) "Guest" else "Profile $profile"
+        com.mizan.launcher.core.ProfileNames.display(
+            profileName(profile), profile,
+            isGuest = guestProfile != 0 && profile == guestProfile
+        )
+
+    /**
+     * Switch the active profile AND clear the unlock-grace stamp
+     * (v1.9): grace earned under one profile never carries into
+     * another. Every profile switch in the app goes through here.
+     */
+    fun switchProfile(target: Int) {
+        currentProfile = target
+        clearUnlockStamp()
+    }
+
+    // ---- sticky status bar (per profile, v1.9) ----
+    /**
+     * "Sticky status bar": when ON, the status bar / iPad top strip
+     * renders in a fixed header above the scrollable home instead of
+     * scrolling away with it. Default OFF = the pre-v1.9 behaviour.
+     */
+    var stickyStatusBar: Boolean
+        get() = sp.getBoolean(k("sticky_status_bar"), false)
+        set(v) { sp.edit().putBoolean(k("sticky_status_bar"), v).apply() }
+
+    // ---- unlock grace (per profile window + global stamp, v1.9) ----
+    /**
+     * "Re-ask for pattern" window in minutes (core/UnlockGrace:
+     * 0 = every time [default], 5, 15, 30). Per profile — but the
+     * stamp it is measured against is the ONE device-level
+     * [lastUnlockAt] below.
+     */
+    var unlockGraceMinutes: Int
+        get() = com.mizan.launcher.core.UnlockGrace.normalize(
+            sp.getInt(k("unlock_grace_min"), 0)
+        )
+        set(v) {
+            sp.edit().putInt(k("unlock_grace_min"),
+                com.mizan.launcher.core.UnlockGrace.normalize(v)).apply()
+        }
+
+    /** When the arrow pattern was last verified successfully (epoch ms; 0 = never). */
+    var lastUnlockAt: Long
+        get() = sp.getLong("last_unlock_at", 0L)
+        set(v) { sp.edit().putLong("last_unlock_at", v).apply() }
+
+    /** Stamp a successful pattern verification (the grace clock). */
+    fun stampUnlock() {
+        lastUnlockAt = System.currentTimeMillis()
+    }
+
+    /** Drop the grace stamp (profile switch — see [switchProfile]). */
+    fun clearUnlockStamp() {
+        if (lastUnlockAt != 0L) lastUnlockAt = 0L
+    }
+
+    /** True while a pattern gate may pass silently under this profile's window. */
+    fun withinUnlockGrace(): Boolean =
+        com.mizan.launcher.core.UnlockGrace.withinGrace(
+            unlockGraceMinutes, lastUnlockAt, System.currentTimeMillis()
+        )
 
     /** Last "⚡ Speed up now" result line (Settings → Home & launcher, shown in diagnostics). */
     var speedupLastResult: String

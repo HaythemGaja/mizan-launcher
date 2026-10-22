@@ -171,7 +171,17 @@ class SettingsActivity : Activity() {
             patternSet = prefs.arrowPin.isNotEmpty(),
             unlockedThisEntry = false
         )
-        if (decision == com.mizan.launcher.core.SettingsGate.Decision.REQUIRE_PATTERN) {
+        if (decision == com.mizan.launcher.core.SettingsGate.Decision.REQUIRE_PATTERN &&
+            prefs.withinUnlockGrace()
+        ) {
+            // v1.9 unlock grace: a successful pattern verification
+            // at ANY gate (locked app/folder, guest exit, an earlier
+            // Settings entry) inside this profile's window covers
+            // this entry too — no second prompt. Profile switches
+            // clear the stamp, so this can never be a previous
+            // profile's grace leaking in.
+            enterSettings()
+        } else if (decision == com.mizan.launcher.core.SettingsGate.Decision.REQUIRE_PATTERN) {
             // Blank content behind the prompt: nothing of Settings
             // exists or is reachable until the pattern is entered.
             // Wrong attempts feed the diagnostics counter, exactly
@@ -183,7 +193,12 @@ class SettingsActivity : Activity() {
             } else preset.accent
             ArrowPinDialog.showUnlock(
                 this, "Enter pattern to open Settings", gateAccent, prefs.arrowPin,
-                onSuccess = { enterSettings() },
+                onSuccess = {
+                    // v1.9: a successful verification stamps the
+                    // device-level grace clock (Prefs.lastUnlockAt).
+                    prefs.stampUnlock()
+                    enterSettings()
+                },
                 onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 },
                 onCancel = { finish() }
             )
@@ -352,7 +367,7 @@ class SettingsActivity : Activity() {
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         pane.addView(title)
         val version = TextView(this)
-        version.text = "Mizan Launcher v1.8"
+        version.text = "Mizan Launcher v1.9"
         version.setTextColor(subColour)
         version.textSize = 15f
         version.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, metrics.rowPadVDp + 2))
@@ -729,36 +744,56 @@ class SettingsActivity : Activity() {
         })
         content.addView(info("Forgot the pattern? Recovery is Android system Settings → Apps → Mizan Launcher → Clear data — that resets the layout too. This is a casual lock, by design."))
         content.addView(info("Folder locks live in the Folders manager (Home screen category) or any folder's hold-OK menu; app locks in the Locked apps list above or any app's hold-OK menu."))
+        content.addView(header("Unlock grace"))
+        content.addView(row(
+            "Re-ask for pattern",
+            com.mizan.launcher.core.UnlockGrace.labelFor(prefs.unlockGraceMinutes)
+        ) {
+            pickFrom(
+                com.mizan.launcher.core.UnlockGrace.WINDOW_LABELS,
+                com.mizan.launcher.core.UnlockGrace.labelFor(prefs.unlockGraceMinutes)
+            ) { v ->
+                val idx = com.mizan.launcher.core.UnlockGrace.WINDOW_LABELS.indexOf(v)
+                if (idx >= 0) {
+                    prefs.unlockGraceMinutes =
+                        com.mizan.launcher.core.UnlockGrace.WINDOWS_MIN[idx]
+                }
+                rebuild()
+            }
+        })
+        content.addView(info("After you enter the pattern once — for a locked app, a folder, Settings, or leaving Guest — the other gates open without asking until this time is up. Switching profiles always asks again. “Every time” is how it worked before v1.9."))
         content.addView(header("Profiles"))
                 content.addView(row("Profile", "${prefs.profileDisplayName(prefs.currentProfile)} — tap to switch") {
-                    prefs.currentProfile = if (prefs.currentProfile == 1) 2 else 1
+                    // v1.9: switchProfile clears the grace stamp.
+                    prefs.switchProfile(if (prefs.currentProfile == 1) 2 else 1)
                     toast("Switched to ${prefs.profileDisplayName(prefs.currentProfile)}")
                     rebuild()
                 })
                 content.addView(info("Each profile keeps its own theme, wallpaper, layout, status bar, weather units and hidden apps. The arrow lock is shared."))
+                content.addView(row("Rename Profile 1", prefs.profileDisplayName(1)) { renameProfile(1) })
+                content.addView(row("Rename Profile 2", prefs.profileDisplayName(2)) { renameProfile(2) })
+                content.addView(info("Names show on the profile tile, in the switch menu, and on the Guest pill. Saving an empty name brings back the default — “Guest” for the guest profile, “Profile N” otherwise. Renaming never changes the Guest flag or any lock."))
                 content.addView(header("Guest profile"))
                 content.addView(row(
                     "Guest profile",
                     when (prefs.guestProfile) {
-                        1 -> "Profile 1 is Guest"
-                        2 -> "Profile 2 is Guest"
+                        1 -> "${prefs.profileDisplayName(1)} is Guest"
+                        2 -> "${prefs.profileDisplayName(2)} is Guest"
                         else -> "None — no guest profile"
                     }
                 ) {
-                    val currentLabel = when (prefs.guestProfile) {
-                        1 -> "Profile 1"
-                        2 -> "Profile 2"
-                        else -> "None"
-                    }
-                    pickFrom(listOf("None", "Profile 1", "Profile 2"), currentLabel) { v ->
-                        prefs.guestProfile = when (v) {
-                            "Profile 1" -> 1
-                            "Profile 2" -> 2
-                            else -> 0
-                        }
+                    // v1.9: the picker speaks in display names (a
+                    // renamed profile is picked by its name); the
+                    // choice maps back to a profile NUMBER — the
+                    // flag itself never keys off names.
+                    val labels = listOf(
+                        "None", prefs.profileDisplayName(1), prefs.profileDisplayName(2)
+                    )
+                    pickFrom(labels, labels[prefs.guestProfile.coerceIn(0, 2)]) { v ->
+                        prefs.guestProfile = labels.indexOf(v).coerceIn(0, 2)
                         toast(
                             if (prefs.guestProfile == 0) "Guest profile cleared"
-                            else "Profile ${prefs.guestProfile} is now Guest"
+                            else "${prefs.profileDisplayName(prefs.guestProfile)} is now Guest"
                         )
                         rebuild()
                     }
@@ -789,7 +824,7 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        content.addView(header("Mizan Launcher v1.8"))
+        content.addView(header("Mizan Launcher v1.9"))
         content.addView(info(diagnosticsText()))
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
@@ -803,6 +838,10 @@ class SettingsActivity : Activity() {
         content.addView(header("Status bar"))
         val sb = layout.statusBar
         content.addView(toggleRow("Show status bar", sb.showBar, "Off = clean Apple-TV style, no top bar at all") { updateStatusBar { c -> c.copy(showBar = it) } })
+        content.addView(toggleRow("Sticky status bar", prefs.stickyStatusBar, "The bar stays pinned at the top while the home scrolls — in the TV, iPad and Tracker views") {
+            prefs.stickyStatusBar = it
+            rebuild()
+        })
         content.addView(toggleRow("Clock", sb.showClock) { updateStatusBar { c -> c.copy(showClock = it) } })
         content.addView(toggleRow("Date", sb.showDate) { updateStatusBar { c -> c.copy(showDate = it) } })
         content.addView(toggleRow("Weather", sb.showWeather) { updateStatusBar { c -> c.copy(showWeather = it) } })
@@ -1129,6 +1168,22 @@ class SettingsActivity : Activity() {
             // regardless — noted so a report isn't misread).
             append("\nhome style: ${prefs.homeStyle}" +
                 if (prefs.safeMode) " (safe mode: tv)" else "")
+            // v1.9: the tracker: line — ALWAYS present, worded by
+            // core/TrackerStatus from the last classified fetch, so
+            // an empty Tracker view explains itself instead of
+            // failing silently (the v1.8 behaviour on Haythem's TV).
+            val tSnap = com.mizan.launcher.data.TrackerClient.cached(this@SettingsActivity)
+            val tState = com.mizan.launcher.data.TrackerClient.status(this@SettingsActivity)
+            val tTime = if (tSnap.updated > 0) {
+                java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+                    .format(java.util.Date(tSnap.updated))
+            } else ""
+            append(
+                "\ntracker: " + com.mizan.launcher.core.TrackerStatus.diagText(
+                    tState.kind, tSnap.hasData, tSnap.upNext.size,
+                    tSnap.cont.size, tSnap.movies.size, tTime
+                )
+            )
             val sbCfg = layout.statusBar
             append("\nQuick tiles: master ${if (sbCfg.showQuickTiles) "on" else "off"}" +
                 ", wifi ${onOff(sbCfg.showTileWifi)}, bt ${onOff(sbCfg.showTileBluetooth)}" +
@@ -1617,6 +1672,29 @@ class SettingsActivity : Activity() {
         }
     }
 
+    /**
+     * Rename a profile (v1.9) — the D-pad keyboard dialog (the
+     * Search keyboard as a dialog; no EditText, no soft keyboard).
+     * The codec (core/ProfileNames) owns the rules: the stored value
+     * is normalized, and an empty result restores the default label.
+     * Only the label changes — guest flag, gates and per-profile
+     * settings are keyed by profile number.
+     */
+    private fun renameProfile(profile: Int) {
+        val isGuest = prefs.guestProfile != 0 && prefs.guestProfile == profile
+        KeyboardDialog.show(
+            this,
+            "Rename ${com.mizan.launcher.core.ProfileNames.defaultLabel(profile, isGuest)}",
+            accent,
+            prefs.profileName(profile),
+            com.mizan.launcher.core.ProfileNames.MAX_LEN
+        ) { text ->
+            prefs.setProfileName(profile, text)
+            toast("Now called “${prefs.profileDisplayName(profile)}”")
+            rebuild()
+        }
+    }
+
     private fun promptName(title: String, initial: String = "", onOk: (String) -> Unit) {
         val input = EditText(this)
         input.setText(initial)
@@ -1915,6 +1993,11 @@ class SettingsActivity : Activity() {
             o.put("weather_units", prefs.weatherUnitsKey)
             // v1.7 per-profile extra: the home style.
             o.put("home_style", prefs.homeStyle)
+            // v1.9 per-profile extras: custom name, the unlock-grace
+            // window, the sticky status bar.
+            o.put("profile_name", prefs.profileName(p))
+            o.put("unlock_grace_min", prefs.unlockGraceMinutes)
+            o.put("sticky_status_bar", prefs.stickyStatusBar)
             profiles.put(p.toString(), o)
         }
         prefs.currentProfile = current
@@ -1966,6 +2049,13 @@ class SettingsActivity : Activity() {
                 // profile's current style (the Prefs setter also
                 // normalizes any garbled value to "tv").
                 if (o.has("home_style")) prefs.homeStyle = o.optString("home_style", prefs.homeStyle)
+                // v1.9: absent in pre-v1.9 backups → keep current.
+                // The name setter normalizes (the guarded-import
+                // pattern); the grace setter coerces to a legal
+                // window.
+                if (o.has("profile_name")) prefs.setProfileName(p, o.optString("profile_name", ""))
+                if (o.has("unlock_grace_min")) prefs.unlockGraceMinutes = o.optInt("unlock_grace_min", prefs.unlockGraceMinutes)
+                if (o.has("sticky_status_bar")) prefs.stickyStatusBar = o.optBoolean("sticky_status_bar", false)
             }
             prefs.currentProfile = root.optInt("current_profile", current).coerceIn(1, 2)
             true

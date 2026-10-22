@@ -35,6 +35,9 @@ KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
   app/src/main/java/com/mizan/launcher/core/AppCatalogue.kt \
   app/src/main/java/com/mizan/launcher/core/HomeStyle.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerLogic.kt \
+  app/src/main/java/com/mizan/launcher/core/ProfileNames.kt \
+  app/src/main/java/com/mizan/launcher/core/UnlockGrace.kt \
+  app/src/main/java/com/mizan/launcher/core/TrackerStatus.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {

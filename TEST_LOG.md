@@ -1,7 +1,7 @@
 # Mizan Launcher — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-21 20:01 UTC
+Date: 2026-10-22 02:46 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -433,5 +433,26 @@ PASS  tracker: search ? prefix hits (shows then movies) before substring hits
 PASS  tracker: search detail counts watched episodes
 PASS  tracker: search finds movies with the tracked detail
 PASS  tracker: search is case-insensitive substring, prefix first
-RESULT: 382 passed, 0 failed, 382 total
+PASS  names: normalize trims and collapses whitespace runs
+PASS  names: blank or null normalizes to no-custom-name
+PASS  names: cap is 16 chars and never leaves a trailing space
+PASS  names: default labels ? Guest for the flagged profile, Profile N otherwise
+PASS  names: display ? custom name wins, blank falls back to the default
+PASS  grace: windows and labels line up; garbage coerces to Every time
+PASS  grace: window 0 (Every time) never grants, even with a fresh stamp
+PASS  grace: no stamp never grants
+PASS  grace: inside the window grants (5 min, 1 ms before the edge)
+PASS  grace: expiry is exact ? at the boundary the gate prompts again
+PASS  grace: a stamp in the future (clock moved back) never grants
+PASS  grace: longer windows hold proportionally (30 min at 29:59)
+PASS  tracker status: classify ? not installed beats everything
+PASS  tracker status: classify ? a permission refusal is reported even with cached data
+PASS  tracker status: classify ? answered+data is NONE, answered-empty is EMPTY, silent is OTHER
+PASS  tracker status: diag line forms for every state
+PASS  tracker status: diag OK form carries counts and the snapshot time
+PASS  tracker status: diag NONE without data reads as the empty state
+PASS  tracker status: fallback line ? absent tracker shows NO line
+PASS  tracker status: fallback line ? permission state is actionable
+PASS  tracker status: fallback line ? empty/other/none ask for one tracker open
+RESULT: 403 passed, 0 failed, 403 total
 ```

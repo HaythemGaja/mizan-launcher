@@ -265,7 +265,6 @@ class MainActivity : Activity() {
             Ui.dp(this, 40)
         )
         scroll.addView(content)
-        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
 
         // Status bar hidden (clean Apple-TV style): the bar's Settings
         // tile goes with it, which would trap the user out of Settings.
@@ -276,6 +275,28 @@ class MainActivity : Activity() {
         } else {
             layout.statusBar
         }
+        // v1.9 STICKY STATUS BAR: with the profile's sticky toggle on
+        // (and a bar to stick — safe mode never sticks), the bar/strip
+        // renders into a FIXED header: a vertical frame holds
+        // [header][scroll] instead of the bar being the scroll
+        // content's first child, so scrolling home no longer moves
+        // it. Off (default) the frame is just the scroller — the
+        // pre-v1.9 composition exactly. Bar builders are unchanged;
+        // only their parent differs ([barHost]), so focus travel
+        // keeps its shape: header first, rows below.
+        val stickyBar = !prefs.safeMode && prefs.stickyStatusBar && barCfg.showBar
+        val stickyHeader = LinearLayout(this)
+        stickyHeader.orientation = LinearLayout.VERTICAL
+        val homeFrame = LinearLayout(this)
+        homeFrame.orientation = LinearLayout.VERTICAL
+        root.addView(homeFrame, FrameLayout.LayoutParams(-1, -1))
+        if (stickyBar) {
+            homeFrame.addView(stickyHeader, LinearLayout.LayoutParams(-1, -2))
+            homeFrame.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        } else {
+            homeFrame.addView(scroll, LinearLayout.LayoutParams(-1, -1))
+        }
+        val barHost: LinearLayout = if (stickyBar) stickyHeader else content
         // v1.3: the corner gear also appears when the bar is shown but
         // its Settings tile was switched off (per-tile toggles) — there
         // must ALWAYS be a visible way back into Settings.
@@ -315,7 +336,7 @@ class MainActivity : Activity() {
                 Ui.dp(this, com.mizan.launcher.core.Design.CONTENT_MARGIN_DP),
                 Ui.dp(this, 200)
             )
-            buildIpadHome(root, content)
+            buildIpadHome(root, content, barHost)
             homeRoot = root
             if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
                 attachMoveHint(root)
@@ -327,7 +348,7 @@ class MainActivity : Activity() {
         // corner gear/pill), a third root render. The TV and iPad
         // renders above/below are untouched and tracker-free.
         if (isTrackerStyle()) {
-            buildTrackerHome(content)
+            buildTrackerHome(content, barHost)
             homeRoot = root
             if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
                 attachMoveHint(root)
@@ -335,7 +356,7 @@ class MainActivity : Activity() {
             return root
         }
 
-        content.addView(buildTopBar())
+        barHost.addView(buildTopBar())
 
         // v1.4: stored orders from older versions lack the new rows;
         // RowOrder.normalize slots them at their canonical positions.
@@ -393,8 +414,10 @@ class MainActivity : Activity() {
      * the root's bottom. Favorites live in the dock here (not a row);
      * HDMI inputs join the grid (not a row); folders are grid tiles.
      */
-    private fun buildIpadHome(root: FrameLayout, content: LinearLayout) {
-        content.addView(buildIpadStrip())
+    private fun buildIpadHome(root: FrameLayout, content: LinearLayout, stripHost: LinearLayout) {
+        // v1.9: the strip goes to the sticky header when sticky is on
+        // (stripHost == content otherwise — the v1.7 composition).
+        stripHost.addView(buildIpadStrip())
         buildHomeHint()?.let { content.addView(it) }
         if (layout.isRowVisible("continue")) {
             try {
@@ -435,13 +458,16 @@ class MainActivity : Activity() {
         if (cfg.background != "transparent") {
             val bg = GradientDrawable()
             bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
-            bg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
+            // v1.9 polish: the strip wears the DOCK's lighter
+            // translucent material (one chrome language, wallpaper
+            // shows through), and sits slimmer.
+            bg.setColor(com.mizan.launcher.core.Design.DOCK_FILL)
             strip.background = bg
             strip.setPadding(
                 Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
-                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S),
+                Ui.dp(this, com.mizan.launcher.core.Design.IPAD_STRIP_PAD_V_DP),
                 Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M),
-                Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S)
+                Ui.dp(this, com.mizan.launcher.core.Design.IPAD_STRIP_PAD_V_DP)
             )
         }
 
@@ -455,7 +481,10 @@ class MainActivity : Activity() {
         if (cfg.showDate) {
             val d = TextView(this)
             d.setTextColor(subColour)
-            d.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+            // v1.9 polish: secondary strip text runs smaller and
+            // tracked-out — the clock stays the strip's one loud voice.
+            d.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
+            d.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
             dateView = d
             left.addView(d)
         }
@@ -498,7 +527,8 @@ class MainActivity : Activity() {
         if (cfg.showNetwork) {
             val n = TextView(this)
             n.setTextColor(subColour)
-            n.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+            n.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
+            n.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
             networkView = n
             right.addView(n)
         }
@@ -508,7 +538,8 @@ class MainActivity : Activity() {
                 val bt = TextView(this)
                 bt.text = btText
                 bt.setTextColor(subColour)
-                bt.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SP * scale
+                bt.textSize = com.mizan.launcher.core.Design.IPAD_STRIP_SECONDARY_SP * scale
+                bt.letterSpacing = com.mizan.launcher.core.Design.IPAD_STRIP_LETTER_SPACING
                 val lp = LinearLayout.LayoutParams(-2, -2)
                 lp.setMargins(Ui.dp(this, 12), 0, 0, 0)
                 bt.layoutParams = lp
@@ -536,7 +567,14 @@ class MainActivity : Activity() {
     private fun buildIpadGrid(): View {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
-        val glp = LinearLayout.LayoutParams(-1, -2)
+        // v1.9 polish: NO background of any kind behind the grid
+        // (the frame's scrim is the only field — wallpaper-forward),
+        // and the grid is capped at Design.IPAD_GRID_WIDTH_FRACTION
+        // of the screen, centered, instead of spanning edge to edge.
+        val gridWidth = (resources.displayMetrics.widthPixels *
+            com.mizan.launcher.core.Design.IPAD_GRID_WIDTH_FRACTION).toInt()
+        val glp = LinearLayout.LayoutParams(gridWidth, -2)
+        glp.gravity = Gravity.CENTER_HORIZONTAL
         glp.setMargins(0, Ui.dp(this, com.mizan.launcher.core.Design.HERO_TO_ROWS_GAP_DP), 0, 0)
         box.layoutParams = glp
 
@@ -571,11 +609,24 @@ class MainActivity : Activity() {
             box.addView(hint)
             return box
         }
+        // v1.9 polish: airier cells — the iPad grid's margins run at
+        // Design.IPAD_GRID_GAP_SCALE × the shared tile margin (the
+        // TV rows keep the shared margin; only grid cells widen).
+        val gapPx = Ui.dp(
+            this,
+            (TileLayout.TILE_MARGIN_DP *
+                com.mizan.launcher.core.Design.IPAD_GRID_GAP_SCALE).toInt()
+        )
         for (chunk in cells.chunked(prefs.columns)) {
             val rowLayout = LinearLayout(this)
             rowLayout.orientation = LinearLayout.HORIZONTAL
             rowLayout.gravity = Gravity.CENTER
-            for (cell in chunk) rowLayout.addView(cell)
+            for (cell in chunk) {
+                (cell.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+                    lp.setMargins(gapPx, gapPx, gapPx, gapPx)
+                }
+                rowLayout.addView(cell)
+            }
             box.addView(rowLayout)
         }
         return box
@@ -604,11 +655,16 @@ class MainActivity : Activity() {
         panel.gravity = Gravity.CENTER_VERTICAL
         val bg = GradientDrawable()
         bg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.DOCK_RADIUS_DP).toFloat()
-        bg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
+        // v1.9 polish: lighter, more translucent material (the same
+        // DOCK_FILL the top strip now wears) + slimmer padding.
+        bg.setColor(com.mizan.launcher.core.Design.DOCK_FILL)
         panel.background = bg
         panel.elevation = Ui.dp(this, 8).toFloat()
         panel.setPadding(
-            Ui.dp(this, 12), Ui.dp(this, 12), Ui.dp(this, 12), Ui.dp(this, 12)
+            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_H_DP),
+            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_V_DP),
+            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_H_DP),
+            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_PAD_V_DP)
         )
         for (item in items) {
             when (item.kind) {
@@ -696,7 +752,11 @@ class MainActivity : Activity() {
         )
         val llp = FrameLayout.LayoutParams(-1, -2)
         llp.gravity = Gravity.BOTTOM
-        llp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), Ui.dp(this, 5))
+        // v1.9 polish: the label sits a touch lower on the tile.
+        llp.setMargins(
+            Ui.dp(this, 4), 0, Ui.dp(this, 4),
+            Ui.dp(this, com.mizan.launcher.core.Design.IPAD_LABEL_BOTTOM_DP)
+        )
         label.layoutParams = llp
         return label
     }
@@ -998,10 +1058,16 @@ class MainActivity : Activity() {
     private fun guestActive(): Boolean =
         GuestGate.isGuestActive(prefs.currentProfile, prefs.guestProfile)
 
-    /** The subtle "Guest" tag shown while the Guest profile is active. */
+    /**
+     * The subtle tag shown while the Guest profile is active.
+     * v1.9 choice: when the guest profile has been RENAMED, the pill
+     * shows the NAME (the pill's job is "whose home is this"); that
+     * the profile is a guest is conveyed by the gate behaviour and
+     * Settings, not by a second word on the pill.
+     */
     private fun guestPill(): TextView {
         val pill = TextView(this)
-        pill.text = "Guest"
+        pill.text = prefs.profileName(prefs.currentProfile).ifBlank { "Guest" }
         pill.setTextColor(textColour)
         pill.textSize = 15f
         pill.gravity = Gravity.CENTER
@@ -1052,18 +1118,16 @@ class MainActivity : Activity() {
             guestActive(), prefs.guestLockSettings, prefs.arrowPin.isNotEmpty(), action
         )
         if (decision == GuestGate.Decision.REQUIRE_PATTERN) {
-            ArrowPinDialog.showUnlock(
-                this, "Enter pattern to leave Guest", accent, prefs.arrowPin,
-                onSuccess = { doSwitchProfile(target) },
-                onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
-            )
+            runPatternGate("Enter pattern to leave Guest") { doSwitchProfile(target) }
         } else {
             doSwitchProfile(target)
         }
     }
 
     private fun doSwitchProfile(target: Int) {
-        prefs.currentProfile = target
+        // v1.9: Prefs.switchProfile also clears the unlock-grace
+        // stamp — grace never crosses a profile switch.
+        prefs.switchProfile(target)
         lastNowPlayingSignature = null
         rebuild()
         Toast.makeText(this, "Switched to ${prefs.profileDisplayName(target)}", Toast.LENGTH_SHORT).show()
@@ -1358,8 +1422,10 @@ class MainActivity : Activity() {
     private fun todayIso(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
-    private fun buildTrackerHome(content: LinearLayout) {
-        content.addView(buildTopBar())
+    private fun buildTrackerHome(content: LinearLayout, barHost: LinearLayout) {
+        // v1.9: the status bar goes to the sticky header when sticky
+        // is on (barHost == content otherwise — the v1.8 composition).
+        barHost.addView(buildTopBar())
 
         val snap = TrackerClient.cached(this)
         // Convergence: entries a fresher snapshot has moved past are
@@ -1384,20 +1450,28 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 Prefs.noteError(this, "trackerHero", e)
             }
-        } else if (TrackerClient.isInstalled(this) ||
-            appsByPkg.containsKey(TrackerClient.TRACKER_PKG)
-        ) {
-            // No data yet, but the tracker IS here: one quiet line
-            // under the clock/weather hero (buildTopBar above is the
-            // fallback hero). Not installed → no line at all.
-            val line = TextView(this)
-            line.text = "Open TV Shows & Movies Tracker to see your shows here"
-            line.setTextColor(subColour)
-            line.textSize = 16f
-            val llp = LinearLayout.LayoutParams(-2, -2)
-            llp.setMargins(0, Ui.dp(this, 6), 0, Ui.dp(this, 10))
-            line.layoutParams = llp
-            content.addView(line)
+        } else {
+            // v1.9: the no-data line is worded by the CLASSIFIED
+            // fetch state (core/TrackerStatus) — v1.8 showed one
+            // generic line for every cause, and the permission-
+            // blocked state (the prime suspect for an empty view)
+            // was indistinguishable from "no data yet". Not
+            // installed → no line at all, as before.
+            val tStatus = TrackerClient.status(this)
+            val lineText = com.mizan.launcher.core.TrackerStatus.emptyLine(
+                tStatus.kind,
+                tStatus.installed || appsByPkg.containsKey(TrackerClient.TRACKER_PKG)
+            )
+            if (lineText != null) {
+                val line = TextView(this)
+                line.text = lineText
+                line.setTextColor(subColour)
+                line.textSize = 16f
+                val llp = LinearLayout.LayoutParams(-2, -2)
+                llp.setMargins(0, Ui.dp(this, 6), 0, Ui.dp(this, 10))
+                line.layoutParams = llp
+                content.addView(line)
+            }
         }
 
         if (upNext.isNotEmpty()) {
@@ -2227,11 +2301,7 @@ class MainActivity : Activity() {
                 // Wrong entries keep the dialog open (retry) — the
                 // folder opens only via onSuccess, so a wrong pattern
                 // leaves it closed. Cancelling changes nothing.
-                ArrowPinDialog.showUnlock(
-                    this, "Unlock “${folder.name}”", accent, prefs.arrowPin,
-                    onSuccess = { openFolder(folder) },
-                    onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
-                )
+                runPatternGate("Unlock “${folder.name}”") { openFolder(folder) }
             }
             FolderGate.PROMPT_SET_PATTERN -> {
                 ArrowPinDialog.showSetup(this, "Set a pattern to open “${folder.name}”", accent, onDone = { seq ->
@@ -2526,11 +2596,7 @@ class MainActivity : Activity() {
         when (FolderLogic.folderGate(folder, prefs.arrowPin.isNotEmpty())) {
             FolderGate.OPEN -> pushFolder(folder)
             FolderGate.PROMPT_PATTERN -> {
-                ArrowPinDialog.showUnlock(
-                    this, "Unlock “${folder.name}”", accent, prefs.arrowPin,
-                    onSuccess = { pushFolder(folder) },
-                    onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
-                )
+                runPatternGate("Unlock “${folder.name}”") { pushFolder(folder) }
             }
             FolderGate.PROMPT_SET_PATTERN -> {
                 ArrowPinDialog.showSetup(this, "Set a pattern to open “${folder.name}”", accent, onDone = { seq ->
@@ -3004,12 +3070,35 @@ class MainActivity : Activity() {
             return
         }
         // Arrow-sequence unlock — dots only, no digits anywhere.
+        runPatternGate("$label is locked", onPass)
+    }
+
+    /**
+     * THE pattern prompt for GATES (v1.9): every gate verification
+     * in this activity — locked apps (via [gateLockedApp]), locked
+     * folders, the guest-exit gate — comes through here, so the
+     * unlock-grace window (core/UnlockGrace, per profile) applies
+     * identically everywhere: inside the window the gate passes
+     * silently; outside it the prompt shows, and a SUCCESS stamps
+     * Prefs.lastUnlockAt (the one device-level grace clock). Wrong
+     * attempts feed the diagnostics counter as always. Pattern
+     * MANAGEMENT prompts (set/change/clear, in Settings) are not
+     * gates and never consult grace — they always verify.
+     */
+    private fun runPatternGate(title: String, onPass: () -> Unit) {
+        if (prefs.withinUnlockGrace()) {
+            onPass()
+            return
+        }
         ArrowPinDialog.showUnlock(
             activity = this,
-            title = "$label is locked",
+            title = title,
             accent = accent,
-            storedEncoded = stored,
-            onSuccess = { onPass() },
+            storedEncoded = prefs.arrowPin,
+            onSuccess = {
+                prefs.stampUnlock()
+                onPass()
+            },
             onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
         )
     }

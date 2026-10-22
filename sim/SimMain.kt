@@ -1680,6 +1680,102 @@ fun main() {
                 TrackerLogic.searchTracked(trkParsed, movParsed, "zzz").isEmpty())
     }
 
+    // ---- 34. v1.9: profile names, unlock grace, tracker status ----
+    run {
+        // ProfileNames: normalize (trim, collapse, cap) + defaults.
+        check("names: normalize trims and collapses whitespace runs",
+            com.mizan.launcher.core.ProfileNames.normalize("  Haythem   Gaja ") == "Haythem Gaja" &&
+                com.mizan.launcher.core.ProfileNames.normalize("a\t b\n c") == "a b c")
+        check("names: blank or null normalizes to no-custom-name",
+            com.mizan.launcher.core.ProfileNames.normalize("   ").isEmpty() &&
+                com.mizan.launcher.core.ProfileNames.normalize(null).isEmpty() &&
+                com.mizan.launcher.core.ProfileNames.normalize("").isEmpty())
+        check("names: cap is 16 chars and never leaves a trailing space",
+            com.mizan.launcher.core.ProfileNames.normalize("ABCDEFGHIJKLMNOPQRSTUV") ==
+                "ABCDEFGHIJKLMNOP" &&
+                com.mizan.launcher.core.ProfileNames.normalize("123456789012345 78") ==
+                "123456789012345")
+        check("names: default labels — Guest for the flagged profile, Profile N otherwise",
+            com.mizan.launcher.core.ProfileNames.defaultLabel(1, false) == "Profile 1" &&
+                com.mizan.launcher.core.ProfileNames.defaultLabel(2, true) == "Guest")
+        check("names: display — custom name wins, blank falls back to the default",
+            com.mizan.launcher.core.ProfileNames.display("Kids", 2, true) == "Kids" &&
+                com.mizan.launcher.core.ProfileNames.display("", 2, true) == "Guest" &&
+                com.mizan.launcher.core.ProfileNames.display(null, 1, false) == "Profile 1" &&
+                com.mizan.launcher.core.ProfileNames.display("  ", 1, false) == "Profile 1")
+
+        // UnlockGrace: windows, edges, disabled, switch semantics are
+        // call-site rules; the pure window math is pinned here.
+        val g = com.mizan.launcher.core.UnlockGrace
+        check("grace: windows and labels line up; garbage coerces to Every time",
+            g.WINDOWS_MIN == listOf(0, 5, 15, 30) &&
+                g.WINDOW_LABELS.size == g.WINDOWS_MIN.size &&
+                g.labelFor(5) == "After 5 minutes" &&
+                g.labelFor(0) == "Every time" &&
+                g.normalize(7) == 0 && g.normalize(30) == 30 && g.normalize(-5) == 0)
+        check("grace: window 0 (Every time) never grants, even with a fresh stamp",
+            !g.withinGrace(0, 1_000_000L, 1_000_001L))
+        check("grace: no stamp never grants",
+            !g.withinGrace(15, 0L, 1_000_000L))
+        check("grace: inside the window grants (5 min, 1 ms before the edge)",
+            g.withinGrace(5, 1_000_000L, 1_000_000L + 299_999L))
+        check("grace: expiry is exact — at the boundary the gate prompts again",
+            !g.withinGrace(5, 1_000_000L, 1_000_000L + 300_000L) &&
+                !g.withinGrace(5, 1_000_000L, 1_000_000L + 300_001L))
+        check("grace: a stamp in the future (clock moved back) never grants",
+            !g.withinGrace(30, 2_000_000L, 1_000_000L))
+        check("grace: longer windows hold proportionally (30 min at 29:59)",
+            g.withinGrace(30, 1_000_000L, 1_000_000L + 29L * 60_000L + 59_000L))
+
+        // TrackerStatus: classification precedence + wording maps.
+        val ts = com.mizan.launcher.core.TrackerStatus
+        check("tracker status: classify — not installed beats everything",
+            ts.classify(installed = false, anyAnswered = true, securityError = true, hasData = true) ==
+                com.mizan.launcher.core.TrackerStatus.Kind.NOT_INSTALLED)
+        check("tracker status: classify — a permission refusal is reported even with cached data",
+            ts.classify(installed = true, anyAnswered = true, securityError = true, hasData = true) ==
+                com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION &&
+                ts.classify(installed = true, anyAnswered = false, securityError = true, hasData = false) ==
+                com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION)
+        check("tracker status: classify — answered+data is NONE, answered-empty is EMPTY, silent is OTHER",
+            ts.classify(installed = true, anyAnswered = true, securityError = false, hasData = true) ==
+                com.mizan.launcher.core.TrackerStatus.Kind.NONE &&
+                ts.classify(installed = true, anyAnswered = true, securityError = false, hasData = false) ==
+                com.mizan.launcher.core.TrackerStatus.Kind.EMPTY &&
+                ts.classify(installed = true, anyAnswered = false, securityError = false, hasData = false) ==
+                com.mizan.launcher.core.TrackerStatus.Kind.OTHER)
+        check("tracker status: diag line forms for every state",
+            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NOT_INSTALLED, false, 0, 0, 0, "") == "not installed" &&
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION, false, 0, 0, 0, "")
+                    .startsWith("permission blocked") &&
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.EMPTY, false, 0, 0, 0, "") ==
+                "no data yet (open the tracker once)" &&
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.OTHER, false, 0, 0, 0, "")
+                    .startsWith("not answering"))
+        check("tracker status: diag OK form carries counts and the snapshot time",
+            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, true, 3, 2, 5, "2:41 PM") ==
+                "OK · up 3 · cont 2 · movies 5 · 2:41 PM" &&
+                ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, true, 0, 1, 0, "") ==
+                "OK · up 0 · cont 1 · movies 0")
+        check("tracker status: diag NONE without data reads as the empty state",
+            ts.diagText(com.mizan.launcher.core.TrackerStatus.Kind.NONE, false, 0, 0, 0, "") ==
+                "no data yet (open the tracker once)")
+        check("tracker status: fallback line — absent tracker shows NO line",
+            ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.NOT_INSTALLED, installed = true) == null &&
+                ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.EMPTY, installed = false) == null &&
+                ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION, installed = false) == null)
+        check("tracker status: fallback line — permission state is actionable",
+            ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.PERMISSION, installed = true) ==
+                "Tracker data is blocked — updating or reinstalling Mizan Launcher fixes the permission")
+        check("tracker status: fallback line — empty/other/none ask for one tracker open",
+            ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.EMPTY, installed = true) ==
+                "Open TV Shows & Movies Tracker once so it can refresh" &&
+                ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.OTHER, installed = true) ==
+                "Open TV Shows & Movies Tracker once so it can refresh" &&
+                ts.emptyLine(com.mizan.launcher.core.TrackerStatus.Kind.NONE, installed = true) ==
+                "Open TV Shows & Movies Tracker once so it can refresh")
+    }
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }

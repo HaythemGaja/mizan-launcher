@@ -80,6 +80,32 @@ object Design {
      * "rounded" mask uses 0.22 — the squircle is visibly rounder). */
     const val SQUIRCLE_RADIUS_FRACTION = 0.32f
 
+    // ---- iPad polish (v1.9): airier, wallpaper-forward --------------
+    // Haythem's verdict on v1.7's iPad style was "ugly": the grid sat
+    // edge-to-edge on a hard panel feel with tight cells. v1.9 gives
+    // the grid room to breathe (capped width, ~1.5× cell gaps), drops
+    // every opaque surface behind it (scrim only), and moves the
+    // dock + strip to ONE lighter translucent material (DOCK_FILL)
+    // so the wallpaper stays the picture.
+    /** The iPad grid never spans more than this fraction of the screen. */
+    const val IPAD_GRID_WIDTH_FRACTION = 0.86f
+    /** iPad grid cell margins scale by this over the TV tile margin. */
+    const val IPAD_GRID_GAP_SCALE = 1.5f
+    /** The always-on tile label's distance from the tile's bottom edge. */
+    const val IPAD_LABEL_BOTTOM_DP = 2
+    /** The iPad chrome material (dock + top strip): black ~18% —
+     * visibly lighter than PANEL_FILL's 25%, one language for both. */
+    val DOCK_FILL: Int = 0x2E000000
+    /** Dock padding: slimmer than v1.7's 12/12. */
+    const val DOCK_PAD_H_DP = 14
+    const val DOCK_PAD_V_DP = 7
+    /** Secondary strip text (date, network, bluetooth): smaller +
+     * tracked out, so the strip reads lighter than the clock. */
+    const val IPAD_STRIP_SECONDARY_SP = 13f
+    const val IPAD_STRIP_LETTER_SPACING = 0.04f
+    /** The strip's vertical padding when it carries a background. */
+    const val IPAD_STRIP_PAD_V_DP = 4
+
     // ---- hero (home top zone) ------------------------------------------
     const val HERO_CLOCK_SP = 54f
     const val HERO_DATE_SP = 18f
