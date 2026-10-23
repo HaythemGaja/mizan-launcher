@@ -37,7 +37,16 @@ object IptvStatus {
         else -> Kind.ERROR
     }
 
-    /** The `iptv:` diagnostics line (counts + last-success time; no credentials, ever). */
+    /**
+     * The `iptv:` diagnostics line (counts + last-success time; no
+     * credentials, ever). [errorClass] (v2.3.1) is the sanitized
+     * failure class recorded by data/IptvClient — the exception's
+     * SIMPLE CLASS NAME only, never a message (messages can carry
+     * URLs). It renders only in the ERROR state, parenthesized
+     * right after "not answering", so a dead panel says WHY it is
+     * not answering: "not answering (UnknownHostException) — …".
+     * Empty = nothing recorded = no parenthetical.
+     */
     fun diagText(
         kind: Kind,
         live: Int,
@@ -45,7 +54,8 @@ object IptvStatus {
         series: Int,
         favorites: Int,
         epgChannels: Int,
-        timeText: String
+        timeText: String,
+        errorClass: String = ""
     ): String = when (kind) {
         Kind.NONE -> "not checked yet"
         Kind.NOT_CONFIGURED -> "not configured (Settings › IPTV)"
@@ -53,7 +63,9 @@ object IptvStatus {
             countsSuffix(live, vod, series, favorites, epgChannels, timeText)
         Kind.EMPTY -> "connected, but the catalogues are empty" +
             countsSuffix(live, vod, series, favorites, epgChannels, timeText)
-        Kind.ERROR -> "not answering — check the server address and your network" +
+        Kind.ERROR -> "not answering" +
+            (if (errorClass.isNotEmpty()) " ($errorClass)" else "") +
+            " — check the server address and your network" +
             countsSuffix(live, vod, series, favorites, epgChannels, timeText)
         Kind.OK -> "OK" + countsSuffix(live, vod, series, favorites, epgChannels, timeText)
     }

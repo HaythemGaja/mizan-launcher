@@ -159,6 +159,18 @@ export JAVA_OPTS
   echo "once, partial/tokenless never), and the badge/hero-label/"
   echo "diagnostics models (spec S21)."
   echo
+  echo "Note (v2.3.1): hotfix from Haythem's on-device diagnostics"
+  echo "photo (spec S22). Three new iptv diag checks: the ERROR line"
+  echo "names the recorded failure class in parentheses when one"
+  echo "exists, has no parenthetical when none is recorded, and the"
+  echo "class never leaks into non-error lines. New section 39 —"
+  echo "source checks: the manifest permits cleartext HTTP (his"
+  echo "Xtream panel never answered because targetSdk 34 blocks"
+  echo "http:// by default), and SettingsActivity carries no"
+  echo "hardcoded 'Sreeb v<digit>' label — the version is read from"
+  echo "PackageManager at runtime (the photo showed two different"
+  echo "stale labels at once). All v2.3 checks carry over."
+  echo
   echo '```'
   java -jar sim/sim.jar
   echo '```'

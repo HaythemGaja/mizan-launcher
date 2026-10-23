@@ -2632,6 +2632,21 @@ fun main() {
                 "Add your IPTV account in Settings › IPTV" &&
                 IptvStatus.emptyLine(IptvStatus.Kind.OK) == null &&
                 IptvStatus.emptyLine(IptvStatus.Kind.NONE) == null)
+        // v2.3.1: the ERROR line names the recorded failure class.
+        check("iptv: diag line names the failure class after 'not answering' when one is recorded",
+            IptvStatus.diagText(
+                IptvStatus.Kind.ERROR, 0, 0, 0, 0, 0, "8:48 PM", "UnknownHostException"
+            ) == "not answering (UnknownHostException) — check the server address " +
+                "and your network · live 0 · vod 0 · series 0 · fav 0 · 8:48 PM")
+        check("iptv: diag line has no parenthetical when no error is recorded",
+            IptvStatus.diagText(IptvStatus.Kind.ERROR, 0, 0, 0, 0, 0, "") ==
+                "not answering — check the server address and your network" +
+                " · live 0 · vod 0 · series 0 · fav 0")
+        check("iptv: a recorded error class never leaks into non-error lines",
+            !IptvStatus.diagText(IptvStatus.Kind.OK, 1, 2, 3, 4, 0, "", "UnknownHostException")
+                .contains("UnknownHostException") &&
+                !IptvStatus.diagText(IptvStatus.Kind.AUTH, 0, 0, 0, 0, 0, "", "UnknownHostException")
+                    .contains("UnknownHostException"))
     }
 
     // ---------- (38) v2.3 Watch: title matching, episode resolution, match cache, auto-mark, UI model ----------
@@ -2760,6 +2775,32 @@ fun main() {
         check("watch: diag line is counts-only",
             WatchMatch.diagText(WatchMatch.Stats(3, 5, 2, 4, 7)) ==
                 "shows 3/5 · movies 2/4 · episodes resolved 7")
+    }
+
+    // ---------- (39) v2.3.1 hotfix: source checks (manifest cleartext + the one true version label) ----------
+    run {
+        // These read the app sources relative to the project root —
+        // run_sim.sh always runs the sim from there.
+        val manifest = try {
+            java.io.File("app/src/main/AndroidManifest.xml").readText()
+        } catch (e: Exception) {
+            ""
+        }
+        check("hotfix: manifest permits cleartext HTTP (Xtream panels / M3U / XMLTV are http://)",
+            manifest.contains("android:usesCleartextTraffic=\"true\""))
+        val settingsSrc = try {
+            java.io.File(
+                "app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt"
+            ).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        check("hotfix: no hardcoded 'Sreeb v<digit>' label remains in SettingsActivity",
+            settingsSrc.isNotEmpty() &&
+                !Regex("Sreeb v[0-9]").containsMatchIn(settingsSrc))
+        check("hotfix: the version label is read from PackageManager at runtime",
+            settingsSrc.contains("getPackageInfo(packageName, 0).versionName") &&
+                settingsSrc.contains("appVersionLabel()"))
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

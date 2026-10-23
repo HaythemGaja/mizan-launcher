@@ -49,8 +49,19 @@ object HomeStatus {
         }
     }
 
-    /** The exact ADB commands that set Mizan as default home (diagnostics detail). */
+    /**
+     * The exact ADB command that sets Sreeb as default home (Step 3).
+     *
+     * v2.3.1: set-home-activity LEADS — verified live on Haythem's
+     * TV from ATV Tools (2026-10-22): BOTH role-command forms failed
+     * there with the same NumberFormatException (the role shell
+     * command mis-parses its flags against the package string on
+     * that Google TV build — the command is simply broken there),
+     * while set-home-activity returned "Success". The role form is
+     * demoted to a warning so nobody wastes another session on it.
+     */
     fun adbCommands(): String =
-        "adb shell cmd role add-role-holder --user 0 android.app.role.HOME com.mizan.launcher\n" +
-            "adb shell cmd package set-home-activity com.mizan.launcher/.MainActivity"
+        "adb shell cmd package set-home-activity com.mizan.launcher/.MainActivity\n" +
+            "(Skip the older “cmd role add-role-holder” form — it errors with a " +
+            "NumberFormatException on some Google TV builds, this one works there.)"
 }

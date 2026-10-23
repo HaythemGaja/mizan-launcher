@@ -76,6 +76,24 @@ import java.io.InputStreamReader
  */
 class SettingsActivity : Activity() {
 
+    /**
+     * The ONE true version label (v2.3.1): read from PackageManager
+     * at runtime, so it can never go stale at a version bump — the
+     * previous build shipped with one stale hardcoded label in the
+     * nav pane and a different one in Data & about, both wrong in
+     * the same diagnostics photo. The constant below is ONLY the
+     * fallback for a lookup that throws; keep it in step at bumps,
+     * but a stale fallback now requires the lookup to fail first.
+     */
+    private fun appVersionLabel(): String {
+        val name = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) {
+            null
+        }
+        return "Sreeb v" + (name ?: VERSION_FALLBACK)
+    }
+
     private lateinit var prefs: Prefs
     private lateinit var layout: LayoutData
     private var accent: Int = 0
@@ -121,7 +139,12 @@ class SettingsActivity : Activity() {
     )
 
     /** Tag marking a detail view as a card title (see groupDetailIntoCards). */
-    private companion object { const val CARD_HEADER_TAG = "cardHeader" }
+    private companion object {
+        const val CARD_HEADER_TAG = "cardHeader"
+
+        /** Fail-open fallback for [appVersionLabel] — see its doc. */
+        const val VERSION_FALLBACK = "2.3.1"
+    }
 
     /**
      * True once the v1.5 entry gate has passed for THIS entry. Reset
@@ -370,7 +393,7 @@ class SettingsActivity : Activity() {
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         pane.addView(title)
         val version = TextView(this)
-        version.text = "Sreeb v2.0"
+        version.text = appVersionLabel()
         version.setTextColor(subColour)
         version.textSize = 15f
         version.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, metrics.rowPadVDp + 2))
@@ -865,7 +888,8 @@ class SettingsActivity : Activity() {
             "Status: " + com.mizan.launcher.core.IptvStatus.diagText(
                 kind, cats.live.size, cats.vods.size, cats.series.size,
                 prefs.iptvFavoriteList().size,
-                com.mizan.launcher.data.IptvClient.epgChannelCount(this), ""
+                com.mizan.launcher.data.IptvClient.epgChannelCount(this), "",
+                com.mizan.launcher.data.IptvClient.lastErrorClass(this)
             )
         ))
         content.addView(row("Refresh now", "Fetch the catalogues + programme guide again") {
@@ -904,7 +928,7 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        content.addView(header("Sreeb v2.2"))
+        content.addView(header(appVersionLabel()))
         content.addView(info(diagnosticsText()))
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
@@ -1359,7 +1383,8 @@ class SettingsActivity : Activity() {
                     iKind, iCats.live.size, iCats.vods.size, iCats.series.size,
                     prefs.iptvFavoriteList().size,
                     com.mizan.launcher.data.IptvClient.epgChannelCount(this@SettingsActivity),
-                    iTime
+                    iTime,
+                    com.mizan.launcher.data.IptvClient.lastErrorClass(this@SettingsActivity)
                 )
             )
             // v2.3: the watch: line — match coverage + resolved

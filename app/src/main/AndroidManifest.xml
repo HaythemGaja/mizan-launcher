@@ -38,8 +38,17 @@
         </intent>
     </queries>
 
+    <!-- v2.3.1: cleartext HTTP is permitted app-wide. Deliberate: this
+         is a personal IPTV launcher and Xtream panels, M3U playlists
+         and XMLTV feeds are overwhelmingly plain http://host:port —
+         targetSdk 34 blocks cleartext by default, which silently
+         killed every IPTV fetch (the server "not answering"). No
+         credentials or personal data leave the device over it beyond
+         what the user's own IPTV account already sends to his own
+         server. (Diagnostics photo, 2026-10-22; spec §22.) -->
     <application
         android:allowBackup="true"
+        android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"

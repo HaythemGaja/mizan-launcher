@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-22 18:02 UTC
+Date: 2026-10-23 01:02 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -98,6 +98,18 @@ no-match, episode resolution from series-info fixtures
 fingerprint + codec, the auto-mark decision (ended/90% fires
 once, partial/tokenless never), and the badge/hero-label/
 diagnostics models (spec S21).
+
+Note (v2.3.1): hotfix from Haythem's on-device diagnostics
+photo (spec S22). Three new iptv diag checks: the ERROR line
+names the recorded failure class in parentheses when one
+exists, has no parenthetical when none is recorded, and the
+class never leaks into non-error lines. New section 39 —
+source checks: the manifest permits cleartext HTTP (his
+Xtream panel never answered because targetSdk 34 blocks
+http:// by default), and SettingsActivity carries no
+hardcoded 'Sreeb v<digit>' label — the version is read from
+PackageManager at runtime (the photo showed two different
+stale labels at once). All v2.3 checks carry over.
 
 ```
 PASS  neverlist: gms is never
@@ -632,6 +644,9 @@ PASS  iptv: hiddenKeys composes the decision over a category list
 PASS  iptv: status classify precedence ? unconfigured, data beats auth, auth, empty, error
 PASS  iptv: diag line carries counts + time, never credentials
 PASS  iptv: empty-state lines per kind
+PASS  iptv: diag line names the failure class after 'not answering' when one is recorded
+PASS  iptv: diag line has no parenthetical when no error is recorded
+PASS  iptv: a recorded error class never leaks into non-error lines
 PASS  watch: normalization strips punctuation/articles/case and collapses space
 PASS  watch: splitYear takes bracketed / trailing / leading years only
 PASS  watch: keyOf prefers a known year over the title token
@@ -653,5 +668,8 @@ PASS  watch: auto-mark fires at exactly 90%, not at 89%
 PASS  watch: auto-mark never fires twice, never tokenless, never on a partial watch
 PASS  watch: badge only when matched; hero labels name the episode, movies plain
 PASS  watch: diag line is counts-only
-RESULT: 552 passed, 0 failed, 552 total
+PASS  hotfix: manifest permits cleartext HTTP (Xtream panels / M3U / XMLTV are http://)
+PASS  hotfix: no hardcoded 'Sreeb v<digit>' label remains in SettingsActivity
+PASS  hotfix: the version label is read from PackageManager at runtime
+RESULT: 558 passed, 0 failed, 558 total
 ```

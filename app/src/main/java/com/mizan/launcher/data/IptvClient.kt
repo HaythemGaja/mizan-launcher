@@ -66,6 +66,7 @@ object IptvClient {
     private const val K_EPG_CHANNELS = "iptv_epg_channels"
     private const val K_FETCHED = "iptv_cache_fetched"
     private const val K_STATE = "iptv_state"
+    private const val K_LAST_ERROR = "iptv_last_error"
     private const val K_LAST_OK = "iptv_last_ok"
     private const val K_FINGERPRINT = "iptv_source_fp"
 
@@ -156,6 +157,37 @@ object IptvClient {
         }
     }
 
+    // ------------------------------------------------------------ last error (v2.3.1)
+
+    /**
+     * The most recent transport failure's exception SIMPLE CLASS
+     * NAME (e.g. "UnknownHostException") — recorded by [httpGet]'s
+     * catch and by the catalogue fetch's catch, persisted per fetch
+     * so the `iptv:` diagnostics line can name WHY the panel is not
+     * answering. Class name ONLY, per the hygiene rule above: an
+     * exception's message can embed the request URL (credentials).
+     */
+    @Volatile
+    private var lastHttpErrorClass: String = ""
+
+    private fun saveLastError(ctx: Context) {
+        try {
+            prefs(ctx).edit().putString(K_LAST_ERROR, lastHttpErrorClass).apply()
+        } catch (e: Exception) {
+            // Diagnostics bookkeeping must never break a fetch.
+        }
+    }
+
+    /** The recorded failure class for the diagnostics line; "" when none. */
+    fun lastErrorClass(ctx: Context): String {
+        val stored = try {
+            prefs(ctx).getString(K_LAST_ERROR, null)
+        } catch (e: Exception) {
+            null
+        }
+        return stored ?: lastHttpErrorClass
+    }
+
     // ------------------------------------------------------------ HTTP
 
     /** (httpCode, body) — body only on 2xx; code -1 = transport failure. Never throws, never logs. */
@@ -168,6 +200,9 @@ object IptvClient {
             conn.instanceFollowRedirects = true
             conn.setRequestProperty("User-Agent", USER_AGENT)
             val code = conn.responseCode
+            // Transport answered (any HTTP status): the panel IS
+            // reachable, so no transport failure stands recorded.
+            lastHttpErrorClass = ""
             if (code !in 200..299) {
                 Pair(code, null)
             } else {
@@ -187,6 +222,8 @@ object IptvClient {
                 Pair(code, String(bytes, Charsets.UTF_8))
             }
         } catch (e: Exception) {
+            // v2.3.1: remember WHY (class name only — see K_LAST_ERROR).
+            lastHttpErrorClass = e.javaClass.simpleName
             Pair(-1, null)
         } finally {
             try { conn?.disconnect() } catch (e: Exception) {
@@ -301,6 +338,7 @@ object IptvClient {
                     hasData = snap.hasData
                 )
                 saveKind(appCtx, kind)
+                saveLastError(appCtx)
                 if (snap.hasData) {
                     try {
                         prefs(appCtx).edit()
@@ -317,6 +355,10 @@ object IptvClient {
                     }
                 }
             } catch (e: Exception) {
+                // v2.3.1: an escaping failure is also a named failure
+                // for the diagnostics line (class name only).
+                lastHttpErrorClass = e.javaClass.simpleName
+                saveLastError(appCtx)
                 Prefs.noteError(appCtx, "iptvFetch", sanitized(e))
             } finally {
                 inFlight = false
