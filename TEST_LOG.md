@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 03:24 UTC
+Date: 2026-10-23 04:18 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -633,7 +633,7 @@ PASS  tmdb: proxy paths (details / season / search with encoding)
 PASS  tmdb: error kinds + http code
 PASS  tmdb: retryable = http/io/unknown only
 PASS  tmdb: user lines (no_key names the fix; http carries the code)
-PASS  tmdb: diagnostics wording
+PASS  tmdb: diagnostics wording (v2.6: path + human text + raw token in parens)
 PASS  poster cache: codec round-trips, garbage dropped
 PASS  movie night: numeric-string tmdbId still parses
 PASS  hero pool: order is Up Next, Continue, Movie Night, For You (backdrop-first in section)
@@ -787,6 +787,59 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 2.5 / code 18
-RESULT: 634 passed, 0 failed, 634 total
+PASS  v25src: the app version is 2.6 / code 19 (bumped by v2.6)
+PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
+PASS  aspect: garbled/null stored values normalize to Fit
+PASS  aspect: Fit letterboxes a 4:3 video inside the screen
+PASS  aspect: Stretch takes the container exactly
+PASS  aspect: Zoom covers the screen (overflow crops)
+PASS  aspect: a portrait video Fits by height and Zooms by width
+PASS  aspect: unknown video size falls back to the container; empty container stays empty
+PASS  speed: the ladder cycles and wraps 2x -> 0.5x
+PASS  speed: an off-ladder value snaps to the nearest rung before advancing
+PASS  speed: labels trim trailing zeros
+PASS  tracks: audio filter keeps audio only, in index order
+PASS  tracks: text filter keeps timed-text + subtitle only
+PASS  tracks: Audio button needs >1 audio track; Subs button needs >=1 text track
+PASS  tracks: labels prefer the language, else a 1-based ordinal
+PASS  tracks: audio cycle wraps and tolerates an unknown current
+PASS  tracks: subtitle cycle runs Off -> tracks -> Off
+PASS  bar: the title line composes title + episode-name meta once
+PASS  bar: clocks format m:ss under an hour, h:mm:ss above, negatives clamp
+PASS  bar: time label shows elapsed/total, or Live when duration is unknown
+PASS  bar: progress permille clamps and unknowns read 0
+PASS  bar: Prev/Next episode shows only for episode plays with queue neighbours
+PASS  tmdb token: io:<ClassName> parses as the raw token; bare io stays io
+PASS  tmdb token: http codes still parse through the colon-safe path
+PASS  tmdb token: the user line keeps its human text and gains the token
+PASS  iptv shape: seasons ascend, empty seasons drop, counts are deduped
+PASS  iptv shape: episodes ascend + dedupe by number, first occurrence wins
+PASS  iptv shape: titles fall back to Episode N when the panel has none
+PASS  iptv shape: a missing season shapes empty; seasonCsv matches the shaped list
+PASS  iptv shape: shaped episodes key into the same SxEy watched set as TMDB's
+PASS  v26src: the player has the aspect-measuring VideoView + bar machinery
+PASS  v26src: no foreground service anywhere in the player (standing rule)
+PASS  v26src: the aspect mode persists per profile (player_aspect)
+PASS  v26src: Details carries the IPTV episode fallback + its header note
+PASS  v26src: LibraryLogic accepts the io:<ClassName> token form
+PASS  v26src: tracker 1.14.5 returns io:<simple exception class name>
+PASS  resolve: a proxy success stands and the direct path never runs
+PASS  resolve: proxy failure + no launcher key surfaces the proxy error, direct uncalled
+PASS  resolve: proxy failure + launcher key + direct success answers via direct
+PASS  resolve: both paths failing surfaces the PROXY error; the direct token is kept for diagnostics
+PASS  resolve: a missing proxy error degrades to io
+PASS  direct: a throwing direct path degrades to its class-name token
+PASS  direct: error tokens never carry the exception message (which can embed the key)
+PASS  direct: http token matches the provider contract shape
+PASS  tmdb line: OK via tracker / OK via launcher key
+PASS  tmdb line: failure names the proxy token and the direct token
+PASS  tmdb line: failure with no launcher key says so
+PASS  tmdb line: composed lines never contain key material
+PASS  v26src: the launcher key lives in Prefs under its own name
+PASS  v26src: Settings has the masked TMDB API key row (set/not-set only)
+PASS  v26src: the backup export never touches the TMDB key (redaction)
+PASS  v26src: the direct client targets TMDB with the contract allowlist + class-name tokens
+PASS  v26src: the direct client never logs (no Log import, no key echo)
+PASS  v26src: the funnel composes proxy -> direct via resolveTmdb and records both notes
+RESULT: 687 passed, 0 failed, 687 total
 ```

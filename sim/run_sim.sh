@@ -58,6 +58,7 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/IptvStatus.kt \
   app/src/main/java/com/mizan/launcher/core/WatchMatch.kt \
   app/src/main/java/com/mizan/launcher/core/Diag.kt \
+  app/src/main/java/com/mizan/launcher/core/PlayerLogic.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {

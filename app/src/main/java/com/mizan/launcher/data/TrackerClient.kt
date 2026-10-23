@@ -451,6 +451,8 @@ object TrackerClient {
 
     /** Global pref: the last tmdb_get outcome ("ok" or the error string). */
     private const val K_TMDB_LAST = "tracker_tmdb_last"
+    /** Global pref (v2.6): the direct-path note for the diagnostics `tmdb:` line. */
+    private const val K_TMDB_DIRECT = "tracker_tmdb_direct"
     /** Global pref: poster paths learned from tmdb_get (core codec). */
     private const val K_POSTER_CACHE = "tracker_poster_cache"
 
@@ -463,9 +465,21 @@ object TrackerClient {
         }
     }
 
-    private fun noteTmdbOutcome(ctx: Context, outcome: String) {
+    /** v2.6: the direct (launcher-key) path's note for the `tmdb:` line. */
+    fun lastTmdbDirect(ctx: Context): String? {
+        return try {
+            prefs(ctx).getString(K_TMDB_DIRECT, null)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun noteTmdbOutcome(ctx: Context, outcome: String, direct: String) {
         try {
-            prefs(ctx).edit().putString(K_TMDB_LAST, outcome).apply()
+            prefs(ctx).edit()
+                .putString(K_TMDB_LAST, outcome)
+                .putString(K_TMDB_DIRECT, direct)
+                .apply()
         } catch (e: Exception) {
             // Diagnostics bookkeeping only.
         }
@@ -544,12 +558,10 @@ object TrackerClient {
      * Returns (json, null) on success or (null, error) with the
      * contract's error string; local failures (provider missing,
      * SecurityException) map to "io" for the caller's state machine
-     * and are recorded via Prefs.noteError. Every outcome is also
-     * persisted for the diagnostics `tmdb:` line.
+     * and are recorded via Prefs.noteError.
      */
-    fun tmdbGetBlocking(ctx: Context, path: String): Pair<String?, String?> {
-        val appCtx = ctx.applicationContext
-        val result: Pair<String?, String?> = try {
+    private fun tmdbGetViaProxy(appCtx: Context, path: String): Pair<String?, String?> {
+        return try {
             val bundle = appCtx.contentResolver.call(BASE, "tmdb_get", path, null)
             val json = bundle?.getString("json")
             val error = bundle?.getString("error")
@@ -566,8 +578,44 @@ object TrackerClient {
             Prefs.noteError(appCtx, "tmdbGet", e)
             null to "io"
         }
-        noteTmdbOutcome(appCtx, result.first?.let { "ok" } ?: (result.second ?: "io"))
-        return result
+    }
+
+    /**
+     * One TMDB read with the v2.6 resolution order
+     * (core/LibraryLogic.resolveTmdb): the tracker proxy first;
+     * on ANY proxy error, direct TMDB with the launcher's own key
+     * (Prefs.tmdbKey, data/TmdbDirect) when one is set. Both paths
+     * failing surfaces the PROXY error. MUST be called off the
+     * main thread (up to 10 s of HTTP per path). Every outcome is
+     * persisted for the diagnostics `tmdb:` line — which path won,
+     * and, on failure, the direct path's own token (or that no
+     * launcher key is set). Key material is never persisted.
+     */
+    fun tmdbGetBlocking(ctx: Context, path: String): Pair<String?, String?> {
+        val appCtx = ctx.applicationContext
+        val proxy = tmdbGetViaProxy(appCtx, path)
+        val key = try {
+            Prefs(appCtx).tmdbKey
+        } catch (e: Exception) {
+            ""
+        }
+        val resolution = com.mizan.launcher.core.LibraryLogic.resolveTmdb(
+            proxy.first, proxy.second, key.isNotBlank()
+        ) {
+            TmdbDirect.getBlocking(appCtx, path, key)
+        }
+        val outcome = when {
+            resolution.json != null && resolution.viaDirect -> "ok_direct"
+            resolution.json != null -> "ok"
+            else -> resolution.error ?: "io"
+        }
+        val directNote = when {
+            resolution.json != null -> ""
+            key.isBlank() -> "not_set"
+            else -> resolution.directError ?: ""
+        }
+        noteTmdbOutcome(appCtx, outcome, directNote)
+        return resolution.json to resolution.error
     }
 
     /**

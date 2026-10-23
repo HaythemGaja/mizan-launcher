@@ -51,6 +51,7 @@ import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.core.BreadcrumbRing
 import com.mizan.launcher.core.DiagLogs
 import com.mizan.launcher.core.DiagWatchdog
+import com.mizan.launcher.core.PlayerLogic
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.AppCategories
@@ -2266,6 +2267,7 @@ fun main() {
                 ll.tmdbErrorKind("no_key") == LibraryLogic.TmdbError.NO_KEY &&
                 ll.tmdbErrorKind("bad_path") == LibraryLogic.TmdbError.BAD_PATH &&
                 ll.tmdbErrorKind("io") == LibraryLogic.TmdbError.IO &&
+                ll.tmdbErrorKind("io:UnknownHostException") == LibraryLogic.TmdbError.IO &&
                 ll.tmdbErrorKind("http_503") == LibraryLogic.TmdbError.HTTP &&
                 ll.tmdbHttpCode("http_503") == 503 && ll.tmdbHttpCode("io") == 0 &&
                 ll.tmdbErrorKind("weird") == LibraryLogic.TmdbError.UNKNOWN)
@@ -2279,12 +2281,15 @@ fun main() {
                 ll.tmdbUserLine("http_404").contains("404") &&
                 ll.tmdbUserLine("io").contains("reach TMDB") &&
                 ll.tmdbUserLine(null) == "")
-        check("tmdb: diagnostics wording",
-            ll.tmdbDiagText(null) == "not used yet" && ll.tmdbDiagText("ok") == "ok" &&
-                ll.tmdbDiagText("no_key") == "no key in tracker" &&
-                ll.tmdbDiagText("bad_path") == "bad path (bug)" &&
-                ll.tmdbDiagText("http_500") == "http 500" &&
-                ll.tmdbDiagText("io") == "network error")
+        check("tmdb: diagnostics wording (v2.6: path + human text + raw token in parens)",
+            ll.tmdbDiagText(null, null) == "not used yet" &&
+                ll.tmdbDiagText("ok", null) == "OK via tracker" &&
+                ll.tmdbDiagText("no_key", null) == "no key in tracker (no_key)" &&
+                ll.tmdbDiagText("bad_path", null) == "bad path (bad_path)" &&
+                ll.tmdbDiagText("http_500", null) == "http 500 (http_500)" &&
+                ll.tmdbDiagText("io", null) == "network error (io)" &&
+                ll.tmdbDiagText("io:UnknownHostException", null) ==
+                    "network error (io:UnknownHostException)")
 
         // --- poster cache codec ---
         val cache = mapOf("tv|125988" to "/silo.jpg", "movie|693134" to "/dune.jpg")
@@ -3300,11 +3305,289 @@ fun main() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        check("v25src: the app version is 2.5 / code 18",
-            gradleSrc.contains("versionName = \"2.5\"") &&
-                gradleSrc.contains("versionCode = 18"))
+        check("v25src: the app version is 2.6 / code 19 (bumped by v2.6)",
+            gradleSrc.contains("versionName = \"2.6\"") &&
+                gradleSrc.contains("versionCode = 19"))
     }
+
+    // ---------- (43) v2.6: player control bar logic, TMDB error tokens, IPTV episode shaping ----------
+    section43()  // extracted: main() hit the JVM 64 KB method limit
+
+    // ---------- (44) v2.6 amendment: launcher TMDB key + direct path ----------
+    section44()
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
+}
+
+/** v2.6 checks — top-level because main() reached the JVM method-size limit. */
+fun section43() {
+    run {
+        val pl = PlayerLogic
+
+        // --- aspect cycle: order + wrap + garbage normalization.
+        check("aspect: cycle runs Fit -> Stretch -> Zoom -> Fit",
+            pl.nextAspect(pl.ASPECT_FIT) == pl.ASPECT_STRETCH &&
+                pl.nextAspect(pl.ASPECT_STRETCH) == pl.ASPECT_ZOOM &&
+                pl.nextAspect(pl.ASPECT_ZOOM) == pl.ASPECT_FIT)
+        check("aspect: garbled/null stored values normalize to Fit",
+            pl.normalizeAspect(null) == pl.ASPECT_FIT &&
+                pl.normalizeAspect("banana") == pl.ASPECT_FIT &&
+                pl.nextAspect("banana") == pl.ASPECT_STRETCH &&
+                pl.aspectLabel(null) == "Fit" && pl.aspectLabel("zoom") == "Zoom")
+
+        // --- aspect measure maths (1920x1080 screen).
+        check("aspect: Fit letterboxes a 4:3 video inside the screen",
+            pl.measuredSize(pl.ASPECT_FIT, 1920, 1080, 640, 480) == (1440 to 1080))
+        check("aspect: Stretch takes the container exactly",
+            pl.measuredSize(pl.ASPECT_STRETCH, 1920, 1080, 640, 480) == (1920 to 1080))
+        check("aspect: Zoom covers the screen (overflow crops)",
+            pl.measuredSize(pl.ASPECT_ZOOM, 1920, 1080, 640, 480) == (1920 to 1440))
+        check("aspect: a portrait video Fits by height and Zooms by width",
+            pl.measuredSize(pl.ASPECT_FIT, 1920, 1080, 480, 640) == (810 to 1080) &&
+                pl.measuredSize(pl.ASPECT_ZOOM, 1920, 1080, 480, 640) == (1920 to 2560))
+        check("aspect: unknown video size falls back to the container; empty container stays empty",
+            pl.measuredSize(pl.ASPECT_FIT, 1920, 1080, 0, 0) == (1920 to 1080) &&
+                pl.measuredSize(pl.ASPECT_ZOOM, 0, 0, 640, 480) == (0 to 0))
+
+        // --- speed ladder: cycle + wrap + labels.
+        check("speed: the ladder cycles and wraps 2x -> 0.5x",
+            pl.nextSpeed(0.5f) == 0.75f && pl.nextSpeed(1.0f) == 1.25f &&
+                pl.nextSpeed(1.5f) == 2.0f && pl.nextSpeed(2.0f) == 0.5f)
+        check("speed: an off-ladder value snaps to the nearest rung before advancing",
+            pl.nextSpeed(1.1f) == 1.25f && pl.nextSpeed(0.9f) == 1.25f)
+        check("speed: labels trim trailing zeros",
+            pl.speedLabel(1.0f) == "1×" && pl.speedLabel(2.0f) == "2×" &&
+                pl.speedLabel(0.5f) == "0.5×" && pl.speedLabel(1.25f) == "1.25×" &&
+                pl.speedLabel(0.75f) == "0.75×")
+
+        // --- track filtering (MediaPlayer.TrackInfo type numbering).
+        val allTracks = listOf(
+            PlayerLogic.TrackDesc(0, PlayerLogic.TRACK_TYPE_VIDEO, ""),
+            PlayerLogic.TrackDesc(1, PlayerLogic.TRACK_TYPE_AUDIO, "en"),
+            PlayerLogic.TrackDesc(2, PlayerLogic.TRACK_TYPE_AUDIO, ""),
+            PlayerLogic.TrackDesc(3, PlayerLogic.TRACK_TYPE_TIMEDTEXT, "en"),
+            PlayerLogic.TrackDesc(4, PlayerLogic.TRACK_TYPE_SUBTITLE, "fr"),
+            PlayerLogic.TrackDesc(5, 0, "")
+        )
+        check("tracks: audio filter keeps audio only, in index order",
+            pl.audioTracks(allTracks).map { it.index } == listOf(1, 2))
+        check("tracks: text filter keeps timed-text + subtitle only",
+            pl.textTracks(allTracks).map { it.index } == listOf(3, 4))
+        check("tracks: Audio button needs >1 audio track; Subs button needs >=1 text track",
+            pl.showAudioButton(allTracks) && pl.showSubsButton(allTracks) &&
+                !pl.showAudioButton(allTracks.filter { it.index != 2 }) &&
+                !pl.showSubsButton(allTracks.filter { !pl.isTextTrack(it) }) &&
+                !pl.showAudioButton(emptyList()) && !pl.showSubsButton(emptyList()))
+        check("tracks: labels prefer the language, else a 1-based ordinal",
+            pl.trackLabel(allTracks[1], 0) == "en" &&
+                pl.trackLabel(allTracks[2], 1) == "Track 2")
+        check("tracks: audio cycle wraps and tolerates an unknown current",
+            pl.cycleIndex(-1, 3) == 0 && pl.cycleIndex(0, 3) == 1 &&
+                pl.cycleIndex(2, 3) == 0 && pl.cycleIndex(9, 3) == 0 &&
+                pl.cycleIndex(0, 0) == -1)
+        check("tracks: subtitle cycle runs Off -> tracks -> Off",
+            pl.cycleSubtitle(-1, 2) == 0 && pl.cycleSubtitle(0, 2) == 1 &&
+                pl.cycleSubtitle(1, 2) == -1 && pl.cycleSubtitle(-1, 0) == -1)
+
+        // --- bar text + progress.
+        check("bar: the title line composes title + episode-name meta once",
+            pl.barTitle("Show · S1 E2", "Pilot") == "Show · S1 E2 · Pilot" &&
+                pl.barTitle("Movie", "") == "Movie" &&
+                pl.barTitle("Title", "Title") == "Title")
+        check("bar: clocks format m:ss under an hour, h:mm:ss above, negatives clamp",
+            pl.formatClock(0L) == "0:00" && pl.formatClock(59_000L) == "0:59" &&
+                pl.formatClock(61_000L) == "1:01" &&
+                pl.formatClock(3_661_000L) == "1:01:01" &&
+                pl.formatClock(-5L) == "0:00")
+        check("bar: time label shows elapsed/total, or Live when duration is unknown",
+            pl.timeLabel(61_000L, 3_600_000L) == "1:01 / 1:00:00" &&
+                pl.timeLabel(61_000L, -1L) == "Live")
+        check("bar: progress permille clamps and unknowns read 0",
+            pl.progressPermille(500L, 1000L) == 500 &&
+                pl.progressPermille(2000L, 1000L) == 1000 &&
+                pl.progressPermille(0L, 1000L) == 0 &&
+                pl.progressPermille(100L, 0L) == 0)
+        check("bar: Prev/Next episode shows only for episode plays with queue neighbours",
+            pl.hasEpisodeNeighbours(IptvLogic.KIND_EPISODE, 3) &&
+                !pl.hasEpisodeNeighbours(IptvLogic.KIND_EPISODE, 1) &&
+                !pl.hasEpisodeNeighbours(IptvLogic.KIND_LIVE, 5) &&
+                !pl.hasEpisodeNeighbours(IptvLogic.KIND_VOD, 2))
+
+        // --- TMDB error tokens (tracker 1.14.5's io:<ClassName> form).
+        val ll = LibraryLogic
+        check("tmdb token: io:<ClassName> parses as the raw token; bare io stays io",
+            ll.tmdbErrorToken("io:UnknownHostException") == "io:UnknownHostException" &&
+                ll.tmdbErrorToken("io:SSLHandshakeException") == "io:SSLHandshakeException" &&
+                ll.tmdbErrorToken("io") == "io" &&
+                ll.tmdbErrorToken(null) == "" && ll.tmdbErrorToken("") == "")
+        check("tmdb token: http codes still parse through the colon-safe path",
+            ll.tmdbHttpCode("http_401") == 401 &&
+                ll.tmdbErrorKind("io:SocketTimeoutException") == LibraryLogic.TmdbError.IO &&
+                ll.tmdbRetryable("io:SocketTimeoutException"))
+        check("tmdb token: the user line keeps its human text and gains the token",
+            ll.tmdbUserLine("io:UnknownHostException").contains("reach TMDB") &&
+                ll.tmdbUserLine("io:UnknownHostException")
+                    .endsWith("(io:UnknownHostException)") &&
+                ll.tmdbUserLine("no_key").endsWith("(no_key)") &&
+                ll.tmdbUserLine("io").endsWith("(io)"))
+
+        // --- IPTV episode shaping (the Details fallback source).
+        fun ep(num: Int, title: String) =
+            IptvLogic.Episode("id$num", title, 0, num, "mkv", 0)
+        val info = IptvLogic.SeriesInfo(
+            seriesId = 42L, name = "Some Show", cover = "", plot = "",
+            seasons = listOf(
+                IptvLogic.Season(2, listOf(ep(3, ""), ep(1, "Finale"), ep(2, ""), ep(2, "Dupe"))),
+                IptvLogic.Season(1, listOf(ep(2, ""), ep(1, "Pilot"))),
+                IptvLogic.Season(3, emptyList()),
+                IptvLogic.Season(0, listOf(ep(1, "Special")))
+            )
+        )
+        val shapedSeasons = ll.iptvSeasonInfos(info)
+        check("iptv shape: seasons ascend, empty seasons drop, counts are deduped",
+            shapedSeasons.map { it.number } == listOf(0, 1, 2) &&
+                shapedSeasons.map { it.episodeCount } == listOf(1, 2, 3))
+        val s2 = ll.iptvEpisodes(info, 2)
+        check("iptv shape: episodes ascend + dedupe by number, first occurrence wins",
+            s2.map { it.number } == listOf(1, 2, 3))
+        check("iptv shape: titles fall back to Episode N when the panel has none",
+            s2[0].name == "Finale" && s2[1].name == "Episode 2" && s2[2].name == "Episode 3")
+        check("iptv shape: a missing season shapes empty; seasonCsv matches the shaped list",
+            ll.iptvEpisodes(info, 99).isEmpty() && ll.seasonCsv(s2) == "1,2,3")
+        check("iptv shape: shaped episodes key into the same SxEy watched set as TMDB's",
+            s2.map { ll.epKey(2, it.number) } == listOf("2x1", "2x2", "2x3"))
+
+        // --- source checks: the v2.6 wiring is really in the app.
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val playerSrc = src("app/src/main/java/com/mizan/launcher/ui/PlayerActivity.kt")
+        check("v26src: the player has the aspect-measuring VideoView + bar machinery",
+            playerSrc.contains("AspectVideoView") &&
+                playerSrc.contains("PlayerLogic.measuredSize") &&
+                playerSrc.contains("enumerateTracks") &&
+                playerSrc.contains("hideBarRunnable"))
+        check("v26src: no foreground service anywhere in the player (standing rule)",
+            playerSrc.isNotEmpty() && !playerSrc.contains("startForegroundService"))
+        val prefsSrc = src("app/src/main/java/com/mizan/launcher/data/Prefs.kt")
+        check("v26src: the aspect mode persists per profile (player_aspect)",
+            prefsSrc.contains("player_aspect") && prefsSrc.contains("playerAspect"))
+        val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
+        check("v26src: Details carries the IPTV episode fallback + its header note",
+            detailsSrc.contains("maybeStartIptvFallback") &&
+                detailsSrc.contains("Episode list from IPTV — TMDB unreachable") &&
+                detailsSrc.contains("iptvSeasonInfos"))
+        val librarySrc = src("app/src/main/java/com/mizan/launcher/core/LibraryLogic.kt")
+        check("v26src: LibraryLogic accepts the io:<ClassName> token form",
+            librarySrc.contains("startsWith(\"io:\")") &&
+                librarySrc.contains("tmdbErrorToken"))
+        val trackerSrc = src("../tvshows-movies-tracker/app/java/com/haythem/tvtracker/LauncherDataProvider.java")
+        check("v26src: tracker 1.14.5 returns io:<simple exception class name>",
+            trackerSrc.contains("\"io:\" + e.getClass().getSimpleName()"))
+    }
+}
+
+/** v2.6 amendment checks — the launcher-held TMDB key + direct path. */
+fun section44() {
+    run {
+        val ll = LibraryLogic
+
+        // --- resolution order (core/LibraryLogic.resolveTmdb).
+        var directCalled = false
+        val proxyOk = ll.resolveTmdb("{\"ok\":1}", null, directKeySet = true) {
+            directCalled = true
+            "{\"direct\":1}" to null
+        }
+        check("resolve: a proxy success stands and the direct path never runs",
+            proxyOk.json == "{\"ok\":1}" && !proxyOk.viaDirect &&
+                proxyOk.error == null && !directCalled)
+        directCalled = false
+        val noKey = ll.resolveTmdb(null, "io:UnknownHostException", directKeySet = false) {
+            directCalled = true
+            "{}" to null
+        }
+        check("resolve: proxy failure + no launcher key surfaces the proxy error, direct uncalled",
+            noKey.json == null && noKey.error == "io:UnknownHostException" &&
+                noKey.directError == null && !directCalled)
+        val directOk = ll.resolveTmdb(null, "io", directKeySet = true) {
+            "{\"direct\":1}" to null
+        }
+        check("resolve: proxy failure + launcher key + direct success answers via direct",
+            directOk.json == "{\"direct\":1}" && directOk.viaDirect && directOk.error == null)
+        val bothFail = ll.resolveTmdb(null, "http_401", directKeySet = true) {
+            null to "io:SocketTimeoutException"
+        }
+        check("resolve: both paths failing surfaces the PROXY error; the direct token is kept for diagnostics",
+            bothFail.json == null && bothFail.error == "http_401" &&
+                bothFail.directError == "io:SocketTimeoutException" && !bothFail.viaDirect)
+        check("resolve: a missing proxy error degrades to io",
+            ll.resolveTmdb(null, null, directKeySet = false) { "{}" to null }.error == "io")
+
+        // --- direct error mapping + key redaction at the mapping layer.
+        val secret = "SECRETKEY123"
+        val thrown = ll.resolveTmdb(null, "io", directKeySet = true) {
+            throw java.net.UnknownHostException("api_key=$secret")
+        }
+        check("direct: a throwing direct path degrades to its class-name token",
+            thrown.directError == "io:UnknownHostException")
+        check("direct: error tokens never carry the exception message (which can embed the key)",
+            ll.tmdbDirectError(java.net.UnknownHostException("api_key=$secret")) ==
+                "io:UnknownHostException" &&
+                !thrown.directError.orEmpty().contains(secret) &&
+                !thrown.error.orEmpty().contains(secret))
+        check("direct: http token matches the provider contract shape",
+            ll.tmdbDirectHttpError(401) == "http_401" && ll.tmdbDirectHttpError(404) == "http_404")
+
+        // --- diagnostics line shaping: the four cases.
+        check("tmdb line: OK via tracker / OK via launcher key",
+            ll.tmdbDiagText("ok", "") == "OK via tracker" &&
+                ll.tmdbDiagText("ok_direct", "") == "OK via launcher key")
+        check("tmdb line: failure names the proxy token and the direct token",
+            ll.tmdbDiagText("io:UnknownHostException", "io:SocketTimeoutException") ==
+                "network error (io:UnknownHostException) · direct: io:SocketTimeoutException")
+        check("tmdb line: failure with no launcher key says so",
+            ll.tmdbDiagText("io:UnknownHostException", "not_set") ==
+                "network error (io:UnknownHostException) · launcher key: not set")
+        check("tmdb line: composed lines never contain key material",
+            !ll.tmdbDiagText("io:UnknownHostException", "io:UnknownHostException")
+                .contains(secret) &&
+                !ll.tmdbDiagText("ok_direct", null).contains(secret))
+
+        // --- source checks: the wiring + hygiene are really in the app.
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val prefsSrc = src("app/src/main/java/com/mizan/launcher/data/Prefs.kt")
+        check("v26src: the launcher key lives in Prefs under its own name",
+            prefsSrc.contains("launcher_tmdb_key") && prefsSrc.contains("var tmdbKey"))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("v26src: Settings has the masked TMDB API key row (set/not-set only)",
+            settingsSrc.contains("\"TMDB API key\"") && settingsSrc.contains("prefs.tmdbKey"))
+        val exportStart = settingsSrc.indexOf("fun exportJson")
+        val exportBody = if (exportStart >= 0) {
+            settingsSrc.substring(exportStart, minOf(exportStart + 6000, settingsSrc.length))
+        } else {
+            ""
+        }
+        check("v26src: the backup export never touches the TMDB key (redaction)",
+            exportBody.isNotEmpty() && !exportBody.contains("tmdbKey") &&
+                !exportBody.contains("launcher_tmdb_key"))
+        val directSrc = src("app/src/main/java/com/mizan/launcher/data/TmdbDirect.kt")
+        check("v26src: the direct client targets TMDB with the contract allowlist + class-name tokens",
+            directSrc.contains("api.themoviedb.org/3/") &&
+                directSrc.contains("tmdbDirectError") &&
+                directSrc.contains("trending/"))
+        check("v26src: the direct client never logs (no Log import, no key echo)",
+            directSrc.isNotEmpty() && !directSrc.contains("android.util.Log") &&
+                !directSrc.contains("println"))
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        check("v26src: the funnel composes proxy -> direct via resolveTmdb and records both notes",
+            clientSrc.contains("resolveTmdb") && clientSrc.contains("ok_direct") &&
+                clientSrc.contains("lastTmdbDirect") && clientSrc.contains("TmdbDirect.getBlocking"))
+    }
 }

@@ -992,6 +992,20 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
+        // v2.6: the launcher's OWN TMDB key (optional). TMDB reads
+        // normally go through the tracker app (its key never leaves
+        // the tracker); when the proxy fails, a key saved here lets
+        // Sreeb call TMDB directly as a fallback. Same hygiene as
+        // the IPTV credentials: stored only in prefs — never in
+        // backups, diagnostics or logs — and shown as set/not-set.
+        content.addView(header("TMDB"))
+        content.addView(info("Optional. Sreeb reads TMDB through the tracker app first; if that fails, a key saved here lets Sreeb reach TMDB directly instead. It's stored only on this TV — never in backups, diagnostics or logs. Leave it empty to clear it."))
+        content.addView(row("TMDB API key", if (prefs.tmdbKey.isEmpty()) "Not set" else "Set") {
+            KeyboardDialog.show(this, "TMDB API key", accent, prefs.tmdbKey, 80, symbols = true, masked = true) { text ->
+                prefs.tmdbKey = text.trim()
+                rebuild()
+            }
+        })
         content.addView(header(appVersionLabel()))
         content.addView(info(diagnosticsText()))
         content.addView(row("Copy diagnostics", "Copy all of the above — including the freeze/crash logs — to report a problem") {
@@ -1433,12 +1447,15 @@ class SettingsActivity : Activity() {
                     tSnap.forYou.size, tTime
                 )
             )
-            // v2.1: the tmdb: line — the last tmdb_get outcome through
-            // the tracker's proxy (first build to exercise it), so a
+            // v2.1: the tmdb: line — the last TMDB outcome, so a
             // details/search failure is diagnosable, incl. bad_path.
+            // v2.6: it also names WHICH path answered (tracker
+            // proxy vs the launcher's own key) and, on failure, the
+            // direct path's own token / that no launcher key is set.
             append(
                 "\ntmdb: " + com.mizan.launcher.core.LibraryLogic.tmdbDiagText(
-                    com.mizan.launcher.data.TrackerClient.lastTmdbOutcome(this@SettingsActivity)
+                    com.mizan.launcher.data.TrackerClient.lastTmdbOutcome(this@SettingsActivity),
+                    com.mizan.launcher.data.TrackerClient.lastTmdbDirect(this@SettingsActivity)
                 )
             )
             // v2.0: the live tv: line — the Live TV probe's verdict

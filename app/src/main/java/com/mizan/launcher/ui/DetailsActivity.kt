@@ -14,9 +14,11 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.mizan.launcher.core.Design
+import com.mizan.launcher.core.IptvLogic
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.WatchMatch
+import com.mizan.launcher.data.IptvClient
 import com.mizan.launcher.data.Prefs
 import com.mizan.launcher.data.TmdbImages
 import com.mizan.launcher.data.TrackerActions
@@ -44,6 +46,16 @@ import com.mizan.launcher.data.WatchPlay
  *
  * Fail-open: with TMDB unreachable the screen still shows what the
  * snapshots know (title, poster, progress) plus the error line.
+ *
+ * v2.6 IPTV episode fallback (spec §26): when the TMDB details or
+ * season load fails AND the title has a Watch match, the episode
+ * lists are built from the IPTV side instead — the same
+ * fingerprint-cached get_series_info document WatchPlay plays
+ * from, shaped by core/LibraryLogic into the exact SeasonInfo /
+ * EpisodeInfo lists the TMDB path renders, so watched overlays,
+ * mark-watched and mark-season all work unchanged under a clear
+ * "Episode list from IPTV — TMDB unreachable" header. No match or
+ * no series info → the plain TMDB error screen, as before.
  */
 class DetailsActivity : Activity() {
 
@@ -80,6 +92,16 @@ class DetailsActivity : Activity() {
     private var seasonLoading: Int = -1
     private var seasonError: String? = null
     private var selectedSeason: Int = -1
+
+    // v2.6 IPTV fallback state: the fetched series info, the
+    // shaped season list (used when TMDB details never landed),
+    // and which entries of seasonEpisodes came from the IPTV side
+    // (so a later TMDB recovery can drop them and refill).
+    private var iptvInfo: IptvLogic.SeriesInfo? = null
+    private var iptvSeasons: List<LibraryLogic.SeasonInfo>? = null
+    private val iptvEpisodeSeasons = HashSet<Int>()
+    private var iptvFallbackLoading = false
+    private var iptvFallbackTried = false
 
     private var contentBox: LinearLayout? = null
 
@@ -216,15 +238,28 @@ class DetailsActivity : Activity() {
                     }
                 }
             }
+            if (detailsError == null) {
+                // TMDB is back: any IPTV-shaped episodes are stale
+                // stand-ins — drop them so TMDB refills the lists.
+                clearIptvFallback()
+            }
             rebuild()
             maybeLoadSeason()
+            if (detailsError != null) {
+                // v2.6: TMDB failed — try the IPTV episode fallback.
+                maybeStartIptvFallback()
+            }
         }
     }
 
     /** First season with something unwatched; else first regular; else first. */
-    private fun defaultSeason(d: LibraryLogic.TitleDetails): Int {
+    private fun defaultSeason(d: LibraryLogic.TitleDetails): Int =
+        defaultSeasonFrom(d.seasons)
+
+    /** [defaultSeason] over a bare season list (the IPTV fallback's shape). */
+    private fun defaultSeasonFrom(seasons: List<LibraryLogic.SeasonInfo>): Int {
         val watched = effectiveWatched()
-        val regular = d.seasons.filter { it.number >= 1 }
+        val regular = seasons.filter { it.number >= 1 }
         for (season in regular) {
             val allWatched = (1..season.episodeCount).all {
                 LibraryLogic.epKey(season.number, it) in watched
@@ -232,7 +267,7 @@ class DetailsActivity : Activity() {
             if (!allWatched) return season.number
         }
         return regular.firstOrNull()?.number
-            ?: d.seasons.firstOrNull()?.number ?: -1
+            ?: seasons.firstOrNull()?.number ?: -1
     }
 
     private fun maybeLoadSeason() {
@@ -246,17 +281,154 @@ class DetailsActivity : Activity() {
             if (seasonLoading == season) seasonLoading = -1
             if (error != null) {
                 seasonError = error
-            } else {
-                val episodes = LibraryLogic.parseSeasonEpisodes(json)
-                if (episodes.isEmpty()) {
-                    seasonError = "io"
-                } else {
-                    seasonEpisodes[season] = episodes
-                    seasonError = null
-                }
+                rebuild()
+                // v2.6: fill just this season from the IPTV side.
+                maybeFillSeasonFromIptv(season)
+                return@tmdbGet
+            }
+            val episodes = LibraryLogic.parseSeasonEpisodes(json)
+            if (episodes.isEmpty()) {
+                seasonError = "io"
+                rebuild()
+                maybeFillSeasonFromIptv(season)
+                return@tmdbGet
+            }
+            seasonEpisodes[season] = episodes
+            iptvEpisodeSeasons.remove(season) // TMDB data now owns this season
+            seasonError = null
+            rebuild()
+        }
+    }
+
+    // ------------------------------------------------------------ IPTV episode fallback (v2.6)
+
+    /** Drop every IPTV-shaped stand-in (TMDB recovered and refills). */
+    private fun clearIptvFallback() {
+        if (iptvSeasons == null && iptvEpisodeSeasons.isEmpty() && iptvInfo == null) return
+        for (s in iptvEpisodeSeasons) seasonEpisodes.remove(s)
+        iptvEpisodeSeasons.clear()
+        iptvSeasons = null
+        iptvInfo = null
+        iptvFallbackTried = false
+    }
+
+    /**
+     * The series info for this title's Watch match — from the
+     * in-memory copy, else IptvClient's fingerprint-cached
+     * get_series_info (worker-side fetch, main-thread callback).
+     * Null info = no match / no series / panel failure: every
+     * caller then keeps the plain TMDB error screen (fail-open).
+     */
+    private fun withIptvInfo(action: (IptvLogic.SeriesInfo?) -> Unit) {
+        iptvInfo?.let {
+            action(it)
+            return
+        }
+        val match = try {
+            WatchPlay.matches(this)["tv|$tmdbId"]
+        } catch (e: Exception) {
+            null
+        }
+        if (match == null) {
+            action(null)
+            return
+        }
+        iptvFallbackLoading = true
+        WatchPlay.resolveSeries(this, match) { series ->
+            if (isFinishing || isDestroyed) {
+                iptvFallbackLoading = false
+                return@resolveSeries
+            }
+            if (series == null) {
+                iptvFallbackLoading = false
+                action(null)
+                return@resolveSeries
+            }
+            IptvClient.fetchSeriesInfoAsync(this, series.id) { info ->
+                iptvFallbackLoading = false
+                if (isFinishing || isDestroyed) return@fetchSeriesInfoAsync
+                if (info != null) iptvInfo = info
+                action(info)
+            }
+        }
+    }
+
+    /**
+     * Details-level fallback: TMDB details failed — build the
+     * whole season/episode structure from the IPTV side. Runs at
+     * most once per details failure (a manual Retry re-arms it).
+     */
+    private fun maybeStartIptvFallback() {
+        if (type != "tv" || iptvFallbackTried) return
+        iptvFallbackTried = true
+        if (iptvInfo == null) {
+            val match = try {
+                WatchPlay.matches(this)["tv|$tmdbId"]
+            } catch (e: Exception) {
+                null
+            }
+            if (match == null) return // no IPTV twin — the TMDB error screen stands
+        }
+        rebuild() // paints the "trying your IPTV…" line while the fetch runs
+        withIptvInfo { info ->
+            if (isFinishing || isDestroyed) return@withIptvInfo
+            if (details != null) {
+                // TMDB recovered while the fetch ran — its lists win.
+                rebuild()
+                return@withIptvInfo
+            }
+            if (info == null) {
+                rebuild()
+                return@withIptvInfo
+            }
+            val seasons = LibraryLogic.iptvSeasonInfos(info)
+            if (seasons.isEmpty()) {
+                rebuild()
+                return@withIptvInfo
+            }
+            iptvSeasons = seasons
+            for (s in seasons) {
+                seasonEpisodes[s.number] = LibraryLogic.iptvEpisodes(info, s.number)
+                iptvEpisodeSeasons.add(s.number)
+            }
+            if (selectedSeason < 0 || seasonEpisodes[selectedSeason] == null) {
+                selectedSeason = defaultSeasonFrom(seasons)
             }
             rebuild()
         }
+    }
+
+    /** Season-level fallback: TMDB details landed but one season's episodes didn't. */
+    private fun maybeFillSeasonFromIptv(season: Int) {
+        if (type != "tv" || season < 0) return
+        if (seasonEpisodes.containsKey(season)) return
+        if (iptvInfo == null) {
+            val match = try {
+                WatchPlay.matches(this)["tv|$tmdbId"]
+            } catch (e: Exception) {
+                null
+            }
+            if (match == null) return
+        }
+        withIptvInfo { info ->
+            if (isFinishing || isDestroyed || info == null) return@withIptvInfo
+            fillSeasonFromIptv(season, info)
+        }
+    }
+
+    /** Shape one IPTV season into the episode map and re-render. */
+    private fun fillSeasonFromIptv(season: Int, info: IptvLogic.SeriesInfo) {
+        val eps = LibraryLogic.iptvEpisodes(info, season)
+        if (eps.isEmpty()) {
+            rebuild()
+            return
+        }
+        // A TMDB load that landed in the meantime wins.
+        if (seasonEpisodes.containsKey(season) && season !in iptvEpisodeSeasons) return
+        seasonEpisodes[season] = eps
+        iptvEpisodeSeasons.add(season)
+        seasonError = null
+        rebuild()
     }
 
     // ------------------------------------------------------------ render
@@ -368,6 +540,7 @@ class DetailsActivity : Activity() {
                 if (LibraryLogic.tmdbRetryable(detailsError)) {
                     val retry = actionButton("Retry", "retry") {
                         detailsError = null
+                        iptvFallbackTried = false // a fresh failure may re-try the fallback
                         loadDetails()
                         rebuild()
                     }
@@ -454,13 +627,25 @@ class DetailsActivity : Activity() {
         }
         if (buttons.isNotEmpty()) box.addView(buttonRow(buttons))
 
-        // Seasons + episodes (TV only).
-        if (type == "tv" && d != null && d.seasons.isNotEmpty()) {
-            buildSeasonBlock(box, d)
-        } else if (type == "tv" && detailsError != null && inSnapshot) {
-            box.addView(
-                noteLine("Episode lists need TMDB — fix the problem above, then reopen this title.")
-            )
+        // Seasons + episodes (TV only). v2.6: the season source is
+        // the TMDB details when they landed, else the IPTV
+        // fallback's shaped list; with neither, the TMDB error
+        // stands (plus a "trying IPTV" line while that fetch runs).
+        val seasonSource: List<LibraryLogic.SeasonInfo> = when {
+            d != null && d.seasons.isNotEmpty() -> d.seasons
+            !iptvSeasons.isNullOrEmpty() -> iptvSeasons!!
+            else -> emptyList()
+        }
+        if (type == "tv" && seasonSource.isNotEmpty()) {
+            buildSeasonBlock(box, seasonSource)
+        } else if (type == "tv" && detailsError != null) {
+            if (iptvFallbackLoading) {
+                box.addView(noteLine("Trying your IPTV for the episode list…"))
+            } else if (inSnapshot) {
+                box.addView(
+                    noteLine("Episode lists need TMDB — fix the problem above, then reopen this title.")
+                )
+            }
         }
 
         // Restore focus to the same-role control after a rebuild.
@@ -480,7 +665,10 @@ class DetailsActivity : Activity() {
         return null
     }
 
-    private fun buildSeasonBlock(box: LinearLayout, d: LibraryLogic.TitleDetails) {
+    private fun buildSeasonBlock(
+        box: LinearLayout,
+        seasons: List<LibraryLogic.SeasonInfo>
+    ) {
         val header = TextView(this)
         header.text = "EPISODES"
         header.setTextColor(accent)
@@ -495,16 +683,16 @@ class DetailsActivity : Activity() {
         // Season chips.
         val chips = LinearLayout(this)
         chips.orientation = LinearLayout.HORIZONTAL
-        for (season in d.seasons) {
+        for (sInfo in seasons) {
             val chip = TextView(this)
-            chip.text = if (season.number == 0) {
+            chip.text = if (sInfo.number == 0) {
                 "Specials"
             } else {
-                "Season ${season.number}"
+                "Season ${sInfo.number}"
             }
-            chip.tag = "season:${season.number}"
+            chip.tag = "season:${sInfo.number}"
             chip.setTextColor(
-                if (season.number == selectedSeason) 0xFFFFFFFF.toInt() else 0xFFB3B3B3.toInt()
+                if (sInfo.number == selectedSeason) 0xFFFFFFFF.toInt() else 0xFFB3B3B3.toInt()
             )
             chip.textSize = 15f
             chip.setTypeface(chip.typeface, Typeface.BOLD)
@@ -515,7 +703,7 @@ class DetailsActivity : Activity() {
             val bg = android.graphics.drawable.GradientDrawable()
             bg.cornerRadius = Ui.dp(this, Design.RADIUS_CHIP).toFloat()
             bg.setColor(
-                if (season.number == selectedSeason) {
+                if (sInfo.number == selectedSeason) {
                     Design.NETFLIX_RED
                 } else {
                     Design.NETFLIX_BUTTON2_FILL
@@ -526,8 +714,8 @@ class DetailsActivity : Activity() {
             clp.setMargins(0, 0, Ui.dp(this, 8), 0)
             chip.layoutParams = clp
             chip.setOnClickListener {
-                if (selectedSeason != season.number) {
-                    selectedSeason = season.number
+                if (selectedSeason != sInfo.number) {
+                    selectedSeason = sInfo.number
                     seasonError = null
                     rebuild()
                     maybeLoadSeason()
@@ -542,6 +730,11 @@ class DetailsActivity : Activity() {
 
         val season = selectedSeason
         if (season < 0) return
+        // v2.6: say plainly when this season's list is the IPTV
+        // fallback's, not TMDB's.
+        if (season in iptvEpisodeSeasons) {
+            box.addView(noteLine("Episode list from IPTV — TMDB unreachable"))
+        }
         val episodes = seasonEpisodes[season]
         when {
             seasonLoading == season ->

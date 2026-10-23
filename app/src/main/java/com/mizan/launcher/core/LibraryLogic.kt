@@ -738,6 +738,48 @@ object LibraryLogic {
         return out.sortedBy { it.number }
     }
 
+    // ------------------------------------------------------------ IPTV episode fallback (v2.6)
+
+    /**
+     * v2.6: shape an Xtream get_series_info document into the
+     * details screen's season list — the fallback episode source
+     * when TMDB is unreachable. Seasons ascend by number; seasons
+     * with no usable episodes drop out; episode counts come from
+     * the shaped episode lists so chips and lists always agree.
+     */
+    fun iptvSeasonInfos(info: IptvLogic.SeriesInfo): List<SeasonInfo> =
+        info.seasons
+            .map { SeasonInfo(it.number, iptvEpisodeCount(it), "") }
+            .filter { it.episodeCount > 0 }
+            .sortedBy { it.number }
+
+    /** Usable episodes in one IPTV season (positive, deduped numbers). */
+    private fun iptvEpisodeCount(season: IptvLogic.Season): Int =
+        season.episodes.map { it.num }.filter { it > 0 }.distinct().size
+
+    /**
+     * v2.6: one IPTV season shaped as details [EpisodeInfo]s —
+     * ascending, deduped by episode number (a panel that lists an
+     * episode twice must not fork the SxEy watched keys), the
+     * Xtream episode title when it has one, else "Episode N".
+     * Air date / overview don't exist on the IPTV side — blank.
+     */
+    fun iptvEpisodes(info: IptvLogic.SeriesInfo, season: Int): List<EpisodeInfo> {
+        val s = info.seasons.firstOrNull { it.number == season } ?: return emptyList()
+        return s.episodes
+            .filter { it.num > 0 }
+            .distinctBy { it.num }
+            .sortedBy { it.num }
+            .map { ep ->
+                EpisodeInfo(
+                    number = ep.num,
+                    name = ep.title.trim().ifBlank { "Episode ${ep.num}" },
+                    airDate = "",
+                    overview = ""
+                )
+            }
+    }
+
     /**
      * The mark_season `episodes` extra: a CSV of episode numbers —
      * authoritative per the contract (the drain quickWatches exactly
@@ -827,9 +869,25 @@ object LibraryLogic {
         raw.isNullOrBlank() -> TmdbError.NONE
         raw == "no_key" -> TmdbError.NO_KEY
         raw == "bad_path" -> TmdbError.BAD_PATH
-        raw == "io" -> TmdbError.IO
+        // v2.6: tracker ≥1.14.5 refines transport failures to
+        // "io:<exception class>" (io:UnknownHostException, …). The
+        // colon form is the same IO bucket — prefix match, never
+        // an exact-string compare that would break on the suffix.
+        raw == "io" || raw.startsWith("io:") -> TmdbError.IO
         raw.startsWith("http_") -> TmdbError.HTTP
         else -> TmdbError.UNKNOWN
+    }
+
+    /**
+     * v2.6: the raw provider token for display — the trimmed
+     * contract error string itself ("io:UnknownHostException",
+     * "no_key", "http_401"), "" when there is no error to name.
+     * Rendered in parentheses after the human line so a report
+     * always carries the machine-readable cause.
+     */
+    fun tmdbErrorToken(raw: String?): String {
+        val t = raw?.trim().orEmpty()
+        return if (t.isEmpty() || tmdbErrorKind(t) == TmdbError.NONE) "" else t
     }
 
     /** The HTTP status inside an "http_<code>" error; 0 otherwise. */
@@ -846,35 +904,122 @@ object LibraryLogic {
         else -> false
     }
 
-    /** The user-facing line for a tmdb_get failure state. */
-    fun tmdbUserLine(raw: String?): String = when (tmdbErrorKind(raw)) {
-        TmdbError.NONE -> ""
-        TmdbError.NO_KEY ->
-            "No TMDB key yet — add your TMDB key in the tracker app, then try again."
-        TmdbError.BAD_PATH ->
-            "Something's wrong on our side (bad request path) — it's noted in Diagnostics."
-        TmdbError.HTTP ->
-            "TMDB answered with an error (HTTP ${tmdbHttpCode(raw)}). Try again in a bit."
-        TmdbError.IO ->
-            "Couldn't reach TMDB — check the TV's connection, then try again."
-        TmdbError.UNKNOWN ->
-            "TMDB lookup failed. Try again in a bit."
+    /**
+     * The user-facing line for a tmdb_get failure state. v2.6: the
+     * human text is unchanged, with the raw provider token
+     * appended in parentheses ("… then try again.
+     * (io:UnknownHostException)") wherever the caller renders it —
+     * details, search and diagnostics all flow through here or
+     * [tmdbDiagText].
+     */
+    fun tmdbUserLine(raw: String?): String {
+        val line = when (tmdbErrorKind(raw)) {
+            TmdbError.NONE -> ""
+            TmdbError.NO_KEY ->
+                "No TMDB key yet — add your TMDB key in the tracker app, then try again."
+            TmdbError.BAD_PATH ->
+                "Something's wrong on our side (bad request path) — it's noted in Diagnostics."
+            TmdbError.HTTP ->
+                "TMDB answered with an error (HTTP ${tmdbHttpCode(raw)}). Try again in a bit."
+            TmdbError.IO ->
+                "Couldn't reach TMDB — check the TV's connection, then try again."
+            TmdbError.UNKNOWN ->
+                "TMDB lookup failed. Try again in a bit."
+        }
+        if (line.isEmpty()) return ""
+        val token = tmdbErrorToken(raw)
+        return if (token.isEmpty()) line else "$line ($token)"
     }
 
     /**
      * The Settings diagnostics `tmdb:` wording for the last recorded
-     * tmdb_get outcome ([stored] = "ok", a contract error string, or
-     * null when no call has run yet on this install).
+     * TMDB outcome. [stored] = "ok" (tracker proxy), "ok_direct"
+     * (the launcher's own key), a proxy contract error string, or
+     * null when no call has run yet on this install. [direct] =
+     * the direct path's note when the proxy failed: "not_set" (no
+     * launcher key), its own error token, or blank when the direct
+     * path never had to run. The human wording stays; the raw
+     * token rides in parentheses — "network error
+     * (io:UnknownHostException)" names DNS vs TLS vs timeout at a
+     * glance; with tracker ≤1.14.4 the token is the bare "io".
+     * Neither value can contain key material by construction.
      */
-    fun tmdbDiagText(stored: String?): String = when {
-        stored == null -> "not used yet"
-        stored == "ok" -> "ok"
-        else -> when (tmdbErrorKind(stored)) {
-            TmdbError.NO_KEY -> "no key in tracker"
-            TmdbError.BAD_PATH -> "bad path (bug)"
-            TmdbError.HTTP -> "http ${tmdbHttpCode(stored)}"
-            TmdbError.IO -> "network error"
-            else -> "error: $stored"
+    fun tmdbDiagText(stored: String?, direct: String?): String {
+        if (stored == null) return "not used yet"
+        val base = when {
+            stored == "ok" -> "OK via tracker"
+            stored == "ok_direct" -> "OK via launcher key"
+            else -> when (tmdbErrorKind(stored)) {
+                TmdbError.NO_KEY -> "no key in tracker (no_key)"
+                TmdbError.BAD_PATH -> "bad path (bad_path)"
+                TmdbError.HTTP -> "http ${tmdbHttpCode(stored)} (${tmdbErrorToken(stored)})"
+                TmdbError.IO -> "network error (${tmdbErrorToken(stored)})"
+                else -> "error: $stored"
+            }
+        }
+        val d = direct?.trim().orEmpty()
+        return when {
+            d.isEmpty() -> base
+            d == "not_set" -> "$base · launcher key: not set"
+            else -> "$base · direct: $d"
         }
     }
+
+    // ------------------------------------------------------------ TMDB resolution order (v2.6)
+
+    /** The composed result of one TMDB resolution (proxy → direct). */
+    data class TmdbResolution(
+        val json: String?,
+        /** The error to surface when both paths failed — always the PROXY's. */
+        val error: String?,
+        /** True when [json] came from the launcher-key direct path. */
+        val viaDirect: Boolean,
+        /** The direct path's own error token (diagnostics only). */
+        val directError: String?
+    )
+
+    /**
+     * The TMDB resolution order, pure: (a) the tracker proxy's
+     * answer stands when it succeeded; (b) on ANY proxy error, the
+     * direct path runs — but only when a launcher key is set
+     * ([direct] is not even invoked otherwise). Both failing
+     * surfaces the PROXY error verbatim (its token is the briefed
+     * diagnostic) and keeps the direct error alongside for the
+     * diagnostics line. A throwing direct path degrades to its
+     * class-name token, exactly like a returned failure.
+     */
+    fun resolveTmdb(
+        proxyJson: String?,
+        proxyError: String?,
+        directKeySet: Boolean,
+        direct: () -> Pair<String?, String?>
+    ): TmdbResolution {
+        if (proxyJson != null) {
+            return TmdbResolution(proxyJson, null, viaDirect = false, directError = null)
+        }
+        val perr = proxyError ?: "io"
+        if (!directKeySet) {
+            return TmdbResolution(null, perr, viaDirect = false, directError = null)
+        }
+        val (dJson, dErr) = try {
+            direct()
+        } catch (e: Exception) {
+            null to tmdbDirectError(e)
+        }
+        return if (dJson != null) {
+            TmdbResolution(dJson, null, viaDirect = true, directError = null)
+        } else {
+            TmdbResolution(null, perr, viaDirect = false, directError = dErr ?: "io")
+        }
+    }
+
+    /**
+     * The direct client's transport-error token: the exception's
+     * simple class name ONLY ("io:UnknownHostException") — never
+     * the message, which can embed the request URL (and its key).
+     */
+    fun tmdbDirectError(e: Exception): String = "io:" + e.javaClass.simpleName
+
+    /** The direct client's HTTP-error token (the provider contract's shape). */
+    fun tmdbDirectHttpError(code: Int): String = "http_$code"
 }

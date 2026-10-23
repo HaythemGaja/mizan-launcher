@@ -69,6 +69,23 @@ class Prefs(ctx: Context) {
         get() = sp.getString(k("icon_shape"), "rounded") ?: "rounded"
         set(v) { sp.edit().putString(k("icon_shape"), v).apply() }
 
+    /**
+     * The video player's aspect mode (v2.6): "fit" | "stretch" |
+     * "zoom" (core/PlayerLogic owns the values + cycle). Per
+     * profile; reads normalize through PlayerLogic so a garbled
+     * stored value resolves to Fit instead of breaking the player.
+     */
+    var playerAspect: String
+        get() = com.mizan.launcher.core.PlayerLogic.normalizeAspect(
+            sp.getString(k("player_aspect"), null)
+        )
+        set(v) {
+            sp.edit().putString(
+                k("player_aspect"),
+                com.mizan.launcher.core.PlayerLogic.normalizeAspect(v)
+            ).apply()
+        }
+
     /** compact | standard | large */
     var appSize: String
         get() = sp.getString(k("app_size"), "standard") ?: "standard"
@@ -158,6 +175,20 @@ class Prefs(ctx: Context) {
     var pendingOverlay: String
         get() = sp.getString(k("pending_overlay"), "") ?: ""
         set(v) { sp.edit().putString(k("pending_overlay"), v).apply() }
+
+    // ---- TMDB API key (GLOBAL, v2.6) ----
+    /**
+     * An optional TMDB API key held by the LAUNCHER itself (the
+     * tracker proxy stays the primary path — its key never leaves
+     * the tracker; this one only powers data/TmdbDirect when the
+     * proxy fails, spec §26). HARD RULE, identical to the IPTV
+     * credentials below: the value lives only in this prefs file —
+     * never in the backup/export payload, diagnostics, logs or
+     * breadcrumbs; Settings shows set/not-set only.
+     */
+    var tmdbKey: String
+        get() = sp.getString("launcher_tmdb_key", "") ?: ""
+        set(v) { sp.edit().putString("launcher_tmdb_key", v).apply() }
 
     // ---- IPTV account (GLOBAL, v2.2) ----
     /**
