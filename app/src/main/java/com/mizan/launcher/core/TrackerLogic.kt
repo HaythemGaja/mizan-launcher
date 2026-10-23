@@ -356,6 +356,13 @@ object TrackerLogic {
         return era * 146097L + doe - 719468L
     }
 
+    /**
+     * Parse a strict yyyy-MM-dd date to epoch days; null when
+     * malformed. v2.7: public as [isoEpochDay] — core/Discovery's
+     * Coming Soon shaping applies the same strictness.
+     */
+    fun isoEpochDay(iso: String): Long? = isoDays(iso)
+
     /** Parse a strict yyyy-MM-dd date to epoch days; null when malformed. */
     private fun isoDays(iso: String): Long? {
         val parts = iso.trim().split("-")

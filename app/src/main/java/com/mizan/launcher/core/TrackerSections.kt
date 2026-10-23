@@ -3,10 +3,17 @@ package com.mizan.launcher.core
 /**
  * v2.0: per-profile Tracker-view section controls (pure).
  *
- * The Tracker home is composed of seven sections in a canonical
+ * v2.7: the section set grows to ten — Coming Soon joins after Up
+ * Next, and Trending TV / Trending Movies join after Continue
+ * Watching (the focus rows the user asked for: up next, coming
+ * soon, trending). Profiles whose stored order predates v2.7 keep
+ * their order; the new rows append at the end (normalize's
+ * missing-keys rule) until the user reorders them.
+ *
+ * The Tracker home is composed of sections in a canonical
  * order. The hero is special: it can be hidden, but when shown it is
  * ALWAYS first (it is the screen background, not a row). The other
- * six sections carry a per-profile order and a hidden set.
+ * sections carry a per-profile order and a hidden set.
  *
  * Rendering composes [compose]: hero first (when shown), then the
  * ordered sections, skipping hidden ones — and the caller additionally
@@ -23,15 +30,20 @@ object TrackerSections {
 
     const val HERO = "hero"
     const val UPNEXT = "upnext"
+    const val COMINGSOON = "comingsoon"
     const val CONTINUE = "continue"
+    const val TRENDINGTV = "trendingtv"
+    const val TRENDINGMOVIES = "trendingmovies"
     const val MOVIENIGHT = "movienight"
     const val FORYOU = "foryou"
     const val FAVORITES = "favorites"
     const val ALLAPPS = "allapps"
 
-    /** Every section, in the order a fresh profile sees them. */
-    val CANONICAL: List<String> =
-        listOf(HERO, UPNEXT, CONTINUE, MOVIENIGHT, FORYOU, FAVORITES, ALLAPPS)
+    /** Every section, in the order a fresh profile sees them (v2.7 default). */
+    val CANONICAL: List<String> = listOf(
+        HERO, UPNEXT, COMINGSOON, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
+        MOVIENIGHT, FORYOU, FAVORITES, ALLAPPS
+    )
 
     /** The reorderable rows (everything except the hero). */
     val ROWS: List<String> = CANONICAL.drop(1)
@@ -44,7 +56,10 @@ object TrackerSections {
     fun label(key: String): String = when (key) {
         HERO -> "Hero"
         UPNEXT -> "Up Next"
+        COMINGSOON -> "Coming Soon"
         CONTINUE -> "Continue Watching"
+        TRENDINGTV -> "Trending TV"
+        TRENDINGMOVIES -> "Trending Movies"
         MOVIENIGHT -> "Movie Night"
         FORYOU -> "For You"
         FAVORITES -> "Favorites"

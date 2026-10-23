@@ -57,6 +57,7 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/IptvLocks.kt \
   app/src/main/java/com/mizan/launcher/core/IptvStatus.kt \
   app/src/main/java/com/mizan/launcher/core/WatchMatch.kt \
+  app/src/main/java/com/mizan/launcher/core/Discovery.kt \
   app/src/main/java/com/mizan/launcher/core/Diag.kt \
   app/src/main/java/com/mizan/launcher/core/PlayerLogic.kt \
   sim/SimMain.kt \
@@ -215,6 +216,24 @@ export JAVA_OPTS
   echo "to its safe shell, and source checks prove the"
   echo "iptvbrowser / iptvguide / iptvhome guards are wired in."
   echo "All v2.3.1 checks carry over."
+  echo
+  echo "Note (v2.7): three user directives (spec S27). (1) Watch"
+  echo "matching adopts the IPTV web player's method — squash"
+  echo "(lowercase, strip non-[a-z0-9]), exact tier, contains tier"
+  echo "over once-keyed candidates; section 38's normalization /"
+  echo "keyOf / contains checks are RE-PINNED to the repo semantics"
+  echo "(the repo method wins where they differ — e.g. 'Preacher'"
+  echo "now matches 'Reacher'), and section 45 pins the repo"
+  echo "fixtures (exact-after-squash, suffix + quality-tag noise,"
+  echo "contains ordering, year deprioritization). (2) Focus rows:"
+  echo "Coming Soon + Trending TV/Movies join TrackerSections"
+  echo "(section 35's order-sensitive checks re-pinned to the new"
+  echo "default order). (3) Self-reliance: the launcher computes"
+  echo "Coming Soon / Trending / For You itself (the tracker"
+  echo "computeForYou ported to core/Discovery — seeds, affinity,"
+  echo "recommendations + discover, pick codec), tracker snapshots"
+  echo "remain the fallback, and diagnostics gains a discovery:"
+  echo "line. New section 45. All other checks carry over."
   echo
   echo '```'
   java -jar sim/sim.jar

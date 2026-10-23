@@ -20,6 +20,13 @@ import java.net.URLEncoder
  * "io:<exception class>"). 10 s timeouts. Worker-thread ONLY —
  * this does real network I/O inline.
  *
+ * v2.7: the direct allowlist additionally accepts discover/ —
+ * the tracker's proxy allowlist has no discover/ prefix (it
+ * answers bad_path, and the funnel's fall-through lands here),
+ * and the launcher's own For You engine (core/Discovery) needs
+ * /discover for its genre step. Proxy-first semantics are
+ * unchanged for every other path.
+ *
  * Key hygiene (the IPTV-credential rule): the key is read from
  * prefs by the caller, used to build the request URL in memory,
  * and NEVER logged, returned, or persisted anywhere else — error
@@ -35,7 +42,8 @@ object TmdbDirect {
         val p = path.trim().removePrefix("/")
         if (p.contains("://") || p.contains("..") ||
             !(p.startsWith("tv/") || p.startsWith("movie/") ||
-                p.startsWith("search/") || p.startsWith("trending/"))
+                p.startsWith("search/") || p.startsWith("trending/") ||
+                p.startsWith("discover/"))
         ) {
             return null to "bad_path"
         }
@@ -51,7 +59,7 @@ object TmdbDirect {
                 readTimeout = 10_000
                 requestMethod = "GET"
                 setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "Sreeb/2.6")
+                setRequestProperty("User-Agent", "Sreeb/2.7")
             }
             val code = conn.responseCode
             if (code != 200) {

@@ -1490,6 +1490,18 @@ class SettingsActivity : Activity() {
                     com.mizan.launcher.data.WatchPlay.stats(this@SettingsActivity)
                 )
             )
+            // v2.7: the discovery: line — which engine supplies
+            // Coming Soon / Trending / For You and how much each
+            // holds. The counts are persisted by
+            // data/DiscoveryData's worker; composing diagnostics
+            // never triggers a compute, and no key material or
+            // title ever appears here.
+            val dDiag = com.mizan.launcher.data.DiscoveryData.diagState(this@SettingsActivity)
+            append(
+                "\ndiscovery: " + com.mizan.launcher.core.Discovery.diagText(
+                    dDiag.first, dDiag.second.first, dDiag.second.second, dDiag.third
+                )
+            )
             val sbCfg = layout.statusBar
             append("\nQuick tiles: master ${if (sbCfg.showQuickTiles) "on" else "off"}" +
                 ", wifi ${onOff(sbCfg.showTileWifi)}, bt ${onOff(sbCfg.showTileBluetooth)}" +

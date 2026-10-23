@@ -48,6 +48,7 @@ import com.mizan.launcher.core.IptvStore
 import com.mizan.launcher.core.IptvStream
 import com.mizan.launcher.core.IptvM3uStream
 import com.mizan.launcher.core.WatchMatch
+import com.mizan.launcher.core.Discovery
 import com.mizan.launcher.core.BreadcrumbRing
 import com.mizan.launcher.core.DiagLogs
 import com.mizan.launcher.core.DiagWatchdog
@@ -1822,19 +1823,24 @@ fun main() {
         check("sections: a hidden hero drops only the hero",
             ts.compose(noHero) { true } == ts.CANONICAL.drop(1))
         val moved = ts.move(defCfg, ts.FORYOU, -1)
+        // RE-PINNED in v2.7: the default order intentionally
+        // changed (directive: comingsoon after upnext, trending
+        // after continue) — the swap happens over the longer list.
         check("sections: move up swaps with the previous row",
-            moved.order == listOf("upnext", "continue", "foryou", "movienight", "favorites", "allapps"))
+            moved.order == listOf("upnext", "comingsoon", "continue", "trendingtv", "trendingmovies", "foryou", "movienight", "favorites", "allapps"))
         check("sections: moves at the edges and for the hero are no-ops",
             ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
                 ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
                 ts.move(defCfg, ts.HERO, 1) == defCfg)
         val reordered = ts.normalize(emptySet(), listOf("allapps", "upnext"))
+        // RE-PINNED in v2.7 (new sections in the canonical tail).
         check("sections: compose follows the configured order, hero first",
             ts.compose(reordered) { true } ==
-                listOf("hero", "allapps", "upnext", "continue", "movienight", "foryou", "favorites"))
+                listOf("hero", "allapps", "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies", "movienight", "foryou", "favorites"))
+        // RE-PINNED in v2.7 (new sections compose when available).
         check("sections: hidden + data-empty sections are both skipped",
             ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.MOVIENIGHT } ==
-                listOf("hero", "continue", "foryou", "favorites", "allapps"))
+                listOf("hero", "comingsoon", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "allapps"))
         check("sections: unknown keys are dropped by normalize",
             ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
                 ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
@@ -2663,13 +2669,17 @@ fun main() {
     // ---------- (38) v2.3 Watch: title matching, episode resolution, match cache, auto-mark, UI model ----------
     run {
         
-        // Normalization: punctuation, articles, case, whitespace.
-        check("watch: normalization strips punctuation/articles/case and collapses space",
-            WatchMatch.normalizeKey("The Office!") == "office" &&
-                WatchMatch.normalizeKey("  BREAKING   BAD ") == "breaking bad" &&
-                WatchMatch.normalizeKey("A  Few   Good Men") == "few good men" &&
-                WatchMatch.normalizeKey("An American Tail") == "american tail" &&
-                WatchMatch.normalizeKey("Grey's Anatomy") == "grey s anatomy")
+        // Normalization — RE-PINNED in v2.7: the repo method wins
+        // (user directive). The key is the SQUASH: lowercase, every
+        // non-[a-z0-9] character stripped — articles, spaces and
+        // punctuation all vanish into one token.
+        check("watch: normalization is the repo squash (articles/spaces/punctuation vanish)",
+            WatchMatch.normalizeKey("The Office!") == "theoffice" &&
+                WatchMatch.normalizeKey("  BREAKING   BAD ") == "breakingbad" &&
+                WatchMatch.normalizeKey("A  Few   Good Men") == "afewgoodmen" &&
+                WatchMatch.normalizeKey("An American Tail") == "anamericantail" &&
+                WatchMatch.normalizeKey("Grey's Anatomy") == "greysanatomy" &&
+                WatchMatch.squash("Dune 2021 1080p") == "dune20211080p")
         // Year extraction: bracketed, trailing, leading; mid-title numbers stay.
         check("watch: splitYear takes bracketed / trailing / leading years only",
             WatchMatch.splitYear("Reacher (2022)") == Pair("Reacher", 2022) &&
@@ -2677,9 +2687,12 @@ fun main() {
                 WatchMatch.splitYear("2021 Dune").second == 2021 &&
                 WatchMatch.splitYear("Apollo 13").second == 0 &&
                 WatchMatch.splitYear("The 100").second == 0)
-        check("watch: keyOf prefers a known year over the title token",
-            WatchMatch.keyOf("Dune (1984)", 2021) == Pair("dune", 2021) &&
-                WatchMatch.keyOf("Dune (1984)", 0) == Pair("dune", 1984) &&
+        // RE-PINNED in v2.7 (repo method wins): the key no longer
+        // strips the year token — "Dune (1984)" squashes whole;
+        // the year rides alongside for in-tier ordering only.
+        check("watch: keyOf prefers a known year over the title token (key is the whole squash)",
+            WatchMatch.keyOf("Dune (1984)", 2021) == Pair("dune1984", 2021) &&
+                WatchMatch.keyOf("Dune (1984)", 0) == Pair("dune1984", 1984) &&
                 WatchMatch.keyOf("Dune", 0) == Pair("dune", 0))
 
         val office = WatchMatch.TrackerTitle(2316, "tv", "The Office", 2005)
@@ -2706,12 +2719,17 @@ fun main() {
                 WatchMatch.TrackerTitle(4, "movie", "Dune", 2000),
                 listOf(WatchMatch.Candidate(20, "Dune", 1984))
             )?.let { it.iptvId == 20L && !it.exact && it.possible } == true)
-        check("watch: fuzzy tier (word-boundary prefix) matches but is only possible",
+        // RE-PINNED in v2.7 (repo method wins): the old fuzzy tier
+        // is now the CONTAINS tier. This fixture still flags
+        // possible — not for the tier, but for the YEAR CONFLICT
+        // (1966 vs 1987). A single-distinct contains hit with no
+        // year conflict is a plain match (§45 pins that).
+        check("watch: contains tier matches a decorated name; a year conflict flags possible",
             WatchMatch.matchOne(
                 WatchMatch.TrackerTitle(5, "tv", "Star Trek", 1966),
                 listOf(WatchMatch.Candidate(30, "Star Trek: The Next Generation", 1987))
             )?.let { it.iptvId == 30L && !it.exact && it.possible } == true)
-        check("watch: exact tier beats the fuzzy tier outright",
+        check("watch: exact tier beats the contains tier outright",
             WatchMatch.matchOne(
                 WatchMatch.TrackerTitle(6, "tv", "Star Trek", 1966),
                 listOf(
@@ -2719,11 +2737,16 @@ fun main() {
                     WatchMatch.Candidate(31, "Star Trek", 1966)
                 )
             )?.let { it.iptvId == 31L && it.exact } == true)
-        check("watch: no close title -> no match (never a forced guess)",
+        // RE-PINNED in v2.7 (repo method wins, user directive):
+        // the repo's contains tier is crude by design — "preacher"
+        // DOES contain "reacher", so this now MATCHES where the
+        // old word-boundary fuzzy tier refused. The empty-catalogue
+        // case still yields no match.
+        check("watch: repo contains tier matches 'Preacher' for 'Reacher' (crude by design); empty catalogue -> no match",
             WatchMatch.matchOne(
                 WatchMatch.TrackerTitle(7, "tv", "Reacher", 2022),
                 listOf(WatchMatch.Candidate(40, "Preacher", 2016), WatchMatch.Candidate(41, "Teachers", 2016))
-            ) == null &&
+            )?.let { it.iptvId == 40L && !it.exact && it.possible } == true &&
                 WatchMatch.matchOne(office, emptyList()) == null)
         check("watch: matchAll keys by tmdbId and skips unmatched",
             WatchMatch.matchAll(listOf(office, WatchMatch.TrackerTitle(8, "tv", "Reacher", 2022)), officeCands)
@@ -3152,169 +3175,16 @@ fun main() {
                 settingsSrc.contains("appVersionLabel()"))
     }
 
-    // ---------- (42) v2.5: ANR hunt — watchdog, breadcrumbs, log codec, keyed matching ----------
-    run {
-        // --- watchdog staleness on a fake clock (core/DiagWatchdog).
-        check("diag: a heartbeat 3.9 s old is fresh",
-            !DiagWatchdog.isStale(1_000L, 4_900L))
-        check("diag: a heartbeat exactly at the threshold is not yet stale (strictly past it is)",
-            !DiagWatchdog.isStale(1_000L, 5_000L) &&
-                DiagWatchdog.isStale(1_000L, 5_001L))
-        check("diag: a heartbeat a minute old is stale",
-            DiagWatchdog.isStale(1_000L, 61_000L))
-        check("diag: a custom threshold is honoured",
-            !DiagWatchdog.isStale(0L, 1_000L, 1_000L) &&
-                DiagWatchdog.isStale(0L, 1_001L, 1_000L))
-        check("diag: no heartbeat yet reads stale once past the threshold",
-            !DiagWatchdog.isStale(0L, DiagWatchdog.STALE_MS) &&
-                DiagWatchdog.isStale(0L, DiagWatchdog.STALE_MS + 1))
-
-        // --- breadcrumb ring (core/BreadcrumbRing).
-        val ring = BreadcrumbRing()
-        check("crumbs: an empty ring snapshots empty", ring.snapshot().isEmpty())
-        ring.add(0L, "home opened")
-        ring.add(61_000L, "settings opened")
-        check("crumbs: snapshot is oldest-first",
-            ring.snapshot().map { it.second } == listOf("home opened", "settings opened"))
-        val capped = BreadcrumbRing(3)
-        capped.add(0L, "1"); capped.add(0L, "2"); capped.add(0L, "3"); capped.add(0L, "4")
-        check("crumbs: the ring keeps only the newest N",
-            capped.snapshot().map { it.second } == listOf("2", "3", "4"))
-        val fmt = BreadcrumbRing()
-        fmt.add(3_661_000L, "opened")
-        check("crumbs: lines render an HH:mm:ss clock + the label",
-            fmt.lines().size == 1 &&
-                Regex("^\\d{2}:\\d{2}:\\d{2} opened$").matches(fmt.lines()[0]))
-        val restored = BreadcrumbRing(3)
-        restored.restore(capped.encode())
-        check("crumbs: the persist/restore round-trip is exact",
-            restored.snapshot() == capped.snapshot())
-        val small = BreadcrumbRing(2)
-        small.restore("0|x\n0|y\n0|z")
-        check("crumbs: restore over capacity keeps the newest",
-            small.snapshot().map { it.second } == listOf("y", "z"))
-        val junk = BreadcrumbRing()
-        junk.restore("garbage\n5|\n7|ok")
-        check("crumbs: restore skips malformed lines",
-            junk.snapshot().map { it.second } == listOf("ok"))
-
-        // --- bounded event-log codec + tail rendering (core/DiagLogs).
-        var logText = ""
-        logText = DiagLogs.appendEvent(logText, "event one\nsecond line", 3)
-        logText = DiagLogs.appendEvent(logText, "event two", 3)
-        check("diaglog: events accumulate oldest-first",
-            DiagLogs.eventCount(logText) == 2 &&
-                logText.indexOf("event one") < logText.indexOf("event two"))
-        logText = DiagLogs.appendEvent(logText, "event three", 3)
-        logText = DiagLogs.appendEvent(logText, "event four", 3)
-        check("diaglog: the event cap keeps the newest events",
-            DiagLogs.eventCount(logText) == 3 &&
-                !logText.contains("event one") && logText.contains("event four"))
-        check("diaglog: tailLines returns the last lines (what diagnostics shows)",
-            DiagLogs.tailLines(logText, 2) ==
-                DiagLogs.EVENT_SEPARATOR + "\nevent four")
-        check("diaglog: a full tail returns every line",
-            DiagLogs.tailLines(logText, 500).split("\n").size ==
-                logText.trimEnd('\n').split("\n").size)
-        check("diaglog: an empty log tails empty",
-            DiagLogs.tailLines("", 10).isEmpty())
-        val huge = DiagLogs.appendEvent("", "x".repeat(500), 3, maxChars = 100)
-        check("diaglog: the char cap never truncates the newest event",
-            huge.contains("x".repeat(500)) && DiagLogs.eventCount(huge) == 1)
-        val squeezed = DiagLogs.appendEvent(huge, "small", 3, maxChars = 100)
-        check("diaglog: an oversized old event is dropped to fit the cap",
-            !squeezed.contains("xxx") && squeezed.contains("small"))
-
-        // --- keyed matching equivalence (the v2.5 WatchMatch rewrite).
-        // matchAll (once-built exact-key index) must return exactly
-        // what the per-title path returns — the index is an
-        // optimization, never a semantics change (§38 pins the
-        // semantics themselves).
-        val kinds = listOf(
-            "The Matrix", "Dark", "Dark Matter", "Severance", "The Office",
-            "Breaking Bad", "Amélie", "1917", "Dune", "Dune Part Two",
-            "Alien", "Aliens", "The Bear", "Shogun", "True Detective",
-            "Fargo", "Chernobyl", "Andor", "The Last of Us", "Fallout"
-        )
-        val candPool = ArrayList<WatchMatch.Candidate>()
-        var cid = 1L
-        for (i in 0 until 410) {
-            val base = kinds[i % kinds.size]
-            val year = if (i % 3 == 0) 1990 + (i % 30) else 0
-            candPool.add(
-                WatchMatch.Candidate(
-                    cid++, (base + if (i % 5 == 0) " Extended" else "").trim(), year
-                )
-            )
-        }
-        val titlePool = kinds.mapIndexed { i, n ->
-            WatchMatch.TrackerTitle(
-                (1000 + i).toLong(), if (i % 2 == 0) "tv" else "movie", n,
-                if (i % 4 == 0) 1990 + (i % 30) else 0
-            )
-        }
-        val viaAll = WatchMatch.matchAll(titlePool, candPool)
-        val viaOne = titlePool.mapNotNull { t ->
-            WatchMatch.matchOne(t, candPool)?.let { t.tmdbId to it }
-        }.toMap()
-        check("watchkey: keyed matchAll == per-title matchOne over ${candPool.size} candidates",
-            viaAll == viaOne)
-        check("watchkey: the fixture actually matches (the equivalence is not vacuous)",
-            viaAll.size >= 10)
-        val yearPick = WatchMatch.matchAll(
-            listOf(WatchMatch.TrackerTitle(7L, "movie", "Dune", 2021)),
-            listOf(
-                WatchMatch.Candidate(1L, "Dune", 1984),
-                WatchMatch.Candidate(2L, "Dune", 2021)
-            )
-        )
-        check("watchkey: the index path keeps the year tie-break",
-            yearPick[7L]?.iptvId == 2L)
-        val ambiguous = WatchMatch.matchAll(
-            listOf(WatchMatch.TrackerTitle(8L, "movie", "Dune", 0)),
-            listOf(
-                WatchMatch.Candidate(3L, "Dune", 1984),
-                WatchMatch.Candidate(4L, "Dune", 2021)
-            )
-        )
-        check("watchkey: the index path keeps ambiguity -> first candidate + possible",
-            ambiguous[8L]?.iptvId == 3L &&
-                ambiguous[8L]?.possible == true)
-
-        // --- source checks: the v2.5 wiring is really in the app.
-        fun src(path: String): String = try {
-            java.io.File(path).readText()
-        } catch (e: Exception) {
-            ""
-        }
-        val watchPlaySrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
-        check("v25src: Watch matching recomputes on the mizan-watch-match worker",
-            watchPlaySrc.contains("mizan-watch-match"))
-        check("v25src: WatchPlay never calls the deleted main-thread tuplesAsync",
-            watchPlaySrc.isNotEmpty() && !watchPlaySrc.contains("tuplesAsync("))
-        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
-        check("v25src: tuples are a worker-only blocking read now (tuplesBlocking)",
-            clientSrc.contains("fun tuplesBlocking"))
-        check("v25src: the legacy purge lands via a single commit()",
-            clientSrc.contains("commit()"))
-        val manifest = src("app/src/main/AndroidManifest.xml")
-        check("v25src: the manifest bootstraps the App class (DiagLog install)",
-            manifest.contains("android:name=\".App\""))
-        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
-        check("v25src: Settings offers Copy diagnostics with the freeze/crash tails",
-            settingsSrc.contains("Copy diagnostics") &&
-                settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
-        val gradleSrc = src("app/build.gradle.kts")
-        check("v25src: the app version is 2.6 / code 19 (bumped by v2.6)",
-            gradleSrc.contains("versionName = \"2.6\"") &&
-                gradleSrc.contains("versionCode = 19"))
-    }
+    section42()  // extracted in v2.7: main() hit the JVM 64 KB method limit
 
     // ---------- (43) v2.6: player control bar logic, TMDB error tokens, IPTV episode shaping ----------
     section43()  // extracted: main() hit the JVM 64 KB method limit
 
     // ---------- (44) v2.6 amendment: launcher TMDB key + direct path ----------
     section44()
+
+    // ---------- (45) v2.7: repo-method matching, focus rows, launcher-computed discovery ----------
+    section45()
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
@@ -3589,5 +3459,433 @@ fun section44() {
         check("v26src: the funnel composes proxy -> direct via resolveTmdb and records both notes",
             clientSrc.contains("resolveTmdb") && clientSrc.contains("ok_direct") &&
                 clientSrc.contains("lastTmdbDirect") && clientSrc.contains("TmdbDirect.getBlocking"))
+    }
+}
+
+/** v2.7 checks — top-level like §43/§44 (main() is at the JVM method-size limit). */
+fun section45() {
+    run {
+        val wm = WatchMatch
+        val d = Discovery
+
+        // --- directive 1: the repo method, fixture-pinned ---
+        check("repo: exact-after-squash ('Grey's Anatomy' vs 'Greys Anatomy')",
+            wm.matchOne(
+                WatchMatch.TrackerTitle(1, "tv", "Grey's Anatomy", 2005),
+                listOf(WatchMatch.Candidate(5, "Greys Anatomy", 2005))
+            )?.let { it.iptvId == 5L && it.exact } == true)
+        check("repo: catalogue suffix noise matches via contains ('The Office' vs 'The Office (US)')",
+            wm.matchOne(
+                WatchMatch.TrackerTitle(2, "tv", "The Office", 2005),
+                listOf(WatchMatch.Candidate(6, "The Office (US)", 2005))
+            )?.let { it.iptvId == 6L && !it.exact && !it.possible } == true)
+        check("repo: quality-tag noise matches via contains ('Show Name 2023 1080p')",
+            wm.matchOne(
+                WatchMatch.TrackerTitle(3, "tv", "Show Name", 0),
+                listOf(WatchMatch.Candidate(7, "Show Name 2023 1080p", 0))
+            )?.let { it.iptvId == 7L && !it.exact && !it.possible } == true)
+        check("repo: the contains tier picks the SHORTEST candidate; multiple distinct titles flag possible",
+            wm.matchOne(
+                WatchMatch.TrackerTitle(4, "tv", "Star Trek", 0),
+                listOf(
+                    WatchMatch.Candidate(8, "Star Trek: The Next Generation", 0),
+                    WatchMatch.Candidate(9, "Star Trek Discovery", 0)
+                )
+            )?.let { it.iptvId == 9L && it.possible && !it.exact } == true)
+        check("repo: a year disagreement deprioritizes inside the contains tier (beats shorter)",
+            wm.matchOne(
+                WatchMatch.TrackerTitle(5, "movie", "Dune", 2021),
+                listOf(
+                    WatchMatch.Candidate(10, "Dune 1984 Cut", 1984),
+                    WatchMatch.Candidate(11, "Dune Part Two 2021", 2021)
+                )
+            )?.iptvId == 11L)
+        check("repo: catalogue order breaks equal-length contains ties",
+            wm.matchOne(
+                WatchMatch.TrackerTitle(6, "tv", "Dark", 0),
+                listOf(WatchMatch.Candidate(12, "Dark X1", 0), WatchMatch.Candidate(13, "Dark Y2", 0))
+            )?.iptvId == 12L)
+        val repoPool = listOf(
+            WatchMatch.Candidate(20, "Dark", 0), WatchMatch.Candidate(21, "Dark Matter", 0),
+            WatchMatch.Candidate(22, "Dark Matter Extended", 0), WatchMatch.Candidate(23, "The Dark", 0),
+            WatchMatch.Candidate(24, "Dune", 1984), WatchMatch.Candidate(25, "Dune", 2021),
+            WatchMatch.Candidate(26, "Dune 2021 1080p", 0)
+        )
+        val repoTitles = listOf(
+            WatchMatch.TrackerTitle(30, "tv", "Dark", 0), WatchMatch.TrackerTitle(31, "tv", "Dark Matter", 0),
+            WatchMatch.TrackerTitle(32, "movie", "Dune", 2021), WatchMatch.TrackerTitle(33, "movie", "Dune", 0),
+            WatchMatch.TrackerTitle(34, "tv", "Missing Show", 0)
+        )
+        check("repo: keyed matchAll == per-title matchOne under the repo core",
+            wm.matchAll(repoTitles, repoPool) ==
+                repoTitles.mapNotNull { t -> wm.matchOne(t, repoPool)?.let { t.tmdbId to it } }.toMap())
+        check("repo: 'Dune 2021 1080p' contains-matches the yearless 'Dune'; 'Missing Show' stays unmatched",
+            wm.matchOne(
+                WatchMatch.TrackerTitle(35, "movie", "Dune", 0),
+                listOf(WatchMatch.Candidate(26, "Dune 2021 1080p", 0))
+            )?.iptvId == 26L &&
+                !wm.matchAll(repoTitles, repoPool).containsKey(34))
+
+        // --- directive 2/3: trending parse + badge flagging ---
+        val trendJson = """{"results":[
+          {"id":11,"media_type":"tv","name":"Severance","poster_path":"/s.jpg","backdrop_path":"/sb.jpg","vote_average":8.4,"first_air_date":"2022-02-18"},
+          {"id":22,"media_type":"movie","title":"Dune: Part Two","poster_path":"/d.jpg","vote_average":8.1,"release_date":"2024-03-01"},
+          {"id":33,"media_type":"person","name":"Some Actor"},
+          {"id":44,"media_type":"tv","name":"","poster_path":"/x.jpg"}]}"""
+        val all = d.parseTrending(trendJson, null)
+        check("discovery: trending/all parses tv+movie, drops people + blank titles, keeps TMDB order",
+            all.size == 2 && all[0].type == "tv" && all[0].title == "Severance" &&
+                all[0].year == "2022" && all[1].type == "movie" && all[1].year == "2024")
+        check("discovery: per-type trending forces the type when media_type is absent",
+            d.parseTrending(
+                """{"results":[{"id":55,"name":"Andor","poster_path":"/a.jpg","first_air_date":"2022-09-21"}]}""",
+                "tv"
+            ).let { it.size == 1 && it[0].type == "tv" && it[0].id == 55L })
+        val trendMatches = wm.matchAll(
+            listOf(WatchMatch.TrackerTitle(1399, "tv", "Shogun", 2024)),
+            listOf(WatchMatch.Candidate(50, "Shogun 2024", 2024), WatchMatch.Candidate(51, "Other", 0))
+        )
+        check("discovery: a trending title flags the ▶ IPTV badge only when the catalogue matches",
+            wm.cardBadge(trendMatches.containsKey(1399)) == "▶ IPTV" &&
+                wm.cardBadge(trendMatches.containsKey(2400)) == null)
+
+        // --- details facts ---
+        val tvFactsJson = """{"id":1396,"name":"Breaking Bad","poster_path":"/bb.jpg","vote_average":8.9,
+           "genres":[{"id":18,"name":"Drama"},{"id":80,"name":"Crime"}],
+           "next_episode_to_air":{"air_date":"2026-11-05","season_number":6,"episode_number":1}}"""
+        check("discovery: tv facts parse (next episode + genres + rating)",
+            d.parseTvFacts(tvFactsJson)?.let {
+                it.nextDateIso == "2026-11-05" && it.nextSeason == 6 && it.nextEpisode == 1 &&
+                    it.genreIds == listOf(18, 80) && it.voteAverage == 8.9
+            } == true)
+        check("discovery: tv facts — a null next_episode_to_air reads blank (no guessing from seasons)",
+            d.parseTvFacts("""{"id":1,"name":"X","next_episode_to_air":null}""")?.nextDateIso == "")
+        check("discovery: movie facts parse (release date + genres)",
+            d.parseMovieFacts(
+                """{"id":9,"title":"Future Film","release_date":"2027-01-15","genres":[{"id":878}]}"""
+            )?.let { it.releaseDate == "2027-01-15" && it.genreIds == listOf(878) } == true)
+
+        // --- coming soon shaping ---
+        val today = "2026-10-23"
+        val soon = d.shapeComingSoon(
+            listOf(
+                Discovery.ShowSoon(1, "Future Show", "/f.jpg", "2026-11-05", 6, 1),
+                Discovery.ShowSoon(2, "Today Show", "/t.jpg", "2026-10-23", 1, 4),
+                Discovery.ShowSoon(3, "Past Show", "/p.jpg", "2026-10-01", 2, 2),
+                Discovery.ShowSoon(4, "No Date Show", "/n.jpg", "", 0, 0),
+                Discovery.ShowSoon(5, "Bad Date Show", "/b.jpg", "2026-02-30", 1, 1)
+            ),
+            listOf(
+                Discovery.MovieSoon(6, "Future Film", "/ff.jpg", "2027-01-15"),
+                Discovery.MovieSoon(7, "Past Film", "/pf.jpg", "2020-05-05"),
+                Discovery.MovieSoon(8, "Garbage Film", "/gf.jpg", "not-a-date")
+            ),
+            today
+        )
+        check("soon: future-only, strictly parsed (Feb 30 rejected), sorted ascending",
+            soon.map { it.title } == listOf("Today Show", "Future Show", "Future Film"))
+        check("soon: shows carry episode coordinates, movies none",
+            soon[0].sub == "S1 E4" && soon[2].sub == "")
+        check("soon: chips — today / tomorrow / in N days / the bare date; past + unparseable read blank",
+            d.soonChip("2026-10-23", today) == "today" &&
+                d.soonChip("2026-10-24", today) == "tomorrow" &&
+                d.soonChip("2026-11-04", today) == "in 12 days" &&
+                d.soonChip("2027-01-15", today) == "Jan 15" &&
+                d.soonChip("2026-10-22", today) == "" &&
+                d.soonChip("2026-02-30", today) == "")
+        check("soon: the strict parser round-trips real dates and rejects invented ones",
+            d.strictEpochDay("2026-02-28") != null && d.strictEpochDay("2026-02-30") == null &&
+                d.civilIso(d.strictEpochDay("2026-10-23")!!) == "2026-10-23")
+        val manySoon = (1..30).map { Discovery.ShowSoon(it.toLong(), "Show $it", "", "2026-12-01", 1, 1) }
+        check("soon: the row caps at 20",
+            d.shapeComingSoon(manySoon, emptyList(), today).size == d.SOON_CAP && d.SOON_CAP == 20)
+
+        // --- for you engine (the tracker computeForYou, ported) ---
+        check("foryou: seed weights follow the tracker (tv completion curve, movie watched flag)",
+            d.tvSeedWeight(0) == 0.5 && d.tvSeedWeight(10) == 1.0 &&
+                d.tvSeedWeight(20) == 1.5 && d.movieSeedWeight(true) == 1.0 &&
+                d.movieSeedWeight(false) == 0.4)
+        val seedInputs = listOf(
+            Discovery.SeedInput("tv", 1, "Heavy Show", 1.5, 9.0, listOf(18)),
+            Discovery.SeedInput("tv", 2, "Light Show", 0.5, 8.0, listOf(35)),
+            Discovery.SeedInput("movie", 3, "Unwatched Film", 0.4, 9.5, listOf(28)),
+            Discovery.SeedInput("movie", 4, "Watched Film", 1.0, 7.0, listOf(18, 80))
+        )
+        check("foryou: seeds are the top titles by weight x rating (weight gate > 0.4)",
+            d.pickSeeds(seedInputs).map { it.id } == listOf(1L, 4L, 2L))
+        val aff = d.affinity(seedInputs)
+        check("foryou: affinity spreads each title's weight over its genres; top genres ranked",
+            aff[18] == 2.5 && aff[35] == 0.5 && d.topGenres(aff, 2) == listOf(18, 80))
+        val recs = d.recPicks(
+            Discovery.SeedInput("tv", 1, "Heavy Show", 1.5, 9.0, listOf(18)),
+            listOf(
+                Discovery.FyCandidate(101, "Kindred", "/k.jpg", 8.0, listOf(18, 53)),
+                Discovery.FyCandidate(102, "Posterless", "", 9.9, listOf(18)),
+                Discovery.FyCandidate(103, "Third", "/t.jpg", 7.0, listOf(9999))
+            )
+        )
+        check("foryou: recommendation picks — poster required, reason names the seed, score = weight*10 + rating",
+            recs.size == 2 && recs[0].id == 101L &&
+                recs[0].reason == "Because you watched Heavy Show" &&
+                recs[0].whyGenres == listOf("Drama", "Thriller") &&
+                recs[0].score == 23.0 &&
+                recs[1].whyGenres == listOf("Similar to Heavy Show"))
+        val disc = d.discoverPicks(
+            "tv",
+            listOf(
+                Discovery.FyCandidate(201, "Rep Pick", "/r.jpg", 7.5, listOf(18)),
+                Discovery.FyCandidate(202, "Genre Pick", "/g.jpg", 7.0, listOf(35))
+            ),
+            listOf(18, 80, 35), aff
+        ) { gid -> if (gid == 18) "Heavy Show" else null }
+        check("foryou: discover picks — representative-title reason, affinity x2 scoring",
+            disc.size == 2 && disc[0].reason == "Because you watched Heavy Show" &&
+                disc[0].score == 12.5 &&
+                disc[1].reason == "Matches your taste: Comedy")
+        val merged = d.mergePicks(listOf(recs, disc), excludeKeys = setOf("tv|101"), cap = 20)
+        check("foryou: merge dedupes, excludes tracked, sorts by score",
+            merged.none { it.id == 101L } && merged.map { it.id } == listOf(103L, 201L, 202L))
+        check("foryou: merge cap applies",
+            d.mergePicks(listOf(recs, disc), emptySet(), cap = 2).size == 2)
+        check("foryou: the discover path mirrors the tracker engine's params",
+            d.discoverPath("tv", listOf(18, 80)) ==
+                "discover/tv?with_genres=18,80&sort_by=vote_average.desc&vote_average.gte=6.5&vote_count.gte=30&include_adult=false&page=1" &&
+                d.recommendationsPath(Discovery.SeedInput("movie", 42, "X", 1.0, 7.0, emptyList())) ==
+                "movie/42/recommendations")
+        val roundTrip = TrackerLogic.parseForYou(d.encodePicks(recs))
+        check("foryou: computed picks encode in the /foryou contract shape (parseForYou reads them back)",
+            roundTrip.size == recs.size && roundTrip[0].title == "Kindred" &&
+                roundTrip[0].whyGenres == listOf("Drama", "Thriller") &&
+                roundTrip[0].reason == "Because you watched Heavy Show")
+
+        // --- iptv trending: first-episode resolution ---
+        val seriesInfo = IptvLogic.parseSeriesInfo(
+            """{"info":{"name":"X"},"seasons":[0,1,2],"episodes":{
+            "0":[{"id":"s0","season":0,"episode_num":1,"title":"Special","container_extension":"mp4"}],
+            "1":[{"id":"s1","season":1,"episode_num":2,"title":"B","container_extension":"mp4"},{"id":"s2","season":1,"episode_num":1,"title":"A","container_extension":"mp4"}],
+            "2":[{"id":"s3","season":2,"episode_num":1,"title":"C","container_extension":"mp4"}]}}""",
+            5
+        )
+        check("discovery: first episode skips Specials and takes season 1's first episode",
+            seriesInfo != null && d.firstEpisode(seriesInfo) == (1 to 1))
+
+        // --- cache TTL + diagnostics ---
+        check("discovery: cache TTL decisions on a fake clock",
+            d.isFresh(1_000L, 1_000L + d.TRENDING_TTL_MS - 1, d.TRENDING_TTL_MS) &&
+                !d.isFresh(1_000L, 1_000L + d.TRENDING_TTL_MS, d.TRENDING_TTL_MS) &&
+                !d.isFresh(0L, 1_000L, d.TRENDING_TTL_MS) &&
+                d.TRENDING_TTL_MS == 12L * 3600 * 1000 &&
+                d.DETAILS_TTL_MS == 24L * 3600 * 1000 &&
+                d.FORYOU_TTL_MS == 24L * 3600 * 1000)
+        check("discovery: diagnostics line is source + counts only",
+            d.diagText("launcher", 3, 24, 12) == "source launcher · soon 3 · trend 24 · foryou 12" &&
+                d.diagText("tracker", 0, 0, 5) == "source tracker · soon 0 · trend 0 · foryou 5")
+
+        // --- sections: the v2.7 set ---
+        val tsx = TrackerSections
+        check("sections: v2.7 canonical order is the directive's focus order",
+            tsx.CANONICAL == listOf(
+                "hero", "upnext", "comingsoon", "continue", "trendingtv",
+                "trendingmovies", "movienight", "foryou", "favorites", "allapps"
+            ))
+        check("sections: v2.7 labels",
+            tsx.label(tsx.COMINGSOON) == "Coming Soon" &&
+                tsx.label(tsx.TRENDINGTV) == "Trending TV" &&
+                tsx.label(tsx.TRENDINGMOVIES) == "Trending Movies")
+        check("sections: a pre-v2.7 stored order keeps its order; the new rows append",
+            tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|").order ==
+                listOf(
+                    "upnext", "continue", "movienight", "foryou", "favorites",
+                    "allapps", "comingsoon", "trendingtv", "trendingmovies"
+                ))
+
+        // --- source checks: the v2.7 wiring is really in the app ---
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("v27src: the Tracker/Watch home composes the three focus rows",
+            mainSrc.contains("buildComingSoonSection") &&
+                mainSrc.contains("buildTrendingSection") &&
+                mainSrc.contains("TrackerSections.COMINGSOON") &&
+                mainSrc.contains("TrackerSections.TRENDINGTV"))
+        check("v27src: the IPTV home carries Trending on your IPTV + its play path",
+            mainSrc.contains("buildIptvTrendingSection") &&
+                mainSrc.contains("Trending on your IPTV") &&
+                mainSrc.contains("playTrendPlay"))
+        val ddSrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+        check("v27src: discovery fetches run on the mizan-discovery worker through the funnel",
+            ddSrc.contains("mizan-discovery") && ddSrc.contains("tmdbGetBlocking") &&
+                ddSrc.contains("filesDir"))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("v27src: diagnostics carries the discovery line",
+            settingsSrc.contains("discovery: ") && settingsSrc.contains("Discovery.diagText"))
+        val directSrc = src("app/src/main/java/com/mizan/launcher/data/TmdbDirect.kt")
+        check("v27src: the direct client accepts discover/ (the proxy allowlist has none)",
+            directSrc.contains("discover/"))
+    }
+}
+
+
+/** v2.5 checks — extracted in v2.7: main() hit the JVM method-size limit. */
+fun section42() {
+    // ---------- (42) v2.5: ANR hunt — watchdog, breadcrumbs, log codec, keyed matching ----------
+    run {
+        // --- watchdog staleness on a fake clock (core/DiagWatchdog).
+        check("diag: a heartbeat 3.9 s old is fresh",
+            !DiagWatchdog.isStale(1_000L, 4_900L))
+        check("diag: a heartbeat exactly at the threshold is not yet stale (strictly past it is)",
+            !DiagWatchdog.isStale(1_000L, 5_000L) &&
+                DiagWatchdog.isStale(1_000L, 5_001L))
+        check("diag: a heartbeat a minute old is stale",
+            DiagWatchdog.isStale(1_000L, 61_000L))
+        check("diag: a custom threshold is honoured",
+            !DiagWatchdog.isStale(0L, 1_000L, 1_000L) &&
+                DiagWatchdog.isStale(0L, 1_001L, 1_000L))
+        check("diag: no heartbeat yet reads stale once past the threshold",
+            !DiagWatchdog.isStale(0L, DiagWatchdog.STALE_MS) &&
+                DiagWatchdog.isStale(0L, DiagWatchdog.STALE_MS + 1))
+
+        // --- breadcrumb ring (core/BreadcrumbRing).
+        val ring = BreadcrumbRing()
+        check("crumbs: an empty ring snapshots empty", ring.snapshot().isEmpty())
+        ring.add(0L, "home opened")
+        ring.add(61_000L, "settings opened")
+        check("crumbs: snapshot is oldest-first",
+            ring.snapshot().map { it.second } == listOf("home opened", "settings opened"))
+        val capped = BreadcrumbRing(3)
+        capped.add(0L, "1"); capped.add(0L, "2"); capped.add(0L, "3"); capped.add(0L, "4")
+        check("crumbs: the ring keeps only the newest N",
+            capped.snapshot().map { it.second } == listOf("2", "3", "4"))
+        val fmt = BreadcrumbRing()
+        fmt.add(3_661_000L, "opened")
+        check("crumbs: lines render an HH:mm:ss clock + the label",
+            fmt.lines().size == 1 &&
+                Regex("^\\d{2}:\\d{2}:\\d{2} opened$").matches(fmt.lines()[0]))
+        val restored = BreadcrumbRing(3)
+        restored.restore(capped.encode())
+        check("crumbs: the persist/restore round-trip is exact",
+            restored.snapshot() == capped.snapshot())
+        val small = BreadcrumbRing(2)
+        small.restore("0|x\n0|y\n0|z")
+        check("crumbs: restore over capacity keeps the newest",
+            small.snapshot().map { it.second } == listOf("y", "z"))
+        val junk = BreadcrumbRing()
+        junk.restore("garbage\n5|\n7|ok")
+        check("crumbs: restore skips malformed lines",
+            junk.snapshot().map { it.second } == listOf("ok"))
+
+        // --- bounded event-log codec + tail rendering (core/DiagLogs).
+        var logText = ""
+        logText = DiagLogs.appendEvent(logText, "event one\nsecond line", 3)
+        logText = DiagLogs.appendEvent(logText, "event two", 3)
+        check("diaglog: events accumulate oldest-first",
+            DiagLogs.eventCount(logText) == 2 &&
+                logText.indexOf("event one") < logText.indexOf("event two"))
+        logText = DiagLogs.appendEvent(logText, "event three", 3)
+        logText = DiagLogs.appendEvent(logText, "event four", 3)
+        check("diaglog: the event cap keeps the newest events",
+            DiagLogs.eventCount(logText) == 3 &&
+                !logText.contains("event one") && logText.contains("event four"))
+        check("diaglog: tailLines returns the last lines (what diagnostics shows)",
+            DiagLogs.tailLines(logText, 2) ==
+                DiagLogs.EVENT_SEPARATOR + "\nevent four")
+        check("diaglog: a full tail returns every line",
+            DiagLogs.tailLines(logText, 500).split("\n").size ==
+                logText.trimEnd('\n').split("\n").size)
+        check("diaglog: an empty log tails empty",
+            DiagLogs.tailLines("", 10).isEmpty())
+        val huge = DiagLogs.appendEvent("", "x".repeat(500), 3, maxChars = 100)
+        check("diaglog: the char cap never truncates the newest event",
+            huge.contains("x".repeat(500)) && DiagLogs.eventCount(huge) == 1)
+        val squeezed = DiagLogs.appendEvent(huge, "small", 3, maxChars = 100)
+        check("diaglog: an oversized old event is dropped to fit the cap",
+            !squeezed.contains("xxx") && squeezed.contains("small"))
+
+        // --- keyed matching equivalence (the v2.5 WatchMatch rewrite).
+        // matchAll (once-built exact-key index) must return exactly
+        // what the per-title path returns — the index is an
+        // optimization, never a semantics change (§38 pins the
+        // semantics themselves).
+        val kinds = listOf(
+            "The Matrix", "Dark", "Dark Matter", "Severance", "The Office",
+            "Breaking Bad", "Amélie", "1917", "Dune", "Dune Part Two",
+            "Alien", "Aliens", "The Bear", "Shogun", "True Detective",
+            "Fargo", "Chernobyl", "Andor", "The Last of Us", "Fallout"
+        )
+        val candPool = ArrayList<WatchMatch.Candidate>()
+        var cid = 1L
+        for (i in 0 until 410) {
+            val base = kinds[i % kinds.size]
+            val year = if (i % 3 == 0) 1990 + (i % 30) else 0
+            candPool.add(
+                WatchMatch.Candidate(
+                    cid++, (base + if (i % 5 == 0) " Extended" else "").trim(), year
+                )
+            )
+        }
+        val titlePool = kinds.mapIndexed { i, n ->
+            WatchMatch.TrackerTitle(
+                (1000 + i).toLong(), if (i % 2 == 0) "tv" else "movie", n,
+                if (i % 4 == 0) 1990 + (i % 30) else 0
+            )
+        }
+        val viaAll = WatchMatch.matchAll(titlePool, candPool)
+        val viaOne = titlePool.mapNotNull { t ->
+            WatchMatch.matchOne(t, candPool)?.let { t.tmdbId to it }
+        }.toMap()
+        check("watchkey: keyed matchAll == per-title matchOne over ${candPool.size} candidates",
+            viaAll == viaOne)
+        check("watchkey: the fixture actually matches (the equivalence is not vacuous)",
+            viaAll.size >= 10)
+        val yearPick = WatchMatch.matchAll(
+            listOf(WatchMatch.TrackerTitle(7L, "movie", "Dune", 2021)),
+            listOf(
+                WatchMatch.Candidate(1L, "Dune", 1984),
+                WatchMatch.Candidate(2L, "Dune", 2021)
+            )
+        )
+        check("watchkey: the index path keeps the year tie-break",
+            yearPick[7L]?.iptvId == 2L)
+        val ambiguous = WatchMatch.matchAll(
+            listOf(WatchMatch.TrackerTitle(8L, "movie", "Dune", 0)),
+            listOf(
+                WatchMatch.Candidate(3L, "Dune", 1984),
+                WatchMatch.Candidate(4L, "Dune", 2021)
+            )
+        )
+        check("watchkey: the index path keeps ambiguity -> first candidate + possible",
+            ambiguous[8L]?.iptvId == 3L &&
+                ambiguous[8L]?.possible == true)
+
+        // --- source checks: the v2.5 wiring is really in the app.
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val watchPlaySrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+        check("v25src: Watch matching recomputes on the mizan-watch-match worker",
+            watchPlaySrc.contains("mizan-watch-match"))
+        check("v25src: WatchPlay never calls the deleted main-thread tuplesAsync",
+            watchPlaySrc.isNotEmpty() && !watchPlaySrc.contains("tuplesAsync("))
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
+        check("v25src: tuples are a worker-only blocking read now (tuplesBlocking)",
+            clientSrc.contains("fun tuplesBlocking"))
+        check("v25src: the legacy purge lands via a single commit()",
+            clientSrc.contains("commit()"))
+        val manifest = src("app/src/main/AndroidManifest.xml")
+        check("v25src: the manifest bootstraps the App class (DiagLog install)",
+            manifest.contains("android:name=\".App\""))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("v25src: Settings offers Copy diagnostics with the freeze/crash tails",
+            settingsSrc.contains("Copy diagnostics") &&
+                settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
+        val gradleSrc = src("app/build.gradle.kts")
+        check("v25src: the app version is 2.7 / code 20 (bumped by v2.7)",
+            gradleSrc.contains("versionName = \"2.7\"") &&
+                gradleSrc.contains("versionCode = 20"))
     }
 }

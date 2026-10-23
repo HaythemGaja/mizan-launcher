@@ -43,6 +43,7 @@ import com.mizan.launcher.core.LayoutData
 import com.mizan.launcher.core.NowPlayingLogic
 import com.mizan.launcher.core.QuickSettings
 import com.mizan.launcher.core.RecentsStore
+import com.mizan.launcher.core.Discovery
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.TrackerSections
 import com.mizan.launcher.core.WatchMatch
@@ -55,6 +56,7 @@ import com.mizan.launcher.core.WifiLabel
 import com.mizan.launcher.data.AccentUtil
 import com.mizan.launcher.data.AppEntry
 import com.mizan.launcher.data.DiagLog
+import com.mizan.launcher.data.DiscoveryData
 import com.mizan.launcher.data.AppLoader
 import com.mizan.launcher.data.ArtworkImages
 import com.mizan.launcher.data.BingFetcher
@@ -124,6 +126,11 @@ class MainActivity : Activity() {
     private var tMovies: List<TrackerLogic.MovieItem> = emptyList()
     private var tPicks: List<TrackerLogic.ForYouPick> = emptyList()
     private var tHeroCandidates: List<TrackerLogic.HeroItem> = emptyList()
+    /** v2.7: the discovery working set (data/DiscoveryData's last landed state). */
+    private var dState: DiscoveryData.State = DiscoveryData.State.EMPTY
+    private var dSoon: List<Discovery.SoonItem> = emptyList()
+    private var dTrendTv: List<Discovery.TrendItem> = emptyList()
+    private var dTrendMovies: List<Discovery.TrendItem> = emptyList()
 
     // v2.3 Watch working set (Watch style only), computed alongside
     // the tracker set in buildRoot: the tracker↔IPTV match table
@@ -343,6 +350,12 @@ class MainActivity : Activity() {
         // v2.3: the Watch style is the same composition + the IPTV
         // link, so every "trackerStyle" gate below is family-wide.
         val trackerStyle = isTrackerFamily()
+        // v2.7: discovery (Coming Soon / Trending / launcher For
+        // You / IPTV trending) prepares BEFORE the tracker working
+        // set — prepareTrackerData consults it for the For You
+        // source. Its snapshot never blocks: stale state renders,
+        // the worker's landing rebuilds once.
+        if (trackerStyle || isIptvStyle()) prepareDiscoveryData()
         if (trackerStyle) prepareTrackerData()
         if (isWatchStyle()) prepareWatchData()
         pendingWallpaper = null
@@ -594,6 +607,31 @@ class MainActivity : Activity() {
      * buildRoot before the scroll frame exists) and the hero text
      * block, so the two can never feature different titles.
      */
+    /**
+     * v2.7: the discovery working set — data/DiscoveryData's last
+     * landed state (in-memory; the worker refreshes stale pieces
+     * behind it and lands ONE rebuild through onChanged). Runs
+     * before prepareTrackerData (the For You source decision reads
+     * it) and for the IPTV style (its Trending row).
+     */
+    private fun prepareDiscoveryData() {
+        DiscoveryData.onChanged = {
+            runOnUiThread {
+                if ((isTrackerFamily() || isIptvStyle()) && !isFinishing && !isDestroyed) {
+                    rebuild()
+                }
+            }
+        }
+        dState = DiscoveryData.snapshot(this)
+        dSoon = dState.comingSoon
+        // Locally dismissed titles leave the Trending rows at once
+        // (the same For You overlay "Not interested" writes).
+        val dismissed = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
+            .filter { !it.added }.map { it.key() }.toHashSet()
+        dTrendTv = dState.trendingTv.filter { it.key() !in dismissed }
+        dTrendMovies = dState.trendingMovies.filter { it.key() !in dismissed }
+    }
+
     private fun prepareTrackerData() {
         val snap = TrackerClient.cached(this)
         tSnap = snap
@@ -615,7 +653,17 @@ class MainActivity : Activity() {
             prefs.forYouOverlay = TrackerLogic.encodeForYouOverlay(prunedOverlay)
             overlay = prunedOverlay
         }
-        tPicks = TrackerLogic.filterForYou(snap.forYou, snap.tracked, snap.movies, overlay)
+        // v2.7: with a launcher TMDB key set, the launcher's OWN
+        // computed For You (data/DiscoveryData) supplies the picks;
+        // the tracker's /foryou snapshot is the fallback — and the
+        // only source when no launcher key is set. Either way the
+        // same filter applies (tracked + local overlay out, cap 20).
+        val fySource = if (prefs.tmdbKey.isNotBlank() && dState.forYouComputed) {
+            dState.forYou
+        } else {
+            snap.forYou
+        }
+        tPicks = TrackerLogic.filterForYou(fySource, snap.tracked, snap.movies, overlay)
         // v2.1: the hero pool spans all four sections (Up Next →
         // Continue → Movie Night → For You), each list already
         // filtered exactly as its row is. For You picks join only
@@ -860,6 +908,17 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // v2.7: Trending on your IPTV — TMDB's chart ∩ the
+        // catalogue, after the catalogue rows and before the app
+        // rows. Worker-matched (data/DiscoveryData); no matches
+        // (or no TMDB at all) hides it entirely.
+        if (dState.trendingIptv.isNotEmpty()) {
+            try {
+                content.addView(buildIptvTrendingSection(dState.trendingIptv))
+            } catch (e: Exception) {
+                Prefs.noteError(this, "row:iptv:trending", e)
+            }
+        }
         if (layout.isRowVisible("favorites")) {
             try {
                 content.addView(buildFavoritesSection())
@@ -946,6 +1005,96 @@ class MainActivity : Activity() {
                 iptvHomeSeries = series
                 iptvHomeCats = cats
                 if (isIptvStyle() && !isFinishing && !isDestroyed) rebuild()
+            }
+        }
+    }
+
+    /**
+     * Trending on your IPTV (v2.7): the trending titles the
+     * repo-method matcher found in the catalogue (worker-computed
+     * in data/DiscoveryData). Cards PLAY in place — movies straight
+     * to their VOD stream, series to their first episode — and
+     * wear the ▶ IPTV badge like every matched card.
+     */
+    private fun buildIptvTrendingSection(plays: List<DiscoveryData.TrendPlay>): View {
+        val box = section("Trending on your IPTV")
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        for (tp in plays) {
+            val item = tp.item
+            val card = portraitCard(
+                posterPath = item.poster,
+                title = item.title,
+                meta = TrackerLogic.ratingText(item.voteAverage) ?: item.year,
+                glyph = if (item.type == "movie") "🎬" else "📺",
+                onClick = { playTrendPlay(tp) },
+                onLong = {
+                    openTrackerCardMenu(
+                        item.title,
+                        onMark = null,
+                        onDetails = {
+                            openTitleDetails(item.id, item.type, item.title, item.poster)
+                        }
+                    )
+                },
+                badge = WatchMatch.BADGE_TEXT
+            )
+            row.addView(card)
+        }
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    /**
+     * Play one Trending-on-IPTV card: resolve the store entry on a
+     * worker thread (data/WatchPlay), then play — a movie via its
+     * VOD entry, a series via its first episode (core/Discovery.
+     * firstEpisode). Every failure fails open to the title's
+     * in-launcher details; never a dead end, never an auto-mark
+     * (these plays carry no tracker token).
+     */
+    private fun playTrendPlay(tp: DiscoveryData.TrendPlay) {
+        val item = tp.item
+        if (item.type == "movie") {
+            val match = WatchMatch.Match(item.id, "movie", tp.iptvId, exact = true, possible = false)
+            WatchPlay.resolveVod(this, match) { vod ->
+                if (isFinishing || isDestroyed) return@resolveVod
+                if (vod == null) {
+                    openTitleDetails(item.id, item.type, item.title, item.poster)
+                } else {
+                    WatchPlay.playMovie(this, vod, null)
+                }
+            }
+            return
+        }
+        val match = WatchMatch.Match(item.id, "tv", tp.iptvId, exact = true, possible = false)
+        WatchPlay.resolveSeries(this, match) { series ->
+            if (isFinishing || isDestroyed) return@resolveSeries
+            if (series == null) {
+                openTitleDetails(item.id, item.type, item.title, item.poster)
+                return@resolveSeries
+            }
+            fun startWith(info: IptvLogic.SeriesInfo?) {
+                if (isFinishing || isDestroyed) return
+                val first = info?.let { Discovery.firstEpisode(it) }
+                if (first == null) {
+                    openTitleDetails(item.id, item.type, item.title, item.poster)
+                    return
+                }
+                WatchPlay.playEpisode(
+                    this, series, item.id, first.first, first.second,
+                    item.title, item.poster, withToken = false
+                ) {
+                    openTitleDetails(item.id, item.type, item.title, item.poster)
+                }
+            }
+            val cached = IptvClient.cachedSeriesInfo(this, series.id)
+            if (cached != null) {
+                startWith(cached)
+            } else {
+                Toast.makeText(
+                    this, "Finding the episode on your IPTV…", Toast.LENGTH_SHORT
+                ).show()
+                IptvClient.fetchSeriesInfoAsync(this, series.id) { info -> startWith(info) }
             }
         }
     }
@@ -2062,7 +2211,12 @@ class MainActivity : Activity() {
         val available = mapOf(
             TrackerSections.HERO to (hero != null),
             TrackerSections.UPNEXT to tUpNext.isNotEmpty(),
+            // v2.7 focus rows: Coming Soon + Trending ride the
+            // discovery state (empty until the worker first lands).
+            TrackerSections.COMINGSOON to dSoon.isNotEmpty(),
             TrackerSections.CONTINUE to continueCards.isNotEmpty(),
+            TrackerSections.TRENDINGTV to dTrendTv.isNotEmpty(),
+            TrackerSections.TRENDINGMOVIES to dTrendMovies.isNotEmpty(),
             TrackerSections.MOVIENIGHT to tMovies.isNotEmpty(),
             TrackerSections.FORYOU to tPicks.isNotEmpty(),
             TrackerSections.FAVORITES to layout.isRowVisible("favorites"),
@@ -2110,9 +2264,15 @@ class MainActivity : Activity() {
                         hero?.let { content.addView(buildHeroZone(it)) }
                     TrackerSections.UPNEXT ->
                         content.addView(buildUpNextSection(tUpNext))
+                    TrackerSections.COMINGSOON ->
+                        content.addView(buildComingSoonSection(dSoon))
                     TrackerSections.CONTINUE ->
                         buildTrackerContinueSection(continueCards, system)
                             ?.let { content.addView(it) }
+                    TrackerSections.TRENDINGTV ->
+                        content.addView(buildTrendingSection(dTrendTv, "tv"))
+                    TrackerSections.TRENDINGMOVIES ->
+                        content.addView(buildTrendingSection(dTrendMovies, "movie"))
                     TrackerSections.MOVIENIGHT ->
                         content.addView(buildMovieNightSection(tMovies))
                     TrackerSections.FORYOU ->
@@ -2943,6 +3103,151 @@ class MainActivity : Activity() {
         }
         box.addView(horizontalScroller(row))
         return box
+    }
+
+    /**
+     * Coming Soon (v2.7): tracked shows with a future next episode
+     * + tracked movies with a future release, computed in the
+     * launcher (core/Discovery shapes, data/DiscoveryData fetches).
+     * Poster, title, and the date chip — "today" / "tomorrow" /
+     * "in N days" / the date itself — with the episode coordinates
+     * for shows. OK opens the title's details.
+     */
+    private fun buildComingSoonSection(items: List<Discovery.SoonItem>): View {
+        val box = section("Coming Soon")
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        val today = todayIso()
+        for (item in items) {
+            val chip = Discovery.soonChip(item.dateIso, today)
+            val meta = listOf(chip, item.sub).filter { it.isNotBlank() }
+                .joinToString(" · ")
+            val card = portraitCard(
+                posterPath = item.poster,
+                title = item.title,
+                meta = meta,
+                glyph = if (item.type == "movie") "🎬" else "📺",
+                onClick = {
+                    openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+                },
+                onLong = {
+                    openTrackerCardMenu(
+                        item.title,
+                        onMark = null,
+                        onDetails = {
+                            openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+                        }
+                    )
+                }
+            )
+            row.addView(card)
+        }
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    /**
+     * Trending TV / Trending Movies (v2.7): TMDB's week charts,
+     * fetched + shaped in the launcher. Full poster cards with the
+     * ★ rating; in the Watch style a matched title wears the
+     * ▶ IPTV badge (the matcher's verdict, as everywhere); a title
+     * already in the library reads "In library" and is not offered
+     * for add. OK opens details; hold-OK adds / dismisses (the
+     * For You writes, shared with [addToMyList] / [dismissDiscovery]).
+     */
+    private fun buildTrendingSection(items: List<Discovery.TrendItem>, type: String): View {
+        val box = section(if (type == "movie") "Trending Movies" else "Trending TV")
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
+        val addedKeys = overlay.filter { it.added }.map { it.key() }.toHashSet()
+        val trackedKeys = HashSet<String>()
+        for (s in tSnap.tracked) trackedKeys.add("tv|${s.tmdbId}")
+        for (m in tSnap.movies) trackedKeys.add("movie|${m.tmdbId}")
+        for (item in items) {
+            val inLibrary = item.key() in trackedKeys || item.key() in addedKeys
+            val wMatch = watchMatch(item.type, item.id)
+            val card = portraitCard(
+                posterPath = item.poster,
+                title = item.title,
+                meta = TrackerLogic.ratingText(item.voteAverage) ?: item.year,
+                line2 = if (inLibrary) "In library" else null,
+                glyph = if (item.type == "movie") "🎬" else "📺",
+                onClick = {
+                    openTitleDetails(item.id, item.type, item.title, item.poster)
+                },
+                onLong = { openTrendingMenu(item, inLibrary) },
+                badge = WatchMatch.cardBadge(wMatch != null)
+            )
+            row.addView(card)
+        }
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    /** Hold-OK on a Trending card: details / add to list / not interested. */
+    private fun openTrendingMenu(item: Discovery.TrendItem, inLibrary: Boolean) {
+        val labels = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        labels.add("Details")
+        actions.add { openTitleDetails(item.id, item.type, item.title, item.poster) }
+        if (!inLibrary) {
+            labels.add("Add to my list")
+            actions.add { addToMyList(item.id, item.type, item.title, item.poster) }
+            labels.add("Not interested")
+            actions.add { dismissDiscovery(item.id, item.type) }
+        }
+        labels.add("Open Tracker")
+        actions.add { openTracker() }
+        AlertDialog.Builder(this)
+            .setTitle(item.title)
+            .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }
+            .show()
+    }
+
+    /**
+     * "Add to my list" (Trending, v2.7): the same writes as a
+     * For You add — the overlay hides/marks the title at once,
+     * TrackerActions queues the add + mirrors it into the pending
+     * overlay, so the title appears in My Library as Pending.
+     */
+    private fun addToMyList(tmdbId: Long, type: String, title: String, poster: String) {
+        val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
+        prefs.forYouOverlay = TrackerLogic.encodeForYouOverlay(
+            TrackerLogic.withForYouMark(
+                overlay,
+                TrackerLogic.ForYouMark(
+                    tmdbId, type, added = true, System.currentTimeMillis()
+                )
+            )
+        )
+        TrackerActions.addTitle(this, prefs, tmdbId, type, title, poster, "")
+        Toast.makeText(
+            this, "Added to your list — applies next time the tracker opens",
+            Toast.LENGTH_SHORT
+        ).show()
+        rebuild()
+    }
+
+    /**
+     * "Not interested" (Trending, v2.7): the overlay dismissal —
+     * the title leaves Trending AND For You at once — plus the
+     * queued dismiss_foryou for the tracker.
+     */
+    private fun dismissDiscovery(tmdbId: Long, type: String) {
+        val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
+        prefs.forYouOverlay = TrackerLogic.encodeForYouOverlay(
+            TrackerLogic.withForYouMark(
+                overlay,
+                TrackerLogic.ForYouMark(
+                    tmdbId, type, added = false, System.currentTimeMillis()
+                )
+            )
+        )
+        TrackerClient.dismissForYou(this, tmdbId, type)
+        Toast.makeText(
+            this, "Got it — that won't be suggested again",
+            Toast.LENGTH_SHORT
+        ).show()
+        rebuild()
     }
 
     /**

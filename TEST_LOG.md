@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 04:18 UTC
+Date: 2026-10-23 18:26 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -151,6 +151,24 @@ hostile EPG index proves the home composition fails open
 to its safe shell, and source checks prove the
 iptvbrowser / iptvguide / iptvhome guards are wired in.
 All v2.3.1 checks carry over.
+
+Note (v2.7): three user directives (spec S27). (1) Watch
+matching adopts the IPTV web player's method — squash
+(lowercase, strip non-[a-z0-9]), exact tier, contains tier
+over once-keyed candidates; section 38's normalization /
+keyOf / contains checks are RE-PINNED to the repo semantics
+(the repo method wins where they differ — e.g. 'Preacher'
+now matches 'Reacher'), and section 45 pins the repo
+fixtures (exact-after-squash, suffix + quality-tag noise,
+contains ordering, year deprioritization). (2) Focus rows:
+Coming Soon + Trending TV/Movies join TrackerSections
+(section 35's order-sensitive checks re-pinned to the new
+default order). (3) Self-reliance: the launcher computes
+Coming Soon / Trending / For You itself (the tracker
+computeForYou ported to core/Discovery — seeds, affinity,
+recommendations + discover, pick codec), tracker snapshots
+remain the fallback, and diagnostics gains a discovery:
+line. New section 45. All other checks carry over.
 
 ```
 PASS  neverlist: gms is never
@@ -688,17 +706,17 @@ PASS  iptv: empty-state lines per kind
 PASS  iptv: diag line names the failure class after 'not answering' when one is recorded
 PASS  iptv: diag line has no parenthetical when no error is recorded
 PASS  iptv: a recorded error class never leaks into non-error lines
-PASS  watch: normalization strips punctuation/articles/case and collapses space
+PASS  watch: normalization is the repo squash (articles/spaces/punctuation vanish)
 PASS  watch: splitYear takes bracketed / trailing / leading years only
-PASS  watch: keyOf prefers a known year over the title token
+PASS  watch: keyOf prefers a known year over the title token (key is the whole squash)
 PASS  watch: exact normalized match wins, unique + year agree = exact
 PASS  watch: punctuation/case variant still exact-matches
 PASS  watch: year breaks a same-name tie (remakes)
 PASS  watch: ambiguous same-name (no usable year) picks first, flagged possible
 PASS  watch: year conflict (both known, different) is possible, not exact
-PASS  watch: fuzzy tier (word-boundary prefix) matches but is only possible
-PASS  watch: exact tier beats the fuzzy tier outright
-PASS  watch: no close title -> no match (never a forced guess)
+PASS  watch: contains tier matches a decorated name; a year conflict flags possible
+PASS  watch: exact tier beats the contains tier outright
+PASS  watch: repo contains tier matches 'Preacher' for 'Reacher' (crude by design); empty catalogue -> no match
 PASS  watch: matchAll keys by tmdbId and skips unmatched
 PASS  watch: episode resolution finds id + extension
 PASS  watch: missing season / missing episode resolve to null (fail-open)
@@ -787,7 +805,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 2.6 / code 19 (bumped by v2.6)
+PASS  v25src: the app version is 2.7 / code 20 (bumped by v2.7)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -841,5 +859,44 @@ PASS  v26src: the backup export never touches the TMDB key (redaction)
 PASS  v26src: the direct client targets TMDB with the contract allowlist + class-name tokens
 PASS  v26src: the direct client never logs (no Log import, no key echo)
 PASS  v26src: the funnel composes proxy -> direct via resolveTmdb and records both notes
-RESULT: 687 passed, 0 failed, 687 total
+PASS  repo: exact-after-squash ('Grey's Anatomy' vs 'Greys Anatomy')
+PASS  repo: catalogue suffix noise matches via contains ('The Office' vs 'The Office (US)')
+PASS  repo: quality-tag noise matches via contains ('Show Name 2023 1080p')
+PASS  repo: the contains tier picks the SHORTEST candidate; multiple distinct titles flag possible
+PASS  repo: a year disagreement deprioritizes inside the contains tier (beats shorter)
+PASS  repo: catalogue order breaks equal-length contains ties
+PASS  repo: keyed matchAll == per-title matchOne under the repo core
+PASS  repo: 'Dune 2021 1080p' contains-matches the yearless 'Dune'; 'Missing Show' stays unmatched
+PASS  discovery: trending/all parses tv+movie, drops people + blank titles, keeps TMDB order
+PASS  discovery: per-type trending forces the type when media_type is absent
+PASS  discovery: a trending title flags the ? IPTV badge only when the catalogue matches
+PASS  discovery: tv facts parse (next episode + genres + rating)
+PASS  discovery: tv facts ? a null next_episode_to_air reads blank (no guessing from seasons)
+PASS  discovery: movie facts parse (release date + genres)
+PASS  soon: future-only, strictly parsed (Feb 30 rejected), sorted ascending
+PASS  soon: shows carry episode coordinates, movies none
+PASS  soon: chips ? today / tomorrow / in N days / the bare date; past + unparseable read blank
+PASS  soon: the strict parser round-trips real dates and rejects invented ones
+PASS  soon: the row caps at 20
+PASS  foryou: seed weights follow the tracker (tv completion curve, movie watched flag)
+PASS  foryou: seeds are the top titles by weight x rating (weight gate > 0.4)
+PASS  foryou: affinity spreads each title's weight over its genres; top genres ranked
+PASS  foryou: recommendation picks ? poster required, reason names the seed, score = weight*10 + rating
+PASS  foryou: discover picks ? representative-title reason, affinity x2 scoring
+PASS  foryou: merge dedupes, excludes tracked, sorts by score
+PASS  foryou: merge cap applies
+PASS  foryou: the discover path mirrors the tracker engine's params
+PASS  foryou: computed picks encode in the /foryou contract shape (parseForYou reads them back)
+PASS  discovery: first episode skips Specials and takes season 1's first episode
+PASS  discovery: cache TTL decisions on a fake clock
+PASS  discovery: diagnostics line is source + counts only
+PASS  sections: v2.7 canonical order is the directive's focus order
+PASS  sections: v2.7 labels
+PASS  sections: a pre-v2.7 stored order keeps its order; the new rows append
+PASS  v27src: the Tracker/Watch home composes the three focus rows
+PASS  v27src: the IPTV home carries Trending on your IPTV + its play path
+PASS  v27src: discovery fetches run on the mizan-discovery worker through the funnel
+PASS  v27src: diagnostics carries the discovery line
+PASS  v27src: the direct client accepts discover/ (the proxy allowlist has none)
+RESULT: 726 passed, 0 failed, 726 total
 ```

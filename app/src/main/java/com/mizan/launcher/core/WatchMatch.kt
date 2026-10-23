@@ -11,13 +11,22 @@ import java.util.Locale
  * are resolved through get_series_info, and a completed Watch play
  * auto-marks the title watched.
  *
- * Matching is deliberately conservative and fully deterministic:
- * titles are normalized (lowercase, punctuation stripped, one
- * leading article dropped, whitespace collapsed, a standalone
- * year token extracted), an exact-normalized match beats the fuzzy
- * tier (word-boundary prefix or identical token set), a year on
- * both sides breaks ties, and anything ambiguous resolves to the
- * first candidate flagged "possible" — the UI never pretends a
+ * Matching follows THE REPO METHOD (v2.7, user directive
+ * 2026-10-23 — the matcher from his own IPTV web player,
+ * iptv-player/index.html): a title's key is its lowercase with
+ * EVERY character outside [a-z0-9] stripped — one squashed token.
+ * Tier 1 is exact key equality; tier 2 is the first candidate
+ * whose key CONTAINS the target key. The one adaptation the
+ * catalogue's size forces (31,948 VOD + 15,528 series on-device;
+ * the v2.4/v2.5 ANRs came from this exact area): keys are computed
+ * ONCE per candidate into an index on the worker thread, the
+ * exact tier is a hash lookup, and the contains tier scans only
+ * precomputed strings — with a deterministic order inside it
+ * (shortest key first, then catalogue order; a candidate whose
+ * known year disagrees with the title's known year is
+ * deprioritized within the tier). The [Match.possible] flag is
+ * kept when the contains tier produced multiple DISTINCT titles,
+ * or a tier never resolved cleanly — the UI never pretends a
  * guess is a certainty. Same-name remakes CAN mismatch; the
  * possible flag is how that surfaces.
  */
@@ -55,29 +64,37 @@ object WatchMatch {
     }
 
     /**
-     * The match key for a title: year token removed, lowercased,
-     * every non letter/digit becomes a space, whitespace collapsed,
-     * ONE leading article ("the"/"a"/"an") dropped. Both sides of a
-     * match go through this exact function, so punctuation and
-     * casing differences between TMDB and Xtream names vanish.
+     * The repo squash (v2.7): lowercase, then strip EVERY character
+     * that is not [a-z0-9] — spaces and punctuation vanish entirely,
+     * so a title becomes ONE token ("Grey's Anatomy" and "Greys
+     * Anatomy" both squash to "greysanatomy"; "The Office (US)"
+     * squashes to "theofficeus" — articles and suffixes are NOT
+     * special-cased; that is the repo method, kept verbatim). There
+     * is deliberately NO year stripping in the key: "1917" squashes
+     * to "1917", and a catalogue name like "Dune 2021 1080p"
+     * squashes to "dune20211080p" — which the contains tier still
+     * finds for the target "dune". Both sides of a match go through
+     * this exact function.
      */
-    fun normalizeKey(raw: String): String {
-        val (noYear, _) = splitYear(raw)
-        val sb = StringBuilder()
-        for (c in noYear.lowercase(Locale.ROOT)) {
-            sb.append(if (c.isLetterOrDigit()) c else ' ')
+    fun squash(raw: String): String {
+        val sb = StringBuilder(raw.length)
+        for (c in raw.lowercase(Locale.ROOT)) {
+            if (c in 'a'..'z' || c in '0'..'9') sb.append(c)
         }
-        val tokens = sb.toString().split(Regex("""\s+""")).filter { it.isNotEmpty() }
-        val kept = if (tokens.size > 1 && tokens[0] in ARTICLES) tokens.drop(1) else tokens
-        return kept.joinToString(" ")
+        return sb.toString()
     }
 
-    private val ARTICLES = setOf("the", "a", "an")
+    /** The match key for a title — since v2.7 this IS [squash]. */
+    fun normalizeKey(raw: String): String = squash(raw)
 
-    /** (key, effective year) for one side: a known year beats the title's own token. */
+    /**
+     * (squash key, effective year) for one side: a known year beats
+     * the title's own token. The year never enters the key — it is
+     * used ONLY to order candidates inside a tier.
+     */
     fun keyOf(title: String, knownYear: Int): Pair<String, Int> {
         val (_, extracted) = splitYear(title)
-        return Pair(normalizeKey(title), if (knownYear > 0) knownYear else extracted)
+        return Pair(squash(title), if (knownYear > 0) knownYear else extracted)
     }
 
     // ------------------------------------------------------------ matching
@@ -89,10 +106,12 @@ object WatchMatch {
     data class Candidate(val iptvId: Long, val name: String, val year: Int)
 
     /**
-     * The match for one tracker title. [exact] = the normalized key
-     * matched uniquely (or a year broke the tie); [possible] = the
-     * best available guess (fuzzy tier, an unresolved ambiguity, or
-     * a year conflict) — surfaced to the user, never hidden.
+     * The match for one tracker title. [exact] = tier 1 (squash
+     * equality) resolved to one candidate (uniquely, or a year
+     * broke the tie with no conflict); [possible] = the best
+     * available guess (a contains-tier hit over multiple distinct
+     * titles, an unresolved same-key ambiguity, or a year
+     * conflict) — surfaced to the user, never hidden.
      */
     data class Match(
         val tmdbId: Long,
@@ -103,23 +122,18 @@ object WatchMatch {
     )
 
     /**
-     * A candidate with its match key computed ONCE (v2.5). The
-     * pre-v2.5 matcher re-normalized EVERY candidate for EVERY
-     * tracker title — keyOf ran twice per candidate per title
-     * (two calls in the Triple), each doing regex year-splitting
-     * and a lowercase pass — so a match run cost
+     * A candidate with its squash key computed ONCE (v2.5,
+     * retained by v2.7). The pre-v2.5 matcher re-normalized EVERY
+     * candidate for EVERY tracker title, so a match run cost
      * O(titles × candidates) full normalizations against a
-     * catalogue of tens of thousands. The 2026-10-22 dropbox ANR
+     * catalogue of tens of thousands — the 2026-10-22 dropbox ANR
      * caught exactly that on the main thread (normalizeKey under
      * matchOne under computeMatches). Now: candidates are keyed
-     * once per run, the exact tier is a hash lookup, and the fuzzy
-     * tier compares precomputed keys/token sets — no string is
-     * ever normalized twice in a run.
+     * once per run, the exact tier is a hash lookup, and the
+     * contains tier scans precomputed squash strings only — no
+     * string is ever squashed twice in a run.
      */
-    class KeyedCandidate(val candidate: Candidate, val key: String, val year: Int) {
-        /** Token set for the fuzzy tier, computed on first use only. */
-        val tokens: Set<String> by lazy(LazyThreadSafetyMode.NONE) { tokenSet(key) }
-    }
+    class KeyedCandidate(val candidate: Candidate, val key: String, val year: Int)
 
     /** Key every candidate once (one [keyOf] per candidate). */
     fun keyCandidates(candidates: List<Candidate>): List<KeyedCandidate> =
@@ -129,12 +143,11 @@ object WatchMatch {
         }
 
     /**
-     * The exact-tier index over keyed candidates: normalized key →
-     * candidates, in catalogue order (the matcher's "first in the
-     * tier wins" rule reads index lists in this order). Empty keys
-     * are excluded — they can never exact-match (a title's key is
-     * non-empty by the time tiers are consulted) nor fuzzy-match
-     * (the fuzzy filter requires a non-empty candidate key).
+     * The exact-tier index over keyed candidates: squash key →
+     * candidates, in catalogue order. Empty keys are excluded —
+     * they can never exact-match (a title's key is non-empty by
+     * the time tiers are consulted) nor contains-match (an empty
+     * candidate key contains nothing).
      */
     fun exactIndex(keyed: List<KeyedCandidate>): Map<String, List<KeyedCandidate>> {
         val map = HashMap<String, ArrayList<KeyedCandidate>>()
@@ -145,12 +158,31 @@ object WatchMatch {
         return map
     }
 
+    /** Within-tier ordering penalty: a known-year disagreement sorts last. */
+    private fun yearPenalty(candYear: Int, titleYear: Int): Int =
+        if (titleYear > 0 && candYear > 0 && candYear != titleYear) 1 else 0
+
     /**
-     * Best-tier matching for one title against PRE-KEYED
-     * candidates; null when nothing is close. Semantics are the
-     * pre-v2.5 matchOne's, unchanged: exact tier beats fuzzy, a
-     * year on both sides breaks ties, ambiguity resolves to the
-     * first candidate flagged possible.
+     * Repo-method matching for one title against PRE-KEYED
+     * candidates; null when no candidate's key equals or contains
+     * the target key.
+     *
+     * Tier 1 (exact): candidates whose squash EQUALS the target
+     * squash. A known year on both sides narrows the pool to the
+     * agreeing candidates; the first in catalogue order is chosen.
+     * The match is [Match.exact] when the pool resolved to one
+     * candidate with no year conflict, else the first candidate
+     * flagged possible.
+     *
+     * Tier 2 (contains): candidates whose squash CONTAINS the
+     * target squash (the repo's one-directional includes — a
+     * catalogue name carrying quality tags / years / suffixes
+     * still finds its clean TMDB title). Order inside the tier is
+     * deterministic: year-agreeing candidates first, then the
+     * SHORTEST squash (the least-decorated name), then catalogue
+     * order. The match is flagged possible when the tier held
+     * multiple DISTINCT titles or the chosen candidate's known
+     * year conflicts with the title's.
      */
     fun matchOneKeyed(
         t: TrackerTitle,
@@ -161,42 +193,41 @@ object WatchMatch {
         val (tKey, tYear) = keyOf(t.title, t.year)
         if (tKey.isEmpty()) return null
         val exactTier = exact[tKey] ?: emptyList()
-        val isExactTier = exactTier.isNotEmpty()
-        val tier: List<KeyedCandidate> = if (isExactTier) {
-            exactTier
-        } else {
-            val tTokens = tokenSet(tKey)
-            keyed.filter { k ->
-                k.key.isNotEmpty() &&
-                    (k.key.startsWith("$tKey ") || tKey.startsWith("${k.key} ") ||
-                        k.tokens == tTokens)
-            }
+        if (exactTier.isNotEmpty()) {
+            val yearHits = if (tYear > 0) exactTier.filter { it.year == tYear } else emptyList()
+            val pool = if (yearHits.isNotEmpty()) yearHits else exactTier
+            val chosen = pool.first()
+            val yearConflict = tYear > 0 && chosen.year > 0 && chosen.year != tYear
+            val resolved = pool.size == 1 && !yearConflict
+            return Match(t.tmdbId, t.type, chosen.candidate.iptvId, resolved, !resolved)
         }
-        if (tier.isEmpty()) return null
-        val yearHits = if (tYear > 0) tier.filter { it.year == tYear } else emptyList()
-        val pool = if (yearHits.isNotEmpty()) yearHits else tier
-        val chosen = pool.first()
-        val yearConflict = tYear > 0 && yearHits.isEmpty() && tier.any { it.year > 0 }
-        val exactFlag = isExactTier && pool.size == 1 && !yearConflict
-        return Match(t.tmdbId, t.type, chosen.candidate.iptvId, exactFlag, !exactFlag)
+        val containing = keyed.filter { it.key.contains(tKey) }
+        if (containing.isEmpty()) return null
+        val distinctTitles = containing.map { it.key }.distinct().size
+        // sortedWith is stable: equal (penalty, length) pairs keep
+        // catalogue order — the tier's final tie-break.
+        val chosen = containing.sortedWith(
+            compareBy<KeyedCandidate> { yearPenalty(it.year, tYear) }
+                .thenBy { it.key.length }
+        ).first()
+        val yearConflict = tYear > 0 && chosen.year > 0 && chosen.year != tYear
+        val possible = distinctTitles > 1 || yearConflict
+        return Match(t.tmdbId, t.type, chosen.candidate.iptvId, false, possible)
     }
 
-    /** Best-tier matching for one title; null when nothing is close. */
+    /** Repo-method matching for one title; null when nothing matches. */
     fun matchOne(t: TrackerTitle, candidates: List<Candidate>): Match? {
         if (candidates.isEmpty()) return null
         val keyed = keyCandidates(candidates)
         return matchOneKeyed(t, keyed, exactIndex(keyed))
     }
 
-    private fun tokenSet(key: String): Set<String> = key.split(' ').filter { it.isNotEmpty() }.toSet()
-
     /**
      * Match every tracker title against one catalogue, keyed by
      * tmdbId. The catalogue is keyed + indexed ONCE for the whole
      * run (see [KeyedCandidate]) — the cost is O(candidates) key
      * computations plus one hash lookup per title on the exact
-     * tier, instead of the old O(titles × candidates)
-     * re-normalization.
+     * tier; the contains tier scans precomputed squash strings.
      */
     fun matchAll(tracker: List<TrackerTitle>, candidates: List<Candidate>): Map<Long, Match> {
         val out = LinkedHashMap<Long, Match>()
