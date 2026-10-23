@@ -155,7 +155,51 @@ class IptvActivity : Activity() {
 
     // ------------------------------------------------------------ render
 
+    /**
+     * v2.3.2: EVERY browser build runs behind this guard. Real
+     * panel data (tens of thousands of entries, odd shapes) must
+     * never leave this activity black: any escape — exception or
+     * an inflation OOM — is recorded and replaced by a worded
+     * error screen. (Throwable, not Exception: running out of
+     * memory mid-inflate is precisely one of the failure modes
+     * being defended against, and the fallback renders two views.)
+     */
     private fun rebuild() {
+        try {
+            rebuildInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "iptvbrowser", e)
+            renderBrowserError()
+        }
+    }
+
+    private fun renderBrowserError() {
+        val box = contentBox ?: return
+        try {
+            box.removeAllViews()
+            firstCard = null
+            val title = TextView(this)
+            title.text = "IPTV"
+            title.setTextColor(0xFFFFFFFF.toInt())
+            title.textSize = 28f
+            title.setTypeface(title.typeface, Typeface.BOLD)
+            box.addView(title)
+            val line = TextView(this)
+            line.text = "The IPTV browser hit a snag showing this — nothing is broken. " +
+                "Press Back and try again; the error is noted in the launcher's diagnostics."
+            line.setTextColor(0xFFB3B3B3.toInt())
+            line.textSize = 17f
+            val lp = LinearLayout.LayoutParams(-1, -2)
+            lp.setMargins(0, Ui.dp(this, 14), 0, 0)
+            line.layoutParams = lp
+            box.addView(line)
+        } catch (e: Throwable) {
+            // Even the fallback failed — leave whatever is on
+            // screen rather than crash the default home's process.
+        }
+    }
+
+    private fun rebuildInner() {
         val box = contentBox ?: return
         val focusedBefore = focusedKey
         box.removeAllViews()
@@ -296,6 +340,13 @@ class IptvActivity : Activity() {
             return
         }
 
+        // v2.3.2: views render ONE PAGE of the filtered list
+        // (core/IptvLogic.gridPage, GRID_CAP) — a real category can
+        // hold thousands of entries, and one inflated view per
+        // entry is what blacked this screen out on-device. The
+        // count line says when the page is a prefix; categories and
+        // Search remain the way to narrow down, and the player's
+        // zap queue follows the visible page.
         when (kind) {
             IptvLogic.KIND_VOD -> {
                 val items = cats.vods.filter {
@@ -305,8 +356,17 @@ class IptvActivity : Activity() {
                     emptyState(box, cats)
                     return
                 }
-                countLine(box, "${items.size} movies — OK plays, hold OK for options")
-                grid(box, items.map { vod -> vodCardData(vod) }, wide = false)
+                val page = IptvLogic.gridPage(items)
+                countLine(
+                    box,
+                    if (page.truncated) {
+                        "${items.size} movies — showing the first ${page.items.size}; " +
+                            "pick a category or use Search to narrow it down"
+                    } else {
+                        "${items.size} movies — OK plays, hold OK for options"
+                    }
+                )
+                grid(box, page.items.map { vod -> vodCardData(vod) }, wide = false)
             }
             IptvLogic.KIND_SERIES -> {
                 val items = cats.series.filter {
@@ -316,8 +376,17 @@ class IptvActivity : Activity() {
                     emptyState(box, cats)
                     return
                 }
-                countLine(box, "${items.size} series — OK opens seasons & episodes")
-                grid(box, items.map { s -> seriesCardData(s) }, wide = false)
+                val page = IptvLogic.gridPage(items)
+                countLine(
+                    box,
+                    if (page.truncated) {
+                        "${items.size} series — showing the first ${page.items.size}; " +
+                            "pick a category or use Search to narrow it down"
+                    } else {
+                        "${items.size} series — OK opens seasons & episodes"
+                    }
+                )
+                grid(box, page.items.map { s -> seriesCardData(s) }, wide = false)
             }
             else -> {
                 val items = cats.live.filter {
@@ -327,8 +396,17 @@ class IptvActivity : Activity() {
                     emptyState(box, cats)
                     return
                 }
-                countLine(box, "${items.size} channels — OK plays, hold OK for options")
-                grid(box, items.map { ch -> liveCardData(ch, items) }, wide = true)
+                val page = IptvLogic.gridPage(items)
+                countLine(
+                    box,
+                    if (page.truncated) {
+                        "${items.size} channels — showing the first ${page.items.size}; " +
+                            "pick a category or use Search to narrow it down"
+                    } else {
+                        "${items.size} channels — OK plays, hold OK for options"
+                    }
+                )
+                grid(box, page.items.map { ch -> liveCardData(ch, page.items) }, wide = true)
             }
         }
     }
@@ -346,9 +424,18 @@ class IptvActivity : Activity() {
             box.addView(line)
             return
         }
-        countLine(box, "${favs.size} favorites — hold OK to remove")
-        val liveFavs = favs.filter { it.kind == IptvLogic.KIND_LIVE }
-        grid(box, favs.map { fav -> favCardData(fav, liveFavs) }, wide = false)
+        // v2.3.2: same page cap as the catalogue tabs.
+        val page = IptvLogic.gridPage(favs)
+        countLine(
+            box,
+            if (page.truncated) {
+                "${favs.size} favorites — showing the first ${page.items.size}"
+            } else {
+                "${favs.size} favorites — hold OK to remove"
+            }
+        )
+        val liveFavs = page.items.filter { it.kind == IptvLogic.KIND_LIVE }
+        grid(box, page.items.map { fav -> favCardData(fav, liveFavs) }, wide = false)
     }
 
     private fun buildSearchTab(box: LinearLayout, cats: IptvLogic.Catalogues) {
@@ -373,17 +460,31 @@ class IptvActivity : Activity() {
             countLine(box, "No matches for “$searchQuery”.")
             return
         }
+        // v2.3.2: each result section renders one page (a one-letter
+        // search over a real catalogue matches thousands).
         if (results.live.isNotEmpty()) {
+            val page = IptvLogic.gridPage(results.live)
             sectionTitle(box, "Live — ${results.live.size}")
-            grid(box, results.live.map { ch -> liveCardData(ch, results.live) }, wide = true)
+            if (page.truncated) {
+                countLine(box, "Showing the first ${page.items.size} — refine the search to see more")
+            }
+            grid(box, page.items.map { ch -> liveCardData(ch, page.items) }, wide = true)
         }
         if (results.vods.isNotEmpty()) {
+            val page = IptvLogic.gridPage(results.vods)
             sectionTitle(box, "Movies — ${results.vods.size}")
-            grid(box, results.vods.map { vodCardData(it) }, wide = false)
+            if (page.truncated) {
+                countLine(box, "Showing the first ${page.items.size} — refine the search to see more")
+            }
+            grid(box, page.items.map { vodCardData(it) }, wide = false)
         }
         if (results.series.isNotEmpty()) {
+            val page = IptvLogic.gridPage(results.series)
             sectionTitle(box, "Series — ${results.series.size}")
-            grid(box, results.series.map { seriesCardData(it) }, wide = false)
+            if (page.truncated) {
+                countLine(box, "Showing the first ${page.items.size} — refine the search to see more")
+            }
+            grid(box, page.items.map { seriesCardData(it) }, wide = false)
         }
     }
 

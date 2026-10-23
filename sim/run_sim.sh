@@ -171,6 +171,19 @@ export JAVA_OPTS
   echo "PackageManager at runtime (the photo showed two different"
   echo "stale labels at once). All v2.3 checks carry over."
   echo
+  echo "Note (v2.3.2): hotfix from on-device evidence (spec S23):"
+  echo "with the cleartext fix the real panel finally loaded, and"
+  echo "every IPTV view that built one view per catalogue entry"
+  echo "blacked out — the browser grids, the guide, and the home"
+  echo "data path were all unbounded and unguarded. New section 40:"
+  echo "an oversized fixture (5,000 live + 5,000 movies + 60"
+  echo "favorites) proves the view caps (browser/guide GRID_CAP"
+  echo "200, home rows capped in composition AND at render), a"
+  echo "hostile EPG index proves the home composition fails open"
+  echo "to its safe shell, and source checks prove the"
+  echo "iptvbrowser / iptvguide / iptvhome guards are wired in."
+  echo "All v2.3.1 checks carry over."
+  echo
   echo '```'
   java -jar sim/sim.jar
   echo '```'

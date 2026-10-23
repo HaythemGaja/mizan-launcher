@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 01:02 UTC
+Date: 2026-10-23 01:44 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -110,6 +110,19 @@ http:// by default), and SettingsActivity carries no
 hardcoded 'Sreeb v<digit>' label — the version is read from
 PackageManager at runtime (the photo showed two different
 stale labels at once). All v2.3 checks carry over.
+
+Note (v2.3.2): hotfix from on-device evidence (spec S23):
+with the cleartext fix the real panel finally loaded, and
+every IPTV view that built one view per catalogue entry
+blacked out — the browser grids, the guide, and the home
+data path were all unbounded and unguarded. New section 40:
+an oversized fixture (5,000 live + 5,000 movies + 60
+favorites) proves the view caps (browser/guide GRID_CAP
+200, home rows capped in composition AND at render), a
+hostile EPG index proves the home composition fails open
+to its safe shell, and source checks prove the
+iptvbrowser / iptvguide / iptvhome guards are wired in.
+All v2.3.1 checks carry over.
 
 ```
 PASS  neverlist: gms is never
@@ -668,8 +681,20 @@ PASS  watch: auto-mark fires at exactly 90%, not at 89%
 PASS  watch: auto-mark never fires twice, never tokenless, never on a partial watch
 PASS  watch: badge only when matched; hero labels name the episode, movies plain
 PASS  watch: diag line is counts-only
+PASS  iptv232: hostile EPG index ? homeRowsOrEmpty fails open to no rows
+PASS  iptv232: the same composition with a sane EPG still composes rows
+PASS  iptv232: home rows stay capped on a 5,000-entry catalogue (live + movies ? ROW_CARD_CAP)
+PASS  iptv232: the favorites row is capped too (60 stored ? ROW_CARD_CAP)
+PASS  iptv232: the home VIEW cap trims any row to HOME_ROW_VIEW_CAP (20)
+PASS  iptv232: browser grid page caps a 5,000-channel category at GRID_CAP (200), total preserved
+PASS  iptv232: search results page the same way (5,000 matches ? 200 shown)
+PASS  iptv232: a list under the cap pages whole and untruncated
+PASS  iptv232: the browser rebuild is guarded and records as iptvbrowser
+PASS  iptv232: the browser pages its grids through gridPage
+PASS  iptv232: the guide rebuild is guarded, records as iptvguide, and pages its rows
+PASS  iptv232: the home build records iptvhome and renders rows through homeRowCards
 PASS  hotfix: manifest permits cleartext HTTP (Xtream panels / M3U / XMLTV are http://)
 PASS  hotfix: no hardcoded 'Sreeb v<digit>' label remains in SettingsActivity
 PASS  hotfix: the version label is read from PackageManager at runtime
-RESULT: 558 passed, 0 failed, 558 total
+RESULT: 570 passed, 0 failed, 570 total
 ```

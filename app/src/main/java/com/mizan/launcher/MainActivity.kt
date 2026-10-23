@@ -493,13 +493,33 @@ class MainActivity : Activity() {
         // v2.2: the IPTV home style — same frame again (the wallpaper
         // treatment is the TV one; no hero backdrop here), a third
         // root render. Safe mode forces TV, so this never runs there.
+        // v2.3.2: the call itself is guarded — rebuild() only RECORDS
+        // an escape from buildRoot (it cannot swap in a fallback
+        // after the fact), so before this wrap a throw in the IPTV
+        // render left the default home with NO content view at all:
+        // a black screen on every launch. Now the partial IPTV
+        // views are dropped and the standard TV render below runs
+        // instead. Throwable, not Exception: an inflation OOM on
+        // real panel data is one of the defended failure modes.
         if (isIptvStyle()) {
-            buildIptvHome(content, barHost)
-            homeRoot = root
-            if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
-                attachMoveHint(root)
+            val iptvBuilt = try {
+                buildIptvHome(content, barHost)
+                true
+            } catch (e: Throwable) {
+                Prefs.noteError(this, "iptvhome", e)
+                content.removeAllViews()
+                barHost.removeAllViews()
+                firstTile = null
+                false
             }
-            return root
+            if (iptvBuilt) {
+                homeRoot = root
+                if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
+                    attachMoveHint(root)
+                }
+                return root
+            }
+            // Fall through to the standard TV render.
         }
 
         barHost.addView(buildTopBar())
@@ -750,15 +770,38 @@ class MainActivity : Activity() {
 
         content.addView(buildIptvEntryRow())
 
-        val cats = IptvClient.cached(this)
-        val hidden = iptvHiddenCatKeys(cats)
-        val rows = IptvLogic.homeRows(
-            cats, prefs.iptvFavoriteList(), prefs.iptvResumeList(), hidden,
-            IptvClient.epgIndex(this), System.currentTimeMillis()
-        )
+        // v2.3.2: the whole data section — cached catalogues, the
+        // lock set, the sync EPG index, the row composition — runs
+        // behind this guard. It used to be four bare calls on real
+        // panel data of unknown size/shape; any escape killed the
+        // build (and with it the default home's only content view).
+        // On failure the render falls through to the safe shell:
+        // the top bar + entry row above, the info line below, then
+        // the favorites/apps sections — the cache is left exactly
+        // as it is; only the RENDER degrades.
+        var cats = IptvLogic.Catalogues()
+        var rows: List<IptvLogic.HomeRow> = emptyList()
+        var dataFailed = false
+        try {
+            cats = IptvClient.cached(this)
+            val hidden = iptvHiddenCatKeys(cats)
+            rows = IptvLogic.homeRows(
+                cats, prefs.iptvFavoriteList(), prefs.iptvResumeList(), hidden,
+                IptvClient.epgIndex(this), System.currentTimeMillis()
+            )
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "iptvhome", e)
+            dataFailed = true
+            cats = IptvLogic.Catalogues()
+            rows = emptyList()
+        }
         if (rows.isEmpty()) {
-            val lineText = IptvStatus.emptyLine(IptvClient.status(this))
-                ?: "Nothing to show here yet — IPTV rows appear when your catalogues load."
+            val lineText = if (dataFailed) {
+                "IPTV hit a snag loading its catalogues — your apps are right below."
+            } else {
+                IptvStatus.emptyLine(IptvClient.status(this))
+                    ?: "Nothing to show here yet — IPTV rows appear when your catalogues load."
+            }
             content.addView(trackerInfoLine(lineText))
         }
         for (row in rows) {
@@ -838,7 +881,9 @@ class MainActivity : Activity() {
         val box = section(row.title)
         val rowLayout = LinearLayout(this)
         rowLayout.orientation = LinearLayout.HORIZONTAL
-        for (card in row.cards) {
+        // v2.3.2: the view renders at most HOME_ROW_VIEW_CAP cards
+        // per row, whatever the composition produced.
+        for (card in IptvLogic.homeRowCards(row)) {
             val view = IptvCards.build(
                 activity = this, prefs = prefs, accent = accent,
                 imageUrl = card.image, title = card.title, meta = card.meta,

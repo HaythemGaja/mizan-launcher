@@ -102,23 +102,42 @@ object IptvClient {
 
     // ------------------------------------------------------------ snapshots
 
+    // v2.3.2: the parsed catalogues, memoized on the raw snapshot.
+    // Real panels return tens of thousands of entries per call;
+    // re-parsing the cached documents on EVERY UI rebuild (the
+    // browser rebuilds on create + resume + each async callback)
+    // pinned the main thread for seconds at a time — on-device the
+    // window simply stayed black. Parse once per data change; the
+    // fetch thread's own cached() call at the end of a refresh
+    // warms the memo off the UI thread, so UI rebuilds are lookups.
+    @Volatile
+    private var memoRaw: List<String?>? = null
+
+    @Volatile
+    private var memoCats: IptvLogic.Catalogues? = null
+
     /** The last-good catalogues, parsed from the cache. Never touches the network. */
     fun cached(ctx: Context): IptvLogic.Catalogues {
         return try {
             if (!cacheUsable(ctx)) return IptvLogic.Catalogues()
-            val p = prefs(ctx)
-            val liveCatsX = IptvLogic.parseCategories(p.getString(K_LIVE_CATS, null), IptvLogic.KIND_LIVE)
-            val vodCats = IptvLogic.parseCategories(p.getString(K_VOD_CATS, null), IptvLogic.KIND_VOD)
-            val seriesCats = IptvLogic.parseCategories(p.getString(K_SERIES_CATS, null), IptvLogic.KIND_SERIES)
-            val (m3uCats, m3uLive) = IptvLogic.parseM3u(p.getString(K_M3U, null))
-            IptvLogic.Catalogues(
+            val raw = snapshotRaw(ctx)
+            val memo = memoCats
+            if (memo != null && raw == memoRaw) return memo
+            val liveCatsX = IptvLogic.parseCategories(raw[0], IptvLogic.KIND_LIVE)
+            val vodCats = IptvLogic.parseCategories(raw[2], IptvLogic.KIND_VOD)
+            val seriesCats = IptvLogic.parseCategories(raw[4], IptvLogic.KIND_SERIES)
+            val (m3uCats, m3uLive) = IptvLogic.parseM3u(raw[6])
+            val parsed = IptvLogic.Catalogues(
                 liveCats = liveCatsX + m3uCats,
-                live = IptvLogic.parseLive(p.getString(K_LIVE, null), liveCatsX.associate { it.id to it.name }) + m3uLive,
+                live = IptvLogic.parseLive(raw[1], liveCatsX.associate { it.id to it.name }) + m3uLive,
                 vodCats = vodCats,
-                vods = IptvLogic.parseVods(p.getString(K_VODS, null), vodCats.associate { it.id to it.name }),
+                vods = IptvLogic.parseVods(raw[3], vodCats.associate { it.id to it.name }),
                 seriesCats = seriesCats,
-                series = IptvLogic.parseSeries(p.getString(K_SERIES, null), seriesCats.associate { it.id to it.name })
+                series = IptvLogic.parseSeries(raw[5], seriesCats.associate { it.id to it.name })
             )
+            memoRaw = raw
+            memoCats = parsed
+            parsed
         } catch (e: Exception) {
             IptvLogic.Catalogues()
         }
@@ -406,7 +425,15 @@ object IptvClient {
      * the guide simply show nothing extra.
      */
     fun epgIndex(ctx: Context, onBuilt: (() -> Unit)? = null): Map<String, List<IptvEpg.Programme>> {
-        epgIndexCache?.let { return it }
+        // v2.3.2: the synchronous entry fails open too — this is
+        // called on UI build paths, so ANY throw here (never mind
+        // the background parse, which is guarded separately) reads
+        // as "no EPG" instead of escaping into a home/browser build.
+        try {
+            epgIndexCache?.let { return it }
+        } catch (e: Exception) {
+            return emptyMap()
+        }
         if (!epgIndexBuilding) {
             epgIndexBuilding = true
             val appCtx = ctx.applicationContext
@@ -432,19 +459,28 @@ object IptvClient {
 
     /** (Re)parse the cached XMLTV documents into the in-memory index + channel count. */
     private fun rebuildEpgIndex(ctx: Context) {
-        if (!cacheUsable(ctx)) {
-            epgIndexCache = emptyMap()
-            return
-        }
-        val p = prefs(ctx)
-        val merged = LinkedHashMap<String, List<IptvEpg.Programme>>()
-        merged.putAll(IptvEpg.parseXmltv(p.getString(K_EPG_M, null)))
-        merged.putAll(IptvEpg.parseXmltv(p.getString(K_EPG_X, null)))
-        epgIndexCache = merged
+        // v2.3.2: fail-open end to end — a hostile or oversized
+        // XMLTV document degrades to an empty index (cards/guide
+        // just show no programme info), never an escape into the
+        // fetch thread or a caller.
         try {
-            p.edit().putInt(K_EPG_CHANNELS, merged.size).apply()
+            if (!cacheUsable(ctx)) {
+                epgIndexCache = emptyMap()
+                return
+            }
+            val p = prefs(ctx)
+            val merged = LinkedHashMap<String, List<IptvEpg.Programme>>()
+            merged.putAll(IptvEpg.parseXmltv(p.getString(K_EPG_M, null)))
+            merged.putAll(IptvEpg.parseXmltv(p.getString(K_EPG_X, null)))
+            epgIndexCache = merged
+            try {
+                p.edit().putInt(K_EPG_CHANNELS, merged.size).apply()
+            } catch (e: Exception) {
+                // Count is diagnostics only.
+            }
         } catch (e: Exception) {
-            // Count is diagnostics only.
+            epgIndexCache = emptyMap()
+            Prefs.noteError(ctx, "iptvEpg", sanitized(e))
         }
     }
 

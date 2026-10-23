@@ -2777,6 +2777,97 @@ fun main() {
                 "shows 3/5 · movies 2/4 · episodes resolved 7")
     }
 
+    // ---------- (40) v2.3.2 hotfix: IPTV views bounded + fail-open on real panel data ----------
+    run {
+        val L = IptvLogic
+        // An oversized real-panel-shaped fixture: 5,000 live in ONE
+        // category, 5,000 movies, 60 favorites. (Sim fixtures were
+        // all toy-sized until the real panel arrived on-device and
+        // the unbounded views blacked out.)
+        val bigLive = (1..5_000).map { i ->
+            IptvLogic.LiveChannel(
+                i.toLong(), "Channel $i", "", "1", "General",
+                "epg$i", "xtream", "", 0, 0
+            )
+        }
+        val bigVods = (1..5_000).map { i ->
+            IptvLogic.VodItem(i.toLong(), "Movie $i", "", "1", "Films", "mkv", "")
+        }
+        val bigCats = IptvLogic.Catalogues(
+            liveCats = listOf(IptvLogic.Category("1", "General", "xtream", L.KIND_LIVE)),
+            live = bigLive,
+            vodCats = listOf(IptvLogic.Category("1", "Films", "xtream", L.KIND_VOD)),
+            vods = bigVods
+        )
+        val bigFavs = (1..60).map { L.favOf(bigVods[it - 1]) }
+
+        // (a) The home composition fails OPEN: a hostile EPG index
+        // (its get() throws) yields no rows via the fail-open seam —
+        // the home view then renders its safe shell — never a throw.
+        val hostileEpg = object : HashMap<String, List<IptvEpg.Programme>>() {
+            override fun get(key: String): List<IptvEpg.Programme>? =
+                throw IllegalStateException("hostile index")
+        }
+        hostileEpg["decoy"] = emptyList() // non-empty, so the EPG path is really entered
+        check("iptv232: hostile EPG index — homeRowsOrEmpty fails open to no rows",
+            L.homeRowsOrEmpty(bigCats, emptyList(), emptyList(), emptySet(), hostileEpg, 1_000L)
+                .isEmpty())
+        check("iptv232: the same composition with a sane EPG still composes rows",
+            L.homeRowsOrEmpty(bigCats, emptyList(), emptyList(), emptySet(), emptyMap(), 1_000L)
+                .isNotEmpty())
+
+        // (b) Caps hold on the oversized catalogue.
+        val bigRows = L.homeRows(bigCats, bigFavs, emptyList(), emptySet())
+        check("iptv232: home rows stay capped on a 5,000-entry catalogue (live + movies ≤ ROW_CARD_CAP)",
+            bigRows.first { it.kind == IptvLogic.RowKind.LIVE }.cards.size == L.ROW_CARD_CAP &&
+                bigRows.first { it.kind == IptvLogic.RowKind.MOVIES }.cards.size == L.ROW_CARD_CAP)
+        check("iptv232: the favorites row is capped too (60 stored → ROW_CARD_CAP)",
+            bigRows.first { it.kind == IptvLogic.RowKind.FAVORITES }.cards.size == L.ROW_CARD_CAP)
+        val fatRow = IptvLogic.HomeRow(
+            IptvLogic.RowKind.LIVE, "Fat",
+            (1..50).map { i ->
+                IptvLogic.Card(L.KIND_LIVE, "k$i", "$i", "C$i", "", "", "", -1f, "", "xtream", "", "")
+            }
+        )
+        check("iptv232: the home VIEW cap trims any row to HOME_ROW_VIEW_CAP (20)",
+            L.homeRowCards(fatRow).size == 20 && L.HOME_ROW_VIEW_CAP == 20)
+
+        // The browser page: filter (the catalogue tab's own filter)
+        // then page — 5,000 in the category, 200 rendered, total kept.
+        val catItems = bigCats.live.filter { it.catKey == "xtream:live:1" }
+        val catPage = L.gridPage(catItems)
+        check("iptv232: browser grid page caps a 5,000-channel category at GRID_CAP (200), total preserved",
+            catPage.items.size == 200 && catPage.total == 5_000 && catPage.truncated &&
+                L.GRID_CAP == 200)
+        val searchPage = L.gridPage(L.search(bigCats, "channel", emptySet()).live)
+        check("iptv232: search results page the same way (5,000 matches → 200 shown)",
+            searchPage.items.size == 200 && searchPage.total == 5_000 && searchPage.truncated)
+        val smallPage = L.gridPage(listOf(1, 2, 3))
+        check("iptv232: a list under the cap pages whole and untruncated",
+            smallPage.items.size == 3 && smallPage.total == 3 && !smallPage.truncated)
+
+        // Source checks: the guards + caps are wired into the views.
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val browserSrc = src("app/src/main/java/com/mizan/launcher/ui/IptvActivity.kt")
+        check("iptv232: the browser rebuild is guarded and records as iptvbrowser",
+            browserSrc.contains("noteError(this, \"iptvbrowser\"") &&
+                browserSrc.contains("renderBrowserError"))
+        check("iptv232: the browser pages its grids through gridPage",
+            browserSrc.contains("IptvLogic.gridPage"))
+        val guideSrc = src("app/src/main/java/com/mizan/launcher/ui/IptvGuideActivity.kt")
+        check("iptv232: the guide rebuild is guarded, records as iptvguide, and pages its rows",
+            guideSrc.contains("noteError(this, \"iptvguide\"") &&
+                guideSrc.contains("IptvLogic.gridPage"))
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("iptv232: the home build records iptvhome and renders rows through homeRowCards",
+            mainSrc.contains("noteError(this, \"iptvhome\"") &&
+                mainSrc.contains("IptvLogic.homeRowCards(row)"))
+    }
+
     // ---------- (39) v2.3.1 hotfix: source checks (manifest cleartext + the one true version label) ----------
     run {
         // These read the app sources relative to the project root —

@@ -661,7 +661,7 @@ object IptvLogic {
     ): List<HomeRow> {
         val rows = ArrayList<HomeRow>()
 
-        val favCards = favorites.filter { it.catKey !in hiddenCatKeys }.map { e ->
+        val favCards = favorites.filter { it.catKey !in hiddenCatKeys }.take(ROW_CARD_CAP).map { e ->
             Card(e.kind, e.key, e.id, e.name, e.icon, "", "", -1f, e.catKey, e.source, e.ext, e.directUrl)
         }
         if (favCards.isNotEmpty()) rows.add(HomeRow(RowKind.FAVORITES, "Favorites", favCards))
@@ -736,6 +736,59 @@ object IptvLogic {
 
         return rows
     }
+
+    /**
+     * [homeRows], fail-open (v2.3.2): ANY throw in the composition
+     * — hostile/odd real-panel data, a pathological EPG index —
+     * yields NO rows instead of propagating. The home view treats
+     * "no rows" as its safe shell (top bar + entry row + the
+     * empty-state line + the app rows), so a data problem can never
+     * take the home screen down with it. Callers still wrap the
+     * call themselves to RECORD the failure (Prefs.noteError).
+     */
+    fun homeRowsOrEmpty(
+        cats: Catalogues,
+        favorites: List<FavEntry>,
+        resume: List<ResumeEntry>,
+        hiddenCatKeys: Set<String>,
+        epg: Map<String, List<IptvEpg.Programme>> = emptyMap(),
+        nowMs: Long = 0L
+    ): List<HomeRow> =
+        try {
+            homeRows(cats, favorites, resume, hiddenCatKeys, epg, nowMs)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+    // ------------------------------------------------------------ view caps (v2.3.2)
+
+    /**
+     * The most items any IPTV list/grid VIEW renders at once. Real
+     * panels return tens of thousands of entries per catalogue (and
+     * thousands inside a single category); inflating one view per
+     * entry on the main thread froze the browser to a black screen
+     * on-device. Views page through [gridPage] and say so on screen
+     * ("showing the first N") — the full list stays one category
+     * chip or search refinement away, and playback queues follow
+     * the visible page.
+     */
+    const val GRID_CAP = 200
+
+    /** The most cards one IPTV HOME row renders (the composition
+     * cap is [ROW_CARD_CAP]; the view cap is tighter still). */
+    const val HOME_ROW_VIEW_CAP = 20
+
+    /** One page of a view list: the items to render + the full total. */
+    data class GridPage<T>(val items: List<T>, val total: Int) {
+        val truncated: Boolean get() = total > items.size
+    }
+
+    /** The first [cap] items of [items], with the true total kept for the "showing first N" line. */
+    fun <T> gridPage(items: List<T>, cap: Int = GRID_CAP): GridPage<T> =
+        GridPage(items.take(cap.coerceAtLeast(0)), items.size)
+
+    /** The cards of one home row as the view renders them — [HOME_ROW_VIEW_CAP] at most. */
+    fun homeRowCards(row: HomeRow): List<Card> = row.cards.take(HOME_ROW_VIEW_CAP)
 
     private fun liveCard(
         ch: LiveChannel,

@@ -71,7 +71,37 @@ class IptvGuideActivity : Activity() {
         rebuild()
     }
 
+    /**
+     * v2.3.2: every guide build runs behind this guard (same rule
+     * as the browser): real catalogue/EPG data must never leave
+     * this screen black — an escape is recorded and replaced by a
+     * worded error line. Throwable, not Exception: inflation OOM
+     * on a huge channel list is one of the defended failure modes.
+     */
     private fun rebuild() {
+        try {
+            rebuildInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "iptvguide", e)
+            val box = contentBox ?: return
+            try {
+                box.removeAllViews()
+                val line = TextView(this)
+                line.text = "The programme guide hit a snag — press Back and try again. " +
+                    "The error is noted in the launcher's diagnostics."
+                line.setTextColor(0xFFB3B3B3.toInt())
+                line.textSize = 17f
+                val lp = LinearLayout.LayoutParams(-1, -2)
+                lp.setMargins(0, Ui.dp(this, 12), 0, 0)
+                line.layoutParams = lp
+                box.addView(line)
+            } catch (e2: Throwable) {
+                // Leave whatever is on screen rather than crash.
+            }
+        }
+    }
+
+    private fun rebuildInner() {
         val box = contentBox ?: return
         val focusedBefore = focusedKey
         box.removeAllViews()
@@ -115,15 +145,30 @@ class IptvGuideActivity : Activity() {
             return
         }
 
+        // v2.3.2: one row per channel for EVERY channel was the
+        // same unbounded build as the browser grids — a real panel
+        // carries thousands of live channels. Render one page; the
+        // zap queue follows the visible page.
+        val page = IptvLogic.gridPage(channels)
+        if (page.truncated) {
+            val note = TextView(this)
+            note.text = "Showing the first ${page.items.size} of ${channels.size} channels"
+            note.setTextColor(0xFFB3B3B3.toInt())
+            note.textSize = 15f
+            val nlp = LinearLayout.LayoutParams(-1, -2)
+            nlp.setMargins(0, Ui.dp(this, 10), 0, Ui.dp(this, 2))
+            note.layoutParams = nlp
+            box.addView(note)
+        }
         val index = IptvClient.epgIndex(this)
         val now = System.currentTimeMillis()
         val timeFmt = SimpleDateFormat("h:mm a", Locale.US)
         var firstRow: View? = null
-        for (ch in channels) {
+        for (ch in page.items) {
             val programmes = shortEpg[ch.key]?.takeIf { it.isNotEmpty() }
                 ?: IptvLogic.epgFor(index, ch)
             val (nowP, nextP) = IptvEpg.nowNext(programmes, now)
-            val row = channelRow(ch, nowP, nextP, timeFmt, now, channels)
+            val row = channelRow(ch, nowP, nextP, timeFmt, now, page.items)
             if (firstRow == null) firstRow = row
             box.addView(row)
         }
