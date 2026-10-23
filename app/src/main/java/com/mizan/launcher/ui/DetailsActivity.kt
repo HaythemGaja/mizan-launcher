@@ -42,7 +42,8 @@ import com.mizan.launcher.data.WatchPlay
  * added from Sreeb but hasn't reached the tracker yet ("pending")
  * is READ-ONLY here: the drain drops progress actions for titles
  * not yet in the watchlist, so episode toggles would be lost —
- * the screen says so and offers Open in Tracker instead.
+ * the screen says so. (v2.8: the tracker app is reachable only
+ * from the ⋯ More overflow — never a primary button here.)
  *
  * Fail-open: with TMDB unreachable the screen still shows what the
  * snapshots know (title, poster, progress) plus the error line.
@@ -596,9 +597,19 @@ class DetailsActivity : Activity() {
                 }
             )
         }
+        // v2.8: "Open in Tracker" is no longer a primary action
+        // button — it lives in the ⋯ More overflow menu only.
+        // This screen IS the tracker's replacement for title work;
+        // the tracker app stays reachable for its own Settings.
         buttons.add(
-            actionButton("▶ Open in Tracker", "open") {
-                TrackerActions.openTrackerGated(this, prefs, accent)
+            actionButton("⋯ More", "more") {
+                AlertDialog.Builder(this)
+                    .setTitle(displayTitle())
+                    .setItems(arrayOf("Open in Tracker")) { _, _ ->
+                        TrackerActions.openTrackerGated(this, prefs, accent)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
         )
         if (inSnapshot) {

@@ -38,6 +38,7 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/Design.kt \
   app/src/main/java/com/mizan/launcher/core/AppCatalogue.kt \
   app/src/main/java/com/mizan/launcher/core/HomeStyle.kt \
+  app/src/main/java/com/mizan/launcher/core/HomeTabs.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerLogic.kt \
   app/src/main/java/com/mizan/launcher/core/LibraryLogic.kt \
   app/src/main/java/com/mizan/launcher/core/ProfileNames.kt \

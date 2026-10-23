@@ -146,8 +146,28 @@ class Prefs(ctx: Context) {
         get() = sp.getString(k("tracker_sections"), "") ?: ""
         set(v) { sp.edit().putString(k("tracker_sections"), v).apply() }
 
-    fun trackerSectionsConfig(): com.mizan.launcher.core.TrackerSections.Config =
-        com.mizan.launcher.core.TrackerSections.decode(trackerSections)
+    fun trackerSectionsConfig(): com.mizan.launcher.core.TrackerSections.Config {
+        val cfg = com.mizan.launcher.core.TrackerSections.decode(trackerSections)
+        // v2.8 one-time order migration (core/TrackerSections.
+        // migrateOrder): a pre-v2.7 stored order had the v2.7 focus
+        // rows appended at the very end, where Haythem never saw
+        // them. The first read under v2.8 splices them into their
+        // canonical slots, persists the result, and sets the flag
+        // — later deliberate reorders (even back to the end) are
+        // the user's and are never re-migrated.
+        try {
+            if (!sp.getBoolean(k("tracker_sections_migrated_28"), false)) {
+                val migrated = com.mizan.launcher.core.TrackerSections.migrateOrder(cfg)
+                if (migrated != cfg) trackerSections =
+                    com.mizan.launcher.core.TrackerSections.encode(migrated)
+                sp.edit().putBoolean(k("tracker_sections_migrated_28"), true).apply()
+                return migrated
+            }
+        } catch (e: Exception) {
+            // Migration must never break a read — the raw config serves.
+        }
+        return cfg
+    }
 
     fun setTrackerSectionsConfig(c: com.mizan.launcher.core.TrackerSections.Config) {
         trackerSections = com.mizan.launcher.core.TrackerSections.encode(c)

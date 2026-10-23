@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Mizan" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
+        <!-- v2.8: brand splash (near-black + red S) instead of a
+             plain black window — the cold-start wait reads as the
+             app starting, not as a dead screen. -->
+        <item name="android:windowBackground">@drawable/splash_bg</item>
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#FFEBEBF0</item>
         <item name="android:windowFullscreen">true</item>

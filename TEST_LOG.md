@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 18:26 UTC
+Date: 2026-10-23 22:09 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -805,7 +805,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 2.7 / code 20 (bumped by v2.7)
+PASS  v25src: the app version is 2.8 / code 21 (bumped by v2.8)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -898,5 +898,34 @@ PASS  v27src: the IPTV home carries Trending on your IPTV + its play path
 PASS  v27src: discovery fetches run on the mizan-discovery worker through the funnel
 PASS  v27src: diagnostics carries the discovery line
 PASS  v27src: the direct client accepts discover/ (the proxy allowlist has none)
-RESULT: 726 passed, 0 failed, 726 total
+PASS  migrate: a pre-v2.7 stored order has the focus rows appended at the end
+PASS  migrate: the appended rows splice into their canonical slots
+PASS  migrate: idempotent ? a second pass changes nothing
+PASS  migrate: an untouched canonical order is a no-op
+PASS  migrate: only the still-appended rows move (comingsoon already placed stays)
+PASS  migrate: a focus row parked mid-list (before foryou) is never itself moved
+PASS  migrate: the user's other rows keep their relative order exactly
+PASS  migrate: the hidden set survives the splice
+PASS  tabs: Tracker/Watch = Home ? Library ? Apps
+PASS  tabs: only Home is selected, and it is STAY
+PASS  tabs: Library opens the library; Apps jumps focus to All Apps
+PASS  tabs: IPTV = Home ? Live ? Movies ? Series ? Guide ? Apps
+PASS  tabs: IPTV actions map Live/Movies/Series/Guide/Apps
+PASS  tabs: the TV style has no tab bar; tracker+watch share one; iptv gets its own
+PASS  hero: a resolvable title's primary is Play
+PASS  hero: an unresolvable title's primary is Details ? never the tracker
+PASS  startup: both timings recorded
+PASS  startup: nothing recorded renders dashes, never a fake 0
+PASS  startup: a zero first frame is honest; a missing full stays a dash
+PASS  v28src: both media homes build the pill tab bar from the pure model
+PASS  v28src: the landscape rail + circular All Apps builders exist and are used
+PASS  v28src: the hero primary routes through the pinned decision; Open Tracker is never primary
+PASS  v28src: cold start is staged (warm worker + deferred prepares + shell lines)
+PASS  v28src: Details has no primary Open in Tracker ? it lives in the More overflow
+PASS  v28src: IPTV cards carry the LIVE pill + in-frame progress + focus border
+PASS  v28src: settings nav fixes are in (no selectable dead stop, index memory, focus net, startup line)
+PASS  v28src: the window background is the brand splash, not a black void
+PASS  v28src: DiagLog records the startup milestones
+PASS  v28src: the one-time order migration is wired into the sections read
+RESULT: 755 passed, 0 failed, 755 total
 ```

@@ -51,6 +51,7 @@ object IptvCards {
         wide: Boolean = false,
         tag: String? = null,
         progress: Float = -1f,
+        liveBadge: Boolean = false,
         onFocus: (() -> Unit)? = null,
         onClick: () -> Unit,
         onLong: (() -> Unit)? = null
@@ -88,7 +89,63 @@ object IptvCards {
             g.gravity = Gravity.CENTER
             frame.addView(g, FrameLayout.LayoutParams(-1, -1))
         }
-        Ui.focusLift(frame, accent, 16) { hasFocus -> if (hasFocus) onFocus?.invoke() }
+        if (liveBadge) {
+            // v2.8: the red LIVE pill, top-left inside the frame —
+            // the Google-TV Live card language.
+            val live = TextView(activity)
+            live.text = "LIVE"
+            live.setTextColor(0xFFFFFFFF.toInt())
+            live.textSize = 11f
+            live.setTypeface(live.typeface, Typeface.BOLD)
+            val liveBg = android.graphics.drawable.GradientDrawable()
+            liveBg.cornerRadius = Ui.dp(activity, 100).toFloat()
+            liveBg.setColor(com.mizan.launcher.core.Design.NETFLIX_RED)
+            live.background = liveBg
+            live.setPadding(
+                Ui.dp(activity, 8), Ui.dp(activity, 3),
+                Ui.dp(activity, 8), Ui.dp(activity, 3)
+            )
+            val liveLp = FrameLayout.LayoutParams(-2, -2)
+            liveLp.gravity = Gravity.TOP or Gravity.START
+            liveLp.setMargins(Ui.dp(activity, 6), Ui.dp(activity, 6), 0, 0)
+            frame.addView(live, liveLp)
+        }
+        // v2.8: on wide cards the progress bar runs along the
+        // frame's bottom edge (the through-programme window on
+        // Live cards); portrait cards keep the bar under the meta.
+        val barInFrame = wide && progress >= 0f
+        if (barInFrame) {
+            val track = View(activity)
+            track.setBackgroundColor(0x66FFFFFF)
+            val trackLp = FrameLayout.LayoutParams(-1, Ui.dp(activity, 4))
+            trackLp.gravity = Gravity.BOTTOM
+            frame.addView(track, trackLp)
+            val fillW = (m.tileWidthPx * progress.coerceIn(0f, 1f)).toInt()
+                .coerceAtLeast(Ui.dp(activity, 2))
+            val fill = View(activity)
+            fill.setBackgroundColor(com.mizan.launcher.core.Design.NETFLIX_RED)
+            val fillLp = FrameLayout.LayoutParams(fillW, Ui.dp(activity, 4))
+            fillLp.gravity = Gravity.BOTTOM or Gravity.START
+            frame.addView(fill, fillLp)
+        }
+        // v2.8: the shared focus treatment — a white border over
+        // the frame while focused (the browser uses these cards
+        // too, so both surfaces read the same).
+        val focusBorder = View(activity)
+        val borderBg = android.graphics.drawable.GradientDrawable()
+        borderBg.cornerRadius = Ui.dp(activity, 16).toFloat()
+        borderBg.setColor(0x00000000)
+        borderBg.setStroke(Ui.dp(activity, 3), 0xFFFFFFFF.toInt())
+        focusBorder.background = borderBg
+        focusBorder.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        focusBorder.visibility = View.INVISIBLE
+        focusBorder.isFocusable = false
+        focusBorder.isClickable = false
+        frame.addView(focusBorder)
+        Ui.focusLift(frame, accent, 16) { hasFocus ->
+            focusBorder.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
+            if (hasFocus) onFocus?.invoke()
+        }
         frame.setOnClickListener { onClick() }
         if (onLong != null) frame.setOnLongClickListener { onLong(); true }
         col.addView(frame)
@@ -129,7 +186,7 @@ object IptvCards {
             s.layoutParams = slp
             col.addView(s)
         }
-        if (progress >= 0f) {
+        if (progress >= 0f && !barInFrame) {
             val barBg = FrameLayout(activity)
             barBg.setBackgroundColor(0xFF404040.toInt())
             val blp = LinearLayout.LayoutParams(-1, Ui.dp(activity, 4))

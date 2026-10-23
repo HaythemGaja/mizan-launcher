@@ -68,6 +68,104 @@ object DiagLog {
     @Volatile
     private var stallDumped = false
 
+    // ------------------------------------------------------------ cold start (v2.8)
+
+    private const val K_STARTUP_FIRST = "startup_first_frame_ms"
+    private const val K_STARTUP_FULL = "startup_full_ms"
+
+    /**
+     * Process-start uptime (SystemClock.uptimeMillis at App.onCreate
+     * entry — the closest honest "process start" an app can read).
+     * Every startup milestone is a delta from this. 0 = never marked.
+     */
+    @Volatile
+    private var startUptimeMs: Long = 0L
+
+    @Volatile
+    private var firstFrameMs: Long = -1L
+
+    @Volatile
+    private var fullMs: Long = -1L
+
+    private fun startupPrefs(ctx: Context) =
+        ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
+
+    /** Milliseconds since [markStartupStart]; -1 before it runs. */
+    private fun startupElapsed(): Long =
+        if (startUptimeMs <= 0L) -1L
+        else android.os.SystemClock.uptimeMillis() - startUptimeMs
+
+    /**
+     * The cold-start clock's zero — called as the FIRST statement of
+     * App.onCreate. Also drops a breadcrumb, so the trail of a slow
+     * start reads as a timed sequence (app → main → first frame →
+     * home complete).
+     */
+    fun markStartupStart() {
+        if (startUptimeMs <= 0L) {
+            startUptimeMs = android.os.SystemClock.uptimeMillis()
+        }
+        note("startup: app")
+    }
+
+    /** A named startup milestone: stored when final, always breadcrumbed with its delta. */
+    fun markStartup(stage: String) {
+        val at = startupElapsed()
+        note(if (at >= 0L) "startup: $stage +$at ms" else "startup: $stage")
+    }
+
+    /** The staged shell's first frame was drawn (MainActivity's pre-draw probe). */
+    fun recordFirstFrame(ctx: Context) {
+        if (firstFrameMs >= 0L) return
+        val at = startupElapsed()
+        if (at < 0L) return
+        firstFrameMs = at
+        markStartup("first frame")
+        io.execute {
+            try {
+                startupPrefs(ctx).edit().putLong(K_STARTUP_FIRST, at).apply()
+            } catch (e: Exception) {
+                // Persistence is best-effort; the in-memory value serves this process.
+            }
+        }
+    }
+
+    /** The fully-warmed home's frame was drawn — the cold start is over. */
+    fun recordHomeComplete(ctx: Context) {
+        if (fullMs >= 0L) return
+        val at = startupElapsed()
+        if (at < 0L) return
+        fullMs = at
+        markStartup("home complete")
+        io.execute {
+            try {
+                startupPrefs(ctx).edit().putLong(K_STARTUP_FULL, at).apply()
+            } catch (e: Exception) {
+                // Best-effort, as above.
+            }
+        }
+    }
+
+    /** The diagnostics values: this process's timings, else the persisted last cold start. */
+    fun startupFirstMs(ctx: Context): Long {
+        if (firstFrameMs >= 0L) return firstFrameMs
+        return try {
+            startupPrefs(ctx).getLong(K_STARTUP_FIRST, -1L)
+        } catch (e: Exception) {
+            -1L
+        }
+    }
+
+    /** See [startupFirstMs]. */
+    fun startupFullMs(ctx: Context): Long {
+        if (fullMs >= 0L) return fullMs
+        return try {
+            startupPrefs(ctx).getLong(K_STARTUP_FULL, -1L)
+        } catch (e: Exception) {
+            -1L
+        }
+    }
+
     fun install(ctx: Context) {
         if (installed) return
         synchronized(this) {

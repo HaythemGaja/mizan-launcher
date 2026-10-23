@@ -44,6 +44,7 @@ import com.mizan.launcher.core.NowPlayingLogic
 import com.mizan.launcher.core.QuickSettings
 import com.mizan.launcher.core.RecentsStore
 import com.mizan.launcher.core.Discovery
+import com.mizan.launcher.core.HomeTabs
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.TrackerSections
 import com.mizan.launcher.core.WatchMatch
@@ -143,6 +144,27 @@ class MainActivity : Activity() {
     // items behind them (card-click lookups), loaded on a worker
     // thread from the disk store, keyed by the store generation
     // they were read from (IptvClient.storeStamp).
+    // ---- v2.8 cold start (spec §28) ----
+    /**
+     * True until the cold-warm worker lands: while set, builds
+     * render the STAGED SHELL — frame, status bar, tab bar and
+     * section frames from in-memory/prefs-light state only (no
+     * tracker snapshot parse, no IPTV store index read, no match
+     * table read). The warm worker runs those reads off the main
+     * thread (warming the data layer's memos), then one full
+     * rebuild fills the sections; the discovery / tracker-refresh /
+     * slice / match landings keep filling per source afterwards,
+     * exactly as they did before v2.8.
+     */
+    private var coldStart = true
+    private var coldWarmScheduled = false
+
+    /** 0 = no frame probe owed, 1 = first frame, 2 = home-complete frame. */
+    private var frameProbeStage = 0
+
+    /** The All Apps section of the current build (the Apps tab's focus target). */
+    private var allAppsAnchor: View? = null
+
     private var iptvHomeStamp: Long = Long.MIN_VALUE
     private var iptvHomeLoading = false
     private var iptvHomeRows: List<IptvLogic.HomeRow> = emptyList()
@@ -201,6 +223,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         DiagLog.note("home opened")
+        // v2.8: the startup breadcrumb trail (app → main → first
+        // frame → home complete) — App.onCreate marked the zero.
+        DiagLog.markStartup("main created")
         prefs = Prefs(this)
         rebuild()
     }
@@ -286,6 +311,17 @@ class MainActivity : Activity() {
             artworkByPkg = if (prefs.safeMode) emptyMap() else prefs.artworkMap()
             resolveColours()
             setContentView(buildRoot())
+            // v2.8 cold-start staging: the shell's first frame is
+            // probed (DiagLog's startup timings), and the warm
+            // worker is kicked — the data reads the shell skipped
+            // run THERE, never on this thread.
+            if (coldStart) {
+                attachFrameProbe(homeRoot, 1)
+                scheduleColdWarm()
+            } else if (frameProbeStage == 2) {
+                frameProbeStage = 0
+                attachFrameProbe(homeRoot, 2)
+            }
             // v2.0 cold-start rule (watcher-redirect path): the
             // wallpaper bitmap decode/render happens OFF the first
             // frame — background thread, then the image is inserted
@@ -316,6 +352,70 @@ class MainActivity : Activity() {
             firstTile?.post { if (currentFocus == null) firstTile?.requestFocus() }
         } catch (e: Exception) {
             Prefs.noteError(this, "rebuild", e)
+        }
+    }
+
+    /**
+     * One-shot pre-draw probe on a freshly built root: when its
+     * first frame is about to draw, record the startup milestone
+     * (stage 1 = the staged shell's first frame; stage 2 = the
+     * warmed home's frame — the cold start is over). The TV style
+     * has no staged second phase (its data was already
+     * memory-light), so its first frame also completes the start.
+     */
+    private fun attachFrameProbe(root: View?, stage: Int) {
+        val r = root ?: return
+        val appCtx = applicationContext
+        r.viewTreeObserver.addOnPreDrawListener(
+            object : android.view.ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    r.viewTreeObserver.removeOnPreDrawListener(this)
+                    if (stage == 1) {
+                        DiagLog.recordFirstFrame(appCtx)
+                        if (!isTrackerFamily() && !isIptvStyle()) {
+                            DiagLog.recordHomeComplete(appCtx)
+                        }
+                    } else {
+                        DiagLog.recordHomeComplete(appCtx)
+                    }
+                    return true
+                }
+            }
+        )
+    }
+
+    /**
+     * The cold-warm worker (v2.8): runs the first-build data reads
+     * the staged shell skipped — the tracker snapshot parse, the
+     * IPTV store index load, the Watch match-table read — purely
+     * to warm the data layer's memos off the main thread. Landing
+     * flips [coldStart] off and rebuilds ONCE with everything
+     * warm; per-source async landings (discovery, tracker refresh,
+     * IPTV slices, match recompute) fill further from there, as
+     * they always have.
+     */
+    private fun scheduleColdWarm() {
+        if (coldWarmScheduled) return
+        coldWarmScheduled = true
+        val appCtx = applicationContext
+        kotlin.concurrent.thread(name = "mizan-coldwarm") {
+            try { TrackerClient.cached(appCtx) } catch (e: Exception) {
+                // Warm-up is an optimisation; the full build re-reads fail-open.
+            }
+            try { IptvClient.storeStamp(appCtx) } catch (e: Exception) {
+                // As above.
+            }
+            try { WatchPlay.matches(appCtx) } catch (e: Exception) {
+                // As above.
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                coldStart = false
+                if (isTrackerFamily() || isIptvStyle()) {
+                    frameProbeStage = 2
+                    rebuild()
+                }
+            }
         }
     }
 
@@ -356,8 +456,24 @@ class MainActivity : Activity() {
         // source. Its snapshot never blocks: stale state renders,
         // the worker's landing rebuilds once.
         if (trackerStyle || isIptvStyle()) prepareDiscoveryData()
-        if (trackerStyle) prepareTrackerData()
-        if (isWatchStyle()) prepareWatchData()
+        // v2.8: on the COLD build both prepares are deferred to the
+        // warm worker — the tracker prepare parses the snapshot
+        // documents and the Watch prepare reads the match table,
+        // and neither may sit between the process start and the
+        // first frame. The Watch listener still installs (it IS
+        // the fill path); the tracker refresh has no listener to
+        // miss — the warm landing's rebuild runs both prepares
+        // with every memo warm.
+        if (trackerStyle && !coldStart) prepareTrackerData()
+        if (isWatchStyle()) {
+            if (coldStart) {
+                WatchPlay.onMatchesChanged = {
+                    runOnUiThread { if (isWatchStyle()) rebuild() }
+                }
+            } else {
+                prepareWatchData()
+            }
+        }
         pendingWallpaper = null
 
         // Background: drawn once. Image wallpaper wins; otherwise a gradient.
@@ -862,12 +978,23 @@ class MainActivity : Activity() {
 
     private fun buildIptvHome(content: LinearLayout, barHost: LinearLayout) {
         barHost.addView(buildTopBar())
+        // v2.8: the Google-TV pill tab bar under the status bar.
+        barHost.addView(buildTabBar())
         // v2.4: NO catalogue fetch on build (refresh is on request
         // only now). The EPG index still loads LOCALLY from the
         // store file in the background — that's disk, not network.
         IptvClient.epgIndex(this) { if (isIptvStyle()) rebuild() }
 
         content.addView(buildIptvEntryRow())
+
+        if (coldStart) {
+            // v2.8 staged shell: the store index is NOT read on
+            // this build (storeStamp/status parse it on the main
+            // thread otherwise) — the warm worker heats the memo
+            // and its landing rebuild composes the real rows.
+            content.addView(trackerInfoLine("Loading your channels…"))
+            return
+        }
 
         // v2.4: the rows are composed from store SLICES on a
         // worker thread (ensureIptvHomeData) and kept in fields,
@@ -1164,6 +1291,8 @@ class MainActivity : Activity() {
                 else if (card.kind == IptvLogic.KIND_SERIES) "📚" else "📺",
                 wide = card.kind == IptvLogic.KIND_LIVE,
                 tag = card.key, progress = card.progress,
+                // v2.8: Live cards wear the red LIVE pill.
+                liveBadge = card.kind == IptvLogic.KIND_LIVE,
                 onClick = { iptvCardClicked(card, row) },
                 onLong = { iptvCardMenu(card, row) }
             )
@@ -1344,6 +1473,151 @@ class MainActivity : Activity() {
      * unchanged; the sticky header is transparent in this view for
      * the same reason (it has no background of its own).
      */
+    // ---------------------------------------------------------------
+    // v2.8 Google-TV pill tab bar (spec §28) — under the status bar
+    // in the Tracker/Watch and IPTV homes, modelled on the stock
+    // Google TV home in Haythem's reference photos. The model is
+    // pure (core/HomeTabs): only "Home" is a page (this one, shown
+    // selected); every other pill is an action — the Library, the
+    // IPTV browser on a tab, the guide, or a focus jump to this
+    // page's All Apps section. Selected = white fill / dark text;
+    // unselected = translucent dark / white text; FOCUS is a white
+    // ring + lift, distinct from selection (the hero buttons'
+    // pattern). Tabs deliberately never take the initial focus —
+    // firstTile stays the hero/first card, as before.
+    // ---------------------------------------------------------------
+
+    private fun buildTabBar(): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.setMargins(Ui.dp(this, 28), Ui.dp(this, 2), Ui.dp(this, 28), Ui.dp(this, 6))
+        row.layoutParams = lp
+        for (tab in HomeTabs.forStyle(homeStyleKey())) {
+            row.addView(tabPill(tab))
+        }
+        return row
+    }
+
+    private fun tabPill(tab: HomeTabs.Tab): TextView {
+        val tv = TextView(this)
+        tv.text = tab.label
+        tv.textSize = 15f
+        tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
+        tv.gravity = Gravity.CENTER
+        tv.setPadding(Ui.dp(this, 18), Ui.dp(this, 6), Ui.dp(this, 18), Ui.dp(this, 6))
+        tv.isFocusable = true
+        tv.isClickable = true
+        tv.tag = "tab:" + tab.id
+        fun bg(focused: Boolean) {
+            val d = GradientDrawable()
+            d.cornerRadius = Ui.dp(this, 100).toFloat()
+            when {
+                tab.selected -> {
+                    d.setColor(0xFFFFFFFF.toInt())
+                    tv.setTextColor(0xFF141414.toInt())
+                }
+                else -> {
+                    d.setColor(com.mizan.launcher.core.Design.NETFLIX_BUTTON2_FILL)
+                    tv.setTextColor(0xFFFFFFFF.toInt())
+                }
+            }
+            if (focused) d.setStroke(Ui.dp(this, 3), 0xFFFFFFFF.toInt())
+            tv.background = d
+        }
+        bg(false)
+        tv.setOnFocusChangeListener { _, hasFocus ->
+            bg(hasFocus)
+            tv.scaleX = if (hasFocus) 1.06f else 1f
+            tv.scaleY = if (hasFocus) 1.06f else 1f
+            tv.elevation = if (hasFocus) Ui.dp(this, 8).toFloat() else 0f
+        }
+        tv.setOnClickListener { onTabAction(tab.action) }
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.setMargins(0, 0, Ui.dp(this, 8), 0)
+        tv.layoutParams = lp
+        return tv
+    }
+
+    private fun onTabAction(action: HomeTabs.Action) {
+        when (action) {
+            HomeTabs.Action.STAY -> Unit
+            HomeTabs.Action.OPEN_LIBRARY -> runCatching {
+                startActivity(Intent(this, com.mizan.launcher.ui.LibraryActivity::class.java))
+            }
+            HomeTabs.Action.OPEN_IPTV_LIVE -> runCatching {
+                startActivity(IptvActivity.intent(this, IptvActivity.TAB_LIVE))
+            }
+            HomeTabs.Action.OPEN_IPTV_MOVIES -> runCatching {
+                startActivity(IptvActivity.intent(this, IptvActivity.TAB_MOVIES))
+            }
+            HomeTabs.Action.OPEN_IPTV_SERIES -> runCatching {
+                startActivity(IptvActivity.intent(this, IptvActivity.TAB_SERIES))
+            }
+            HomeTabs.Action.OPEN_GUIDE -> runCatching {
+                startActivity(Intent(this, IptvGuideActivity::class.java))
+            }
+            HomeTabs.Action.FOCUS_ALL_APPS -> focusAllAppsSection()
+        }
+    }
+
+    /**
+     * The Apps tab: move focus into this page's All Apps section
+     * (its first focusable descendant). Fail-open: a hidden/absent
+     * section says so instead of stranding focus.
+     */
+    private fun focusAllAppsSection() {
+        val anchor = allAppsAnchor
+        val target = anchor?.let { firstFocusableDescendant(it) }
+        if (target == null) {
+            Toast.makeText(this, "All Apps is hidden for this profile", Toast.LENGTH_SHORT).show()
+            return
+        }
+        anchor.requestRectangleOnScreen(
+            android.graphics.Rect(0, 0, anchor.width, anchor.height), true
+        )
+        target.post {
+            target.requestFocus()
+            target.requestRectangleOnScreen(
+                android.graphics.Rect(0, 0, target.width, target.height), true
+            )
+        }
+    }
+
+    /** Breadth-first first focusable view inside [root] (or root itself). */
+    private fun firstFocusableDescendant(root: View): View? {
+        if (root.isFocusable && root.visibility == View.VISIBLE) return root
+        if (root is ViewGroup) {
+            val queue = ArrayDeque<View>()
+            for (i in 0 until root.childCount) queue.add(root.getChildAt(i))
+            while (queue.isNotEmpty()) {
+                val v = queue.removeFirst()
+                if (v.visibility != View.VISIBLE) continue
+                if (v.isFocusable) return v
+                if (v is ViewGroup) {
+                    for (i in 0 until v.childCount) queue.add(v.getChildAt(i))
+                }
+            }
+        }
+        return null
+    }
+
+    /** The v2.8 focus ring: a white rounded stroke overlay toggled by card focus. */
+    private fun gtvBorderOverlay(radiusDp: Int): View {
+        val v = View(this)
+        val d = GradientDrawable()
+        d.cornerRadius = Ui.dp(this, radiusDp).toFloat()
+        d.setColor(0x00000000)
+        d.setStroke(Ui.dp(this, 3), 0xFFFFFFFF.toInt())
+        v.background = d
+        v.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        v.visibility = View.INVISIBLE
+        v.isFocusable = false
+        v.isClickable = false
+        return v
+    }
+
     private fun buildTopBar(overHero: Boolean = false): View {
         val cfg = if (prefs.safeMode) {
             com.mizan.launcher.core.StatusBarConfig()
@@ -2038,6 +2312,9 @@ class MainActivity : Activity() {
     }
 
     private fun buildAppsSection(): View {
+        // v2.8: the media styles render All Apps as the Google-TV
+        // circular row ("Your apps"); the TV style keeps its grid.
+        if (isTrackerFamily() || isIptvStyle()) return buildAppsSectionCircular()
         val box = section("All Apps")
         // v1.3 folder dedupe: an app inside any folder lives ONLY in
         // its folder here (see FolderLogic); removing it from the
@@ -2064,6 +2341,127 @@ class MainActivity : Activity() {
             i += cols
         }
         return box
+    }
+
+    /**
+     * The All Apps section in the Google-TV language (v2.8, the
+     * media styles only): CIRCULAR icons on subtle dark discs with
+     * the label always under — the stock home's "Your apps" row.
+     * Same machinery as the grid (folder dedupe via
+     * [FolderLogic.allAppsVisible], custom order via [orderedApps],
+     * hold-OK menu, hold-and-move by tag); focus is a white ring
+     * around the disc + a slight scale.
+     */
+    private fun buildAppsSectionCircular(): View {
+        val box = section("All Apps")
+        allAppsAnchor = box
+        val visiblePkgs = FolderLogic.allAppsVisible(
+            apps.map { it.pkg }, layout.hidden.toSet(), layout.folders
+        ).toSet()
+        val visible = apps.filter { it.pkg in visiblePkgs }
+        if (visible.isEmpty()) {
+            val hint = TextView(this)
+            hint.text = "No launchable apps found."
+            hint.setTextColor(subColour); hint.textSize = 17f
+            box.addView(hint)
+            return box
+        }
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        for (entry in orderedApps(visible)) row.addView(appCircleTile(entry))
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    /** One circular app icon (see [buildAppsSectionCircular]). */
+    private fun appCircleTile(entry: AppEntry): View {
+        val m = currentTileMetrics()
+        val discPx = (m.iconPx * 1.45f).toInt().coerceAtLeast(m.iconPx + Ui.dp(this, 16))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.gravity = Gravity.CENTER_HORIZONTAL
+        val colLp = LinearLayout.LayoutParams(discPx + Ui.dp(this, 16), -2)
+        colLp.setMargins(Ui.dp(this, 2), Ui.dp(this, 4), Ui.dp(this, 2), Ui.dp(this, 4))
+        col.layoutParams = colLp
+
+        val disc = FrameLayout(this)
+        disc.isFocusable = true
+        disc.isClickable = true
+        // Move mode finds the grabbed tile by package after a rebuild.
+        disc.tag = entry.pkg
+        disc.layoutParams = LinearLayout.LayoutParams(discPx, discPx)
+        val discBg = GradientDrawable()
+        discBg.shape = GradientDrawable.OVAL
+        discBg.setColor(0xFF2A2A2A.toInt())
+        disc.background = discBg
+        if (firstTile == null) firstTile = disc
+
+        val iv = ImageView(this)
+        // Custom artwork (core/ArtworkStore) as on app tiles, but
+        // always rendered in the circle shape — the row IS circles.
+        val fallbackIcon = Ui.shapedIcon(entry.icon, m.iconPx, "circle")
+        when (val art = artworkByPkg[entry.pkg]) {
+            null -> iv.setImageBitmap(fallbackIcon)
+            else -> when (art.kind) {
+                ArtworkStore.Kind.PRESET -> iv.setImageBitmap(
+                    Ui.presetArtwork(
+                        ArtworkStore.presetColors(ArtworkStore.presetIndex(art.value)),
+                        entry.label, m.iconPx, "circle"
+                    )
+                )
+                ArtworkStore.Kind.URL -> ArtworkImages.load(
+                    this, entry.pkg, art.value, iv, m.iconPx, "circle", fallbackIcon
+                )
+            }
+        }
+        val ilp = FrameLayout.LayoutParams(m.iconPx, m.iconPx)
+        ilp.gravity = Gravity.CENTER
+        iv.layoutParams = ilp
+        disc.addView(iv)
+        if (prefs.lockedApps.contains(entry.pkg)) {
+            val lock = TextView(this)
+            lock.text = "🔒"
+            lock.textSize = 13f
+            val llp = FrameLayout.LayoutParams(-2, -2)
+            llp.gravity = Gravity.TOP or Gravity.END
+            llp.setMargins(0, Ui.dp(this, 2), Ui.dp(this, 4), 0)
+            lock.layoutParams = llp
+            disc.addView(lock)
+        }
+        // Focus ring: an oval white stroke overlay (focusLift can't
+        // be used here — it swaps in a rounded-rect background).
+        val ring = View(this)
+        val ringBg = GradientDrawable()
+        ringBg.shape = GradientDrawable.OVAL
+        ringBg.setColor(0x00000000)
+        ringBg.setStroke(Ui.dp(this, 3), 0xFFFFFFFF.toInt())
+        ring.background = ringBg
+        ring.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        ring.visibility = View.INVISIBLE
+        ring.isFocusable = false
+        ring.isClickable = false
+        disc.addView(ring)
+        disc.setOnFocusChangeListener { _, hasFocus ->
+            ring.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
+            disc.scaleX = if (hasFocus) 1.05f else 1f
+            disc.scaleY = if (hasFocus) 1.05f else 1f
+            disc.elevation = if (hasFocus) Ui.dp(this, 8).toFloat() else 0f
+        }
+        disc.setOnClickListener { launchWithPin(entry) }
+        disc.setOnLongClickListener { openAppMenu(entry, Source.AllApps, null); true }
+        col.addView(disc)
+
+        val label = TextView(this)
+        label.text = entry.label
+        label.setTextColor(0xFFFFFFFF.toInt())
+        label.textSize = 13f
+        label.gravity = Gravity.CENTER
+        label.maxLines = 1
+        label.ellipsize = android.text.TextUtils.TruncateAt.END
+        val llp2 = LinearLayout.LayoutParams(-1, -2)
+        llp2.setMargins(0, Ui.dp(this, 5), 0, 0)
+        label.layoutParams = llp2
+        col.addView(label)
+        return col
     }
 
     /** Custom order first (as arranged with hold-and-move), then the rest alphabetically. */
@@ -2178,6 +2576,8 @@ class MainActivity : Activity() {
         // is on (barHost == content otherwise). v2.0: in this view the
         // bar renders transparent over the hero backdrop.
         barHost.addView(buildTopBar(overHero = hero != null))
+        // v2.8: the Google-TV pill tab bar under the status bar.
+        barHost.addView(buildTabBar())
 
         // Refresh on resume (throttled inside); a changed snapshot
         // rebuilds the view once — the new fetchedAt stops any loop.
@@ -2192,7 +2592,10 @@ class MainActivity : Activity() {
             // home renders EXACTLY as Tracker, plus ONE dismissible
             // hint. A configured-but-empty/failed catalogue gets NO
             // hint — the `iptv:` diagnostics line covers it.
-            if (!IptvClient.anyConfigured(this) && !prefs.watchHintDismissed) {
+            // v2.8: anyConfigured reads the IPTV store — skipped on
+            // the cold shell; the hint (if it applies) joins at the
+            // warm rebuild like everything store-backed.
+            if (!coldStart && !IptvClient.anyConfigured(this) && !prefs.watchHintDismissed) {
                 content.addView(buildWatchHintRow())
             }
         }
@@ -2219,13 +2622,20 @@ class MainActivity : Activity() {
             TrackerSections.TRENDINGMOVIES to dTrendMovies.isNotEmpty(),
             TrackerSections.MOVIENIGHT to tMovies.isNotEmpty(),
             TrackerSections.FORYOU to tPicks.isNotEmpty(),
-            TrackerSections.FAVORITES to layout.isRowVisible("favorites"),
-            TrackerSections.ALLAPPS to layout.isRowVisible("apps")
+            // v2.8: on the cold shell the app list has not landed
+            // yet — the two app-backed sections join at the warm
+            // rebuild instead of flashing their empty-state hints.
+            TrackerSections.FAVORITES to (!coldStart && layout.isRowVisible("favorites")),
+            TrackerSections.ALLAPPS to (!coldStart && layout.isRowVisible("apps"))
         )
         val order = TrackerSections.compose(sectionsCfg) { available[it] == true }
 
         if (order.isEmpty()) {
-            if (!tSnap.hasData) {
+            if (coldStart) {
+                // v2.8 staged shell: no tracker status read at all
+                // (it parses the snapshots) — just the loading line.
+                content.addView(trackerInfoLine("Loading your library…"))
+            } else if (!tSnap.hasData) {
                 // v1.9: the no-data line is worded by the CLASSIFIED
                 // fetch state (core/TrackerStatus) — v1.8 showed one
                 // generic line for every cause, and the permission-
@@ -2578,13 +2988,22 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            if (playAction != null) {
+            // v2.8: the primary is Play when the title resolves to
+            // an in-launcher playback, else the in-launcher Details
+            // — core/TrackerLogic.heroPrimaryAction pins the rule
+            // and the sim holds it. The tracker app is demoted to a
+            // secondary button below: Sreeb's surfaces are Sreeb's.
+            if (TrackerLogic.heroPrimaryAction(playAction != null) == "play") {
                 buttons.addView(
-                    heroButton(playLabel ?: "▶ Play", "play", primary = true) { playAction.invoke() }
+                    heroButton(playLabel ?: "▶ Play", "play", primary = true) {
+                        playAction?.invoke()
+                    }
                 )
             } else {
                 buttons.addView(
-                    heroButton("▶ Open Tracker", "open", primary = true) { openTracker() }
+                    heroButton("ⓘ Details", "details", primary = true) {
+                        openTitleDetails(hero.tmdbId, hero.type, hero.title, hero.poster)
+                    }
                 )
             }
             if (coords != null) {
@@ -2594,6 +3013,9 @@ class MainActivity : Activity() {
                     }
                 )
             }
+            buttons.addView(
+                heroButton("Open Tracker", "open", primary = false) { openTracker() }
+            )
             // v2.1: the My Library entry — the whole tracked library
             // (details, episode checklists, add/remove) now lives in
             // the launcher; the tracker app is only for its Settings.
@@ -2646,7 +3068,10 @@ class MainActivity : Activity() {
         tv.layoutParams = lp
         fun bg(focused: Boolean): GradientDrawable {
             val d = GradientDrawable()
-            d.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_CHIP).toFloat()
+            // v2.8: a full PILL (the Google TV hero buttons in the
+            // reference photos) — the radius exceeds any button
+            // height, so the ends are always semicircles.
+            d.cornerRadius = Ui.dp(this, 100).toFloat()
             d.setColor(
                 if (primary) {
                     com.mizan.launcher.core.Design.NETFLIX_BUTTON_FILL
@@ -2889,7 +3314,14 @@ class MainActivity : Activity() {
             chipLp.setMargins(Ui.dp(this, 6), Ui.dp(this, 6), 0, 0)
             frame.addView(chip, chipLp)
         }
-        Ui.focusLift(frame, accent, 16)
+        // v2.8: the Google-TV focus treatment — a white border on
+        // the focused card (over the Ui.focusLift scale), the same
+        // in every media style.
+        val focusBorder = gtvBorderOverlay(16)
+        frame.addView(focusBorder)
+        Ui.focusLift(frame, accent, 16) { hasFocus ->
+            focusBorder.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
+        }
         frame.setOnClickListener { onClick() }
         if (onLong != null) frame.setOnLongClickListener { onLong(); true }
         col.addView(frame)
@@ -2933,6 +3365,146 @@ class MainActivity : Activity() {
         return col
     }
 
+    /**
+     * A landscape 16:9 card (v2.8, the Google-TV language of the
+     * reference photos' "Top free picks" rail): the backdrop/still
+     * fills the frame edge-to-edge, an optional pill chip rides
+     * inside the frame's lower-left (a date, "S1 E2", "% watched"),
+     * an optional progress bar runs along the frame's bottom edge,
+     * and title + meta read below — portraitCard's contract in
+     * landscape form, same focus treatment (white border + lift).
+     * [progress] < 0 means no bar; [chip] null means no chip.
+     */
+    private fun landscapeCard(
+        imagePath: String,
+        imageSize: String,
+        title: String,
+        meta: String,
+        chip: String? = null,
+        progress: Float = -1f,
+        glyph: String,
+        onClick: () -> Unit,
+        onLong: (() -> Unit)? = null,
+        badge: String? = null
+    ): View {
+        val dm = resources.displayMetrics
+        val cm = TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        val w = cm.tileWidthPx
+        val h = w * 9 / 16
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        val colLp = LinearLayout.LayoutParams(w, -2)
+        val margin = Ui.dp(this, 5)
+        colLp.setMargins(margin, margin, margin, margin)
+        col.layoutParams = colLp
+
+        val frame = FrameLayout(this)
+        frame.isFocusable = true
+        frame.isClickable = true
+        frame.layoutParams = LinearLayout.LayoutParams(w, h)
+        frame.background = Ui.tileBackground(accent, false, 16, this)
+        if (firstTile == null) firstTile = frame
+        if (imagePath.isNotBlank()) {
+            val iv = ImageView(this)
+            iv.scaleType = ImageView.ScaleType.CENTER_CROP
+            Ui.roundClip(iv, 16, this)
+            frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
+            TmdbImages.load(TmdbImages.url(imageSize, imagePath), iv)
+        } else {
+            val g = TextView(this)
+            g.text = glyph
+            g.setTextColor(textColour)
+            g.textSize = 44f
+            g.gravity = Gravity.CENTER
+            frame.addView(g, FrameLayout.LayoutParams(-1, -1))
+        }
+        if (badge != null) {
+            val chipTv = TextView(this)
+            chipTv.text = badge
+            chipTv.setTextColor(0xFFFFFFFF.toInt())
+            chipTv.textSize = 11f
+            chipTv.setTypeface(chipTv.typeface, android.graphics.Typeface.BOLD)
+            val chipBg = GradientDrawable()
+            chipBg.cornerRadius = Ui.dp(this, 6).toFloat()
+            chipBg.setColor(com.mizan.launcher.core.Design.NETFLIX_RED)
+            chipTv.background = chipBg
+            chipTv.setPadding(Ui.dp(this, 7), Ui.dp(this, 3), Ui.dp(this, 7), Ui.dp(this, 3))
+            val chipLp = FrameLayout.LayoutParams(-2, -2)
+            chipLp.gravity = Gravity.TOP or Gravity.START
+            chipLp.setMargins(Ui.dp(this, 6), Ui.dp(this, 6), 0, 0)
+            frame.addView(chipTv, chipLp)
+        }
+        if (progress >= 0f) {
+            val track = View(this)
+            val trackBg = GradientDrawable()
+            trackBg.setColor(0x66FFFFFF)
+            track.background = trackBg
+            val trackLp = FrameLayout.LayoutParams(-1, Ui.dp(this, 4))
+            trackLp.gravity = Gravity.BOTTOM
+            frame.addView(track, trackLp)
+            val fillW = (w * progress.coerceIn(0f, 1f)).toInt().coerceAtLeast(Ui.dp(this, 2))
+            val fill = View(this)
+            val fillBg = GradientDrawable()
+            fillBg.setColor(com.mizan.launcher.core.Design.NETFLIX_RED)
+            fill.background = fillBg
+            val fillLp = FrameLayout.LayoutParams(fillW, Ui.dp(this, 4))
+            fillLp.gravity = Gravity.BOTTOM or Gravity.START
+            frame.addView(fill, fillLp)
+        }
+        if (chip != null) {
+            val chipTv = TextView(this)
+            chipTv.text = chip
+            chipTv.setTextColor(0xFFFFFFFF.toInt())
+            chipTv.textSize = 11f
+            chipTv.setTypeface(chipTv.typeface, android.graphics.Typeface.BOLD)
+            val chipBg = GradientDrawable()
+            chipBg.cornerRadius = Ui.dp(this, 100).toFloat()
+            chipBg.setColor(0xB3000000.toInt())
+            chipTv.background = chipBg
+            chipTv.setPadding(Ui.dp(this, 8), Ui.dp(this, 3), Ui.dp(this, 8), Ui.dp(this, 3))
+            val chipLp = FrameLayout.LayoutParams(-2, -2)
+            chipLp.gravity = Gravity.BOTTOM or Gravity.START
+            chipLp.setMargins(
+                Ui.dp(this, 8), 0, 0,
+                if (progress >= 0f) Ui.dp(this, 10) else Ui.dp(this, 8)
+            )
+            frame.addView(chipTv, chipLp)
+        }
+        val focusBorder = gtvBorderOverlay(16)
+        frame.addView(focusBorder)
+        Ui.focusLift(frame, accent, 16) { hasFocus ->
+            focusBorder.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
+        }
+        frame.setOnClickListener { onClick() }
+        if (onLong != null) frame.setOnLongClickListener { onLong(); true }
+        col.addView(frame)
+
+        val t = TextView(this)
+        t.text = title
+        t.setTextColor(0xFFFFFFFF.toInt())
+        t.textSize = 15f
+        t.setTypeface(t.typeface, android.graphics.Typeface.BOLD)
+        t.maxLines = 1
+        t.ellipsize = android.text.TextUtils.TruncateAt.END
+        val tlp = LinearLayout.LayoutParams(-1, -2)
+        tlp.setMargins(Ui.dp(this, 2), Ui.dp(this, 6), Ui.dp(this, 2), 0)
+        t.layoutParams = tlp
+        col.addView(t)
+        if (meta.isNotBlank()) {
+            val s = TextView(this)
+            s.text = meta
+            s.setTextColor(0xFFB3B3B3.toInt())
+            s.textSize = 13f
+            s.maxLines = 1
+            s.ellipsize = android.text.TextUtils.TruncateAt.END
+            val slp = LinearLayout.LayoutParams(-1, -2)
+            slp.setMargins(Ui.dp(this, 2), Ui.dp(this, 1), Ui.dp(this, 2), 0)
+            s.layoutParams = slp
+            col.addView(s)
+        }
+        return col
+    }
+
     private fun buildUpNextSection(items: List<TrackerLogic.UpNextItem>): View {
         val box = section("Up Next")
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
@@ -2943,10 +3515,18 @@ class MainActivity : Activity() {
             // OK plays the episode in place (failing open to details);
             // the Tracker style and unmatched cards are untouched.
             val wMatch = watchMatch("tv", item.tmdbId)
-            val card = portraitCard(
-                posterPath = item.poster,
+            // v2.8: Up Next rides the landscape rail (backdrop,
+            // "Sx Ey" pill chip) — the Google-TV card language.
+            val card = landscapeCard(
+                imagePath = item.backdrop.ifBlank { item.poster },
+                imageSize = if (item.backdrop.isNotBlank()) "w780" else "w342",
                 title = item.title,
                 meta = countdown.ifBlank { item.sub },
+                chip = if (item.season > 0 && item.episode > 0) {
+                    "S${item.season} E${item.episode}"
+                } else {
+                    null
+                },
                 glyph = "📺",
                 onClick = {
                     if (wMatch != null) playUpNextItem(item, inSnapshot = true)
@@ -2999,10 +3579,27 @@ class MainActivity : Activity() {
                 } else {
                     null
                 }
-                val view = portraitCard(
-                    posterPath = trackerItem.poster,
+                // v2.8: Continue Watching rides the landscape rail
+                // too — backdrop, "% watched" pill chip, and the
+                // watched/total progress bar along the frame's
+                // bottom edge. System (WatchNext) cards keep their
+                // own tile, below.
+                val progress = if (trackerItem.total > 0) {
+                    trackerItem.watched.toFloat() / trackerItem.total.toFloat()
+                } else {
+                    -1f
+                }
+                val view = landscapeCard(
+                    imagePath = trackerItem.backdrop.ifBlank { trackerItem.poster },
+                    imageSize = if (trackerItem.backdrop.isNotBlank()) "w780" else "w342",
                     title = trackerItem.title,
                     meta = trackerItem.sub,
+                    chip = if (progress >= 0f) {
+                        "${(progress * 100).toInt()}% watched"
+                    } else {
+                        null
+                    },
+                    progress = progress,
                     glyph = "📺",
                     onClick = {
                         when {
@@ -3121,10 +3718,15 @@ class MainActivity : Activity() {
             val chip = Discovery.soonChip(item.dateIso, today)
             val meta = listOf(chip, item.sub).filter { it.isNotBlank() }
                 .joinToString(" · ")
-            val card = portraitCard(
-                posterPath = item.poster,
+            // v2.8: Coming Soon rides the landscape rail — the
+            // poster fills the 16:9 frame (SoonItem carries no
+            // backdrop) and the air/release date is the pill chip.
+            val card = landscapeCard(
+                imagePath = item.poster,
+                imageSize = "w500",
                 title = item.title,
                 meta = meta,
+                chip = Discovery.monthDay(item.dateIso).ifBlank { null },
                 glyph = if (item.type == "movie") "🎬" else "📺",
                 onClick = {
                     openTitleDetails(item.tmdbId, item.type, item.title, item.poster)

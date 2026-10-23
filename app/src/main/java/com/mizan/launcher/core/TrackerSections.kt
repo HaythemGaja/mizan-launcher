@@ -119,6 +119,54 @@ object TrackerSections {
     }
 
     /**
+     * The v2.8 one-time order migration. A profile whose order was
+     * stored before v2.7 had the three focus rows APPENDED at the
+     * very end by [normalize] (after foryou/favorites/allapps) — on
+     * Haythem's TV the new rows landed below everything and he
+     * "didn't see any change". When one of the three still sits in
+     * that appended tail position (after any of foryou/favorites/
+     * allapps), splice it into its canonical slot: comingsoon right
+     * after upnext, trendingtv right after continue, trendingmovies
+     * right after trendingtv. ONLY those three ever move; the
+     * relative order of every other row is preserved exactly.
+     *
+     * Idempotent by construction: after one pass none of the three
+     * sits after a tail row any more, so a second pass is a no-op —
+     * and a user who deliberately parks a focus row mid-list (ahead
+     * of foryou) is never touched. (The one-time prefs flag lives in
+     * data/Prefs, so a deliberate move to the very end AFTER the
+     * migration is also respected.)
+     */
+    fun migrateOrder(config: Config): Config {
+        val order = config.order.toMutableList()
+        fun appended(key: String): Boolean {
+            val at = order.indexOf(key)
+            if (at < 0) return false
+            return listOf(FORYOU, FAVORITES, ALLAPPS).any {
+                val tailAt = order.indexOf(it)
+                tailAt in 0 until at
+            }
+        }
+        var changed = false
+        if (appended(COMINGSOON)) {
+            order.remove(COMINGSOON)
+            order.add(order.indexOf(UPNEXT) + 1, COMINGSOON)
+            changed = true
+        }
+        if (appended(TRENDINGTV)) {
+            order.remove(TRENDINGTV)
+            order.add(order.indexOf(CONTINUE) + 1, TRENDINGTV)
+            changed = true
+        }
+        if (appended(TRENDINGMOVIES)) {
+            order.remove(TRENDINGMOVIES)
+            order.add(order.indexOf(TRENDINGTV) + 1, TRENDINGMOVIES)
+            changed = true
+        }
+        return if (changed) normalize(config.hidden, order) else config
+    }
+
+    /**
      * The sections to render, in order: the hero first when shown,
      * then the configured row order — every entry additionally gated
      * by [available] (data presence / feature gates, supplied by the

@@ -105,6 +105,17 @@ object TrackerLogic {
 
     /** Hero source labels — the exact section names, one per source. */
     const val SOURCE_UP_NEXT = "Up Next"
+
+    /**
+     * The hero's PRIMARY action (v2.8, spec §28): "play" when the
+     * hero title resolves to an in-launcher playback, else
+     * "details" (the in-launcher DetailsActivity). The tracker app
+     * is NEVER the hero primary — self-reliance: it survives only
+     * as a secondary button / hold-OK menu entry. The sim pins this
+     * so the primary can never silently regress to the tracker.
+     */
+    fun heroPrimaryAction(playResolvable: Boolean): String =
+        if (playResolvable) "play" else "details"
     const val SOURCE_CONTINUE = "Continue Watching"
     const val SOURCE_MOVIE_NIGHT = "Movie Night"
     const val SOURCE_FOR_YOU = "For You"

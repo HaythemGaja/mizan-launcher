@@ -51,7 +51,9 @@ import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.core.Discovery
 import com.mizan.launcher.core.BreadcrumbRing
 import com.mizan.launcher.core.DiagLogs
+import com.mizan.launcher.core.DiagStartup
 import com.mizan.launcher.core.DiagWatchdog
+import com.mizan.launcher.core.HomeTabs
 import com.mizan.launcher.core.PlayerLogic
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
@@ -3186,6 +3188,9 @@ fun main() {
     // ---------- (45) v2.7: repo-method matching, focus rows, launcher-computed discovery ----------
     section45()
 
+    // ---------- (46) v2.8: Google-TV tabs, section-order migration, hero primary, startup line ----------
+    section46()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3884,8 +3889,155 @@ fun section42() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        check("v25src: the app version is 2.7 / code 20 (bumped by v2.7)",
-            gradleSrc.contains("versionName = \"2.7\"") &&
-                gradleSrc.contains("versionCode = 20"))
+        // Re-pinned in v2.8 (intentional version bump 2.7/20 → 2.8/21).
+        check("v25src: the app version is 2.8 / code 21 (bumped by v2.8)",
+            gradleSrc.contains("versionName = \"2.8\"") &&
+                gradleSrc.contains("versionCode = 21"))
+    }
+}
+
+/** v2.8 checks — Google-TV design language, cold start, settings nav, Open-in-Tracker demotion. */
+fun section46() {
+    run {
+        val tsx = TrackerSections
+
+        // --- the section-order migration (why Haythem "didn't see
+        // any change" in v2.7: the focus rows appended at the end).
+        val preV27 = tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|")
+        check("migrate: a pre-v2.7 stored order has the focus rows appended at the end",
+            preV27.order.takeLast(3) == listOf("comingsoon", "trendingtv", "trendingmovies"))
+        val migrated = tsx.migrateOrder(preV27)
+        check("migrate: the appended rows splice into their canonical slots",
+            migrated.order == listOf(
+                "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies",
+                "movienight", "foryou", "favorites", "allapps"
+            ))
+        check("migrate: idempotent — a second pass changes nothing",
+            tsx.migrateOrder(migrated) == migrated)
+        check("migrate: an untouched canonical order is a no-op",
+            tsx.migrateOrder(tsx.decode("")) == tsx.decode(""))
+        val partial = tsx.decode(
+            "upnext,comingsoon,continue,movienight,foryou,favorites,allapps,trendingtv,trendingmovies|"
+        )
+        check("migrate: only the still-appended rows move (comingsoon already placed stays)",
+            tsx.migrateOrder(partial).order == listOf(
+                "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies",
+                "movienight", "foryou", "favorites", "allapps"
+            ))
+        val parked = tsx.decode(
+            "upnext,continue,comingsoon,movienight,foryou,favorites,allapps,trendingtv,trendingmovies|"
+        )
+        check("migrate: a focus row parked mid-list (before foryou) is never itself moved",
+            tsx.migrateOrder(parked).order == listOf(
+                "upnext", "continue", "trendingtv", "trendingmovies", "comingsoon",
+                "movienight", "foryou", "favorites", "allapps"
+            ))
+        val custom = tsx.decode(
+            "movienight,upnext,continue,foryou,favorites,allapps,comingsoon,trendingtv,trendingmovies|"
+        )
+        check("migrate: the user's other rows keep their relative order exactly",
+            tsx.migrateOrder(custom).order == listOf(
+                "movienight", "upnext", "comingsoon", "continue", "trendingtv",
+                "trendingmovies", "foryou", "favorites", "allapps"
+            ))
+        val hiddenCfg = tsx.decode(
+            "upnext,continue,movienight,foryou,favorites,allapps|comingsoon"
+        )
+        check("migrate: the hidden set survives the splice",
+            tsx.migrateOrder(hiddenCfg).hidden == setOf("comingsoon") &&
+                tsx.migrateOrder(hiddenCfg).order.indexOf("comingsoon") == 1)
+
+        // --- the pill tab model (core/HomeTabs) ---
+        val tTabs = HomeTabs.trackerTabs()
+        check("tabs: Tracker/Watch = Home · Library · Apps",
+            tTabs.map { it.id } == listOf("home", "library", "apps") &&
+                tTabs.map { it.label } == listOf("Home", "Library", "Apps"))
+        check("tabs: only Home is selected, and it is STAY",
+            tTabs.count { it.selected } == 1 &&
+                tTabs.first().action == HomeTabs.Action.STAY)
+        check("tabs: Library opens the library; Apps jumps focus to All Apps",
+            tTabs[1].action == HomeTabs.Action.OPEN_LIBRARY &&
+                tTabs[2].action == HomeTabs.Action.FOCUS_ALL_APPS)
+        val iTabs = HomeTabs.iptvTabs()
+        check("tabs: IPTV = Home · Live · Movies · Series · Guide · Apps",
+            iTabs.map { it.id } == listOf("home", "live", "movies", "series", "guide", "apps"))
+        check("tabs: IPTV actions map Live/Movies/Series/Guide/Apps",
+            iTabs[1].action == HomeTabs.Action.OPEN_IPTV_LIVE &&
+                iTabs[2].action == HomeTabs.Action.OPEN_IPTV_MOVIES &&
+                iTabs[3].action == HomeTabs.Action.OPEN_IPTV_SERIES &&
+                iTabs[4].action == HomeTabs.Action.OPEN_GUIDE &&
+                iTabs[5].action == HomeTabs.Action.FOCUS_ALL_APPS &&
+                iTabs.count { it.selected } == 1)
+        check("tabs: the TV style has no tab bar; tracker+watch share one; iptv gets its own",
+            HomeTabs.forStyle("tv").isEmpty() &&
+                HomeTabs.forStyle("tracker") == tTabs &&
+                HomeTabs.forStyle("watch") == tTabs &&
+                HomeTabs.forStyle("iptv") == iTabs)
+
+        // --- the hero primary decision (Open in Tracker demotion) ---
+        check("hero: a resolvable title's primary is Play",
+            TrackerLogic.heroPrimaryAction(true) == "play")
+        check("hero: an unresolvable title's primary is Details — never the tracker",
+            TrackerLogic.heroPrimaryAction(false) == "details")
+
+        // --- the startup line shaping (fake clock values) ---
+        check("startup: both timings recorded",
+            DiagStartup.line(412, 2380) == "startup: first frame 412 ms · full 2380 ms")
+        check("startup: nothing recorded renders dashes, never a fake 0",
+            DiagStartup.line(-1, -1) == "startup: first frame — · full —")
+        check("startup: a zero first frame is honest; a missing full stays a dash",
+            DiagStartup.line(0, -1) == "startup: first frame 0 ms · full —")
+
+        // --- source checks: the v2.8 wiring is really in the app ---
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("v28src: both media homes build the pill tab bar from the pure model",
+            mainSrc.contains("buildTabBar()") &&
+                mainSrc.contains("HomeTabs.forStyle(homeStyleKey())"))
+        check("v28src: the landscape rail + circular All Apps builders exist and are used",
+            mainSrc.contains("fun landscapeCard(") &&
+                mainSrc.contains("fun buildAppsSectionCircular()") &&
+                mainSrc.contains("fun appCircleTile("))
+        check("v28src: the hero primary routes through the pinned decision; Open Tracker is never primary",
+            mainSrc.contains("TrackerLogic.heroPrimaryAction(playAction != null)") &&
+                !mainSrc.contains("heroButton(\"▶ Open Tracker\"") &&
+                mainSrc.contains("heroButton(\"Open Tracker\", \"open\", primary = false)"))
+        check("v28src: cold start is staged (warm worker + deferred prepares + shell lines)",
+            mainSrc.contains("mizan-coldwarm") &&
+                mainSrc.contains("if (trackerStyle && !coldStart) prepareTrackerData()") &&
+                mainSrc.contains("Loading your library…") &&
+                mainSrc.contains("Loading your channels…"))
+        val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
+        check("v28src: Details has no primary Open in Tracker — it lives in the More overflow",
+            !detailsSrc.contains("actionButton(\"▶ Open in Tracker\"") &&
+                detailsSrc.contains("actionButton(\"⋯ More\", \"more\")") &&
+                detailsSrc.contains("\"Open in Tracker\""))
+        val iptvCardsSrc = src("app/src/main/java/com/mizan/launcher/ui/IptvCards.kt")
+        check("v28src: IPTV cards carry the LIVE pill + in-frame progress + focus border",
+            iptvCardsSrc.contains("liveBadge") &&
+                iptvCardsSrc.contains("barInFrame") &&
+                iptvCardsSrc.contains("focusBorder"))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("v28src: settings nav fixes are in (no selectable dead stop, index memory, focus net, startup line)",
+            !settingsSrc.contains("setTextIsSelectable") &&
+                settingsSrc.contains("detailFocusIndexMemory") &&
+                settingsSrc.contains("onWindowFocusChanged") &&
+                settingsSrc.contains("DiagStartup.line"))
+        val themesSrc = src("app/src/main/res/values/themes.xml")
+        check("v28src: the window background is the brand splash, not a black void",
+            themesSrc.contains("@drawable/splash_bg"))
+        val diagLogSrc = src("app/src/main/java/com/mizan/launcher/data/DiagLog.kt")
+        check("v28src: DiagLog records the startup milestones",
+            diagLogSrc.contains("recordFirstFrame") &&
+                diagLogSrc.contains("recordHomeComplete") &&
+                diagLogSrc.contains("markStartupStart"))
+        val prefsSrc = src("app/src/main/java/com/mizan/launcher/data/Prefs.kt")
+        check("v28src: the one-time order migration is wired into the sections read",
+            prefsSrc.contains("tracker_sections_migrated_28") &&
+                prefsSrc.contains("TrackerSections.migrateOrder"))
     }
 }

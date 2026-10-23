@@ -161,6 +161,15 @@ class SettingsActivity : Activity() {
     /** Last focused control title per category id (focus memory). */
     private val detailFocusMemory = mutableMapOf<String, String>()
 
+    /**
+     * The focused control's INDEX in its page, per category id
+     * (v2.8): the restore fallback when the remembered title no
+     * longer exists after a rebuild (e.g. a row that removes
+     * itself, like "Clear IPTV sources…") — focus lands on the
+     * NEAREST row, never bounced to the page top.
+     */
+    private val detailFocusIndexMemory = mutableMapOf<String, Int>()
+
     /** Views of the current build, for focus restore after rebuild(). */
     private var navRows: List<TextView> = emptyList()
     private var detailFocusable: List<View> = emptyList()
@@ -285,6 +294,27 @@ class SettingsActivity : Activity() {
         if (entered && ::prefs.isInitialized) rebuild()
     }
 
+    /**
+     * v2.8 nav-audit safety net: when focus returns to this window
+     * (a dialog dismissed, a sub-activity finished) and NOTHING in
+     * the hierarchy holds focus, re-run the standard restore —
+     * focus must never be stranded on nothing after a dialog,
+     * whatever order its dismiss/rebuild happened in.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && entered && ::prefs.isInitialized) {
+            val root = window?.decorView ?: return
+            if (root.findFocus() == null) {
+                try {
+                    restoreFocus(root)
+                } catch (e: Exception) {
+                    // The net itself must never crash Settings.
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- layout
 
     private fun rebuild() {
@@ -360,7 +390,15 @@ class SettingsActivity : Activity() {
                 var placed = false
                 if (focusedPane == SettingsNavMachine.COLUMN_RIGHT) {
                     val remembered = detailFocusMemory[nav.selectedId]
+                    // v2.8: title hit → that row; title GONE (the
+                    // row removed itself) → the row now sitting at
+                    // the remembered index (the nearest row), and
+                    // only then the page top.
+                    val rememberedIndex = detailFocusIndexMemory[nav.selectedId]
                     val target = detailFocusable.firstOrNull { it.tag == remembered }
+                        ?: rememberedIndex?.let {
+                            detailFocusable.getOrNull(it.coerceIn(0, detailFocusable.size - 1))
+                        }
                         ?: detailFocusable.firstOrNull()
                     if (target != null) {
                         target.requestFocus()
@@ -483,7 +521,12 @@ class SettingsActivity : Activity() {
                     // hierarchy from inside a focus-change dispatch is
                     // fragile; a frame later is indistinguishable.
                     tv.post {
-                        if (nav.selectedIndex != index) {
+                        // v2.8 nav audit: only act if this row
+                        // STILL holds focus — fast D-pad travel
+                        // queues several of these posts, and a
+                        // stale one re-selected an older category
+                        // and yanked focus back mid-navigation.
+                        if (tv.hasFocus() && nav.selectedIndex != index) {
                             nav.select(index)
                             com.mizan.launcher.data.DiagLog.note("settings page: ${nav.selectedId}")
                             if (nav.selectedId != "home") showingMakeHome = false
@@ -1063,8 +1106,10 @@ class SettingsActivity : Activity() {
             val idx = keys.indexOf(sb.dateFormat).coerceAtLeast(0)
             AlertDialog.Builder(this).setTitle("Date format")
                 .setSingleChoiceItems(labels.toTypedArray(), idx) { dlg, which ->
-                    updateStatusBar { c -> c.copy(dateFormat = keys[which]) }
+                    // v2.8: dismiss before the rebuilding apply
+                    // (see pickFrom).
                     dlg.dismiss()
+                    updateStatusBar { c -> c.copy(dateFormat = keys[which]) }
                 }
                 .setNegativeButton("Cancel", null).show()
         })
@@ -1380,6 +1425,10 @@ class SettingsActivity : Activity() {
                 focusedPane = SettingsNavMachine.COLUMN_RIGHT
                 nav.noteFocus(SettingsNavMachine.COLUMN_RIGHT)
                 detailFocusMemory[nav.selectedId] = title
+                // v2.8: the row's index too — restoreFocus's
+                // nearest-row fallback when the title is gone.
+                val idx = detailFocusable.indexOf(tv)
+                if (idx >= 0) detailFocusIndexMemory[nav.selectedId] = idx
             }
         }
         tv.setOnClickListener {
@@ -1426,6 +1475,16 @@ class SettingsActivity : Activity() {
             }
             append("\nStatus bar: ${if (layout.statusBar.showBar) "shown" else "hidden"}" +
                 ", wallpaper: ${wallpaperLabel()}")
+            // v2.8: the startup: line — the cold-start timings
+            // (first frame of the staged shell · the warmed home),
+            // shaped by core/DiagStartup from data/DiagLog's
+            // recorded milestones (persisted across processes).
+            append(
+                "\n" + com.mizan.launcher.core.DiagStartup.line(
+                    com.mizan.launcher.data.DiagLog.startupFirstMs(this@SettingsActivity),
+                    com.mizan.launcher.data.DiagLog.startupFullMs(this@SettingsActivity)
+                )
+            )
             // v1.7: the profile's home style (safe mode renders TV
             // regardless — noted so a report isn't misread).
             append("\nhome style: ${prefs.homeStyle}" +
@@ -1586,6 +1645,8 @@ class SettingsActivity : Activity() {
                 focusedPane = SettingsNavMachine.COLUMN_RIGHT
                 nav.noteFocus(SettingsNavMachine.COLUMN_RIGHT)
                 detailFocusMemory[nav.selectedId] = title
+                val idx = detailFocusable.indexOf(switch)
+                if (idx >= 0) detailFocusIndexMemory[nav.selectedId] = idx
             }
         }
         return switch
@@ -1664,9 +1725,11 @@ class SettingsActivity : Activity() {
             "If the system screens don't offer Sreeb on this TV, the same result from a " +
                 "computer on the same Wi-Fi (this changes only the default home — it disables nothing):"
         ))
-        val adbView = info(com.mizan.launcher.data.HomeStatus.adbCommands())
-        adbView.setTextIsSelectable(true)
-        content.addView(adbView)
+        // v2.8 nav audit: this info text must NOT be made
+        // text-selectable — a selectable TextView is FOCUSABLE,
+        // which made this read-only ADB text a dead D-pad stop
+        // (no highlight, no action) mid-page.
+        content.addView(info(com.mizan.launcher.data.HomeStatus.adbCommands()))
 
         content.addView(row("← Back to Home & launcher", "") {
             showingMakeHome = false
@@ -1727,7 +1790,12 @@ class SettingsActivity : Activity() {
         val idx = options.indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
             .setSingleChoiceItems(options.toTypedArray(), idx) { dlg, which ->
-                apply(options[which]); dlg.dismiss()
+                // v2.8 nav audit: dismiss BEFORE apply — apply
+                // rebuilds the hierarchy, and rebuilding under a
+                // still-shown dialog let the window-focus return
+                // drop the pending restoreFocus, stranding focus.
+                dlg.dismiss()
+                apply(options[which])
             }
             .setNegativeButton("Cancel", null).show()
     }

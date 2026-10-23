@@ -135,3 +135,23 @@ object DiagLogs {
         return lines.takeLast(maxLines).joinToString("\n")
     }
 }
+
+/**
+ * Cold-start timing (v2.8, spec §28) — the pure shaping of the one
+ * diagnostics line that reports how long the black-screen wait was:
+ * "startup: first frame X ms · full Y ms". Times are milliseconds
+ * from process start (App.onCreate entry) to (a) the first frame of
+ * the staged shell being drawn and (b) the fully-warmed home's
+ * frame. A negative value means "not recorded" (this process never
+ * cold-started the home, or the probe never fired) and renders as
+ * an em dash — the line is always present so its absence is never
+ * ambiguous. Fake-clock friendly: the sim pins the exact shapes.
+ */
+object DiagStartup {
+
+    fun line(firstFrameMs: Long, fullMs: Long): String {
+        val first = if (firstFrameMs >= 0L) "$firstFrameMs ms" else "—"
+        val full = if (fullMs >= 0L) "$fullMs ms" else "—"
+        return "startup: first frame $first · full $full"
+    }
+}
