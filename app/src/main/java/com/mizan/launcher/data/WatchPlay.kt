@@ -66,15 +66,15 @@ object WatchPlay {
     // ------------------------------------------------------------ matches
 
     /**
-     * v2.4: fired (on the main thread) when a background tuple load
-     * recomputes the match table — the Watch home sets this to
+     * Fired (on the main thread) when a worker-thread recompute
+     * lands a NEW match table — the Watch home sets this to
      * rebuild itself with fresh badges. Single slot: the home is
      * the only live consumer.
      */
     @Volatile
     var onMatchesChanged: (() -> Unit)? = null
 
-    /** The prefs-cached match table, decoded (no store access). */
+    /** The prefs-cached match table, decoded (no store access, no compute). */
     fun cachedMatches(ctx: Context): Map<String, WatchMatch.Match> {
         val p = prefs(ctx)
         val decoded = WatchMatch.decodeMatches(
@@ -84,51 +84,87 @@ object WatchPlay {
     }
 
     /**
-     * The current match table, keyed "type|tmdbId". v2.4: matching
-     * runs over the store's lightweight TUPLES (id, title, year —
-     * scanned from the .jsonl files on a worker thread by
-     * IptvClient), never over materialized catalogues. When the
-     * tuples are not loaded yet this returns the prefs-cached
-     * table and kicks the load; the recomputation then fires
-     * [onMatchesChanged]. Recomputed only when the fingerprint
-     * moves (store refresh, tracker snapshot change); otherwise
-     * decoded from the prefs cache.
+     * The current match table, keyed "type|tmdbId".
+     *
+     * v2.5: this NEVER computes on the caller's thread. It returns
+     * the prefs-cached table immediately and kicks a single-flight
+     * worker recompute ([kickRecompute]); when the fingerprint
+     * has moved and the worker lands a new table, the table is
+     * persisted and [onMatchesChanged] fires on the main thread.
+     *
+     * Why: the v2.4 shape computed the match HERE — synchronously
+     * when the store tuples were already loaded, and inside
+     * IptvClient.tuplesAsync's main-thread Handler callback when
+     * they were not. The 2026-10-22 22:50 dropbox ANR caught the
+     * main thread inside WatchMatch.normalizeKey under
+     * computeMatches under that Handler delivery: matching ran
+     * on the main thread end-to-end, O(tracked × catalogue) with
+     * a fresh normalization per comparison, 545 MB allocated in
+     * the stall — and because the process died mid-compute, the
+     * badges/play resolutions it was computing never landed.
+     * Matching now runs worker-side over a once-built key index
+     * (core/WatchMatch), and only the FINISHED table ever crosses
+     * to the main thread.
      */
     fun matches(ctx: Context): Map<String, WatchMatch.Match> {
-        val tuples = IptvClient.tuplesIfLoaded(ctx)
-        if (tuples == null) {
-            IptvClient.tuplesAsync(ctx) { series, vods ->
-                computeMatches(ctx, series, vods)
-                try { onMatchesChanged?.invoke() } catch (e: Exception) {
-                    // The home's rebuild guard handles dead activities.
-                }
-            }
-            return cachedMatches(ctx)
-        }
-        return computeMatches(ctx, tuples.first, tuples.second)
+        kickRecompute(ctx)
+        return cachedMatches(ctx)
     }
 
-    private fun computeMatches(
-        ctx: Context,
-        seriesTuples: List<com.mizan.launcher.core.IptvStore.Tuple>,
-        vodTuples: List<com.mizan.launcher.core.IptvStore.Tuple>
-    ): Map<String, WatchMatch.Match> {
-        val snap = TrackerClient.cached(ctx)
+    @Volatile
+    private var recomputeInFlight = false
+
+    /** Kick the single-flight worker recompute (no-op while one is running). */
+    fun kickRecompute(ctx: Context) {
+        synchronized(this) {
+            if (recomputeInFlight) return
+            recomputeInFlight = true
+        }
+        val appCtx = ctx.applicationContext
+        thread(name = "mizan-watch-match") {
+            var changed = false
+            try {
+                changed = recomputeOnWorker(appCtx)
+            } catch (e: Exception) {
+                Prefs.noteError(appCtx, "watchMatch", e)
+            } finally {
+                synchronized(this) { recomputeInFlight = false }
+            }
+            if (changed) {
+                DiagLog.note("watch matches recomputed")
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    try { onMatchesChanged?.invoke() } catch (e: Exception) {
+                        // The home's rebuild guard handles dead activities.
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Worker-thread recompute (this IS the worker — every call
+     * site is inside [kickRecompute]'s thread): load the store
+     * tuples blocking, derive the fingerprint, and only when it
+     * moved run the match — core/WatchMatch keys the catalogue
+     * once per run. Persists table + fingerprint. Returns true
+     * when a NEW table landed.
+     */
+    private fun recomputeOnWorker(appCtx: Context): Boolean {
+        val (seriesTuples, vodTuples) = IptvClient.tuplesBlocking(appCtx)
+        val snap = TrackerClient.cached(appCtx)
         val titles = trackerTitles(snap)
         val keyHash = titles.map { "${it.type}:${it.tmdbId}" }.sorted().joinToString(",").hashCode()
         val fp = WatchMatch.fingerprint(
             seriesTuples.size, vodTuples.size,
-            IptvClient.fetchedAt(ctx), snap.updated, keyHash
+            IptvClient.fetchedAt(appCtx), snap.updated, keyHash
         )
-        val p = prefs(ctx)
+        val p = prefs(appCtx)
         val storedFp = try { p.getString(K_MATCH_FP, null) } catch (e: Exception) { null }
         if (storedFp == fp) {
             val decoded = WatchMatch.decodeMatches(
                 try { p.getString(K_MATCH_CACHE, null) } catch (e: Exception) { null }
             )
-            if (decoded.isNotEmpty() || titles.isEmpty()) {
-                return decoded.associateBy { "${it.type}|${it.tmdbId}" }
-            }
+            if (decoded.isNotEmpty() || titles.isEmpty()) return false
             // Fingerprint claims fresh but the cache is empty while
             // titles exist — fall through and recompute.
         }
@@ -147,16 +183,23 @@ object WatchPlay {
                 .putString(K_MATCH_FP, fp)
                 .apply()
         } catch (e: Exception) {
-            // The cache is an optimization; the computed map still returns.
+            // The cache is an optimization; a failed write just
+            // means the next kick recomputes again.
         }
-        return all.associateBy { "${it.type}|${it.tmdbId}" }
+        return true
     }
 
-    /** Coverage counts for the `watch:` diagnostics line. */
+    /**
+     * Coverage counts for the `watch:` diagnostics line. v2.5:
+     * reads the CACHED table only (kicking a background recompute
+     * for next time) — diagnostics composition must never trigger
+     * the match it merely reports on.
+     */
     fun stats(ctx: Context): WatchMatch.Stats {
+        kickRecompute(ctx)
         val snap = TrackerClient.cached(ctx)
         val titles = trackerTitles(snap)
-        val m = matches(ctx)
+        val m = cachedMatches(ctx)
         var resolved = 0
         for (item in snap.upNext) {
             val match = m["tv|${item.tmdbId}"] ?: continue

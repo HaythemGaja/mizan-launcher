@@ -100,6 +100,7 @@ class DetailsActivity : Activity() {
         contentBox = box
         setContentView(scroll)
 
+        com.mizan.launcher.data.DiagLog.note("details opened")
         rebuild()
         loadDetails()
         TrackerClient.refreshAsync(this) {
@@ -109,10 +110,28 @@ class DetailsActivity : Activity() {
 
     // ------------------------------------------------------------ state
 
+    // v2.5: parseLibShows memo. rebuild() → readSnapshotState()
+    // re-parsed the tracker's full tracked-shows document on
+    // EVERY rebuild (each mark/unwatch/mark-season triggers one),
+    // on the main thread. TrackerClient.cached() now returns a
+    // reference-stable trackedJson, so keying the parsed map on
+    // the string instance is exact and the parse runs once per
+    // distinct document.
+    private var libShowsMemoJson: String? = null
+    private var libShowsMemo: List<LibraryLogic.LibShow> = emptyList()
+
+    private fun libShows(snap: TrackerClient.Snapshots): List<LibraryLogic.LibShow> {
+        if (libShowsMemoJson !== snap.trackedJson) {
+            libShowsMemo = LibraryLogic.parseLibShows(snap.trackedJson)
+            libShowsMemoJson = snap.trackedJson
+        }
+        return libShowsMemo
+    }
+
     /** (Re)read this title's snapshot + overlay state; true if it changed. */
     private fun readSnapshotState(): Boolean {
         val snap = TrackerClient.cached(this)
-        val shows = LibraryLogic.parseLibShows(snap.trackedJson)
+        val shows = libShows(snap)
         val newShow = shows.firstOrNull { it.tmdbId == tmdbId }
         val newMovie = snap.movies.firstOrNull { it.tmdbId == tmdbId }
         val newIn = if (type == "movie") newMovie != null else newShow != null
@@ -381,6 +400,7 @@ class DetailsActivity : Activity() {
         if (movieMatch != null) {
             buttons.add(
                 actionButton("▶ Play on IPTV", "play_iptv") {
+                    com.mizan.launcher.data.DiagLog.note("details: movie play tapped")
                     // v2.4: store resolution on a worker thread.
                     WatchPlay.resolveVod(this, movieMatch) { vod ->
                         if (isFinishing || isDestroyed) return@resolveVod
@@ -710,6 +730,7 @@ class DetailsActivity : Activity() {
      * stays fully usable either way.
      */
     private fun playEpisodeFromDetails(match: WatchMatch.Match, season: Int, episode: Int) {
+        com.mizan.launcher.data.DiagLog.note("details: episode play tapped")
         // v2.4: store resolution on a worker thread.
         WatchPlay.resolveSeries(this, match) { series ->
             if (isFinishing || isDestroyed) return@resolveSeries

@@ -102,40 +102,109 @@ object WatchMatch {
         val possible: Boolean
     )
 
+    /**
+     * A candidate with its match key computed ONCE (v2.5). The
+     * pre-v2.5 matcher re-normalized EVERY candidate for EVERY
+     * tracker title — keyOf ran twice per candidate per title
+     * (two calls in the Triple), each doing regex year-splitting
+     * and a lowercase pass — so a match run cost
+     * O(titles × candidates) full normalizations against a
+     * catalogue of tens of thousands. The 2026-10-22 dropbox ANR
+     * caught exactly that on the main thread (normalizeKey under
+     * matchOne under computeMatches). Now: candidates are keyed
+     * once per run, the exact tier is a hash lookup, and the fuzzy
+     * tier compares precomputed keys/token sets — no string is
+     * ever normalized twice in a run.
+     */
+    class KeyedCandidate(val candidate: Candidate, val key: String, val year: Int) {
+        /** Token set for the fuzzy tier, computed on first use only. */
+        val tokens: Set<String> by lazy(LazyThreadSafetyMode.NONE) { tokenSet(key) }
+    }
+
+    /** Key every candidate once (one [keyOf] per candidate). */
+    fun keyCandidates(candidates: List<Candidate>): List<KeyedCandidate> =
+        candidates.map { c ->
+            val (key, year) = keyOf(c.name, c.year)
+            KeyedCandidate(c, key, year)
+        }
+
+    /**
+     * The exact-tier index over keyed candidates: normalized key →
+     * candidates, in catalogue order (the matcher's "first in the
+     * tier wins" rule reads index lists in this order). Empty keys
+     * are excluded — they can never exact-match (a title's key is
+     * non-empty by the time tiers are consulted) nor fuzzy-match
+     * (the fuzzy filter requires a non-empty candidate key).
+     */
+    fun exactIndex(keyed: List<KeyedCandidate>): Map<String, List<KeyedCandidate>> {
+        val map = HashMap<String, ArrayList<KeyedCandidate>>()
+        for (k in keyed) {
+            if (k.key.isEmpty()) continue
+            map.getOrPut(k.key) { ArrayList() }.add(k)
+        }
+        return map
+    }
+
+    /**
+     * Best-tier matching for one title against PRE-KEYED
+     * candidates; null when nothing is close. Semantics are the
+     * pre-v2.5 matchOne's, unchanged: exact tier beats fuzzy, a
+     * year on both sides breaks ties, ambiguity resolves to the
+     * first candidate flagged possible.
+     */
+    fun matchOneKeyed(
+        t: TrackerTitle,
+        keyed: List<KeyedCandidate>,
+        exact: Map<String, List<KeyedCandidate>>
+    ): Match? {
+        if (keyed.isEmpty()) return null
+        val (tKey, tYear) = keyOf(t.title, t.year)
+        if (tKey.isEmpty()) return null
+        val exactTier = exact[tKey] ?: emptyList()
+        val isExactTier = exactTier.isNotEmpty()
+        val tier: List<KeyedCandidate> = if (isExactTier) {
+            exactTier
+        } else {
+            val tTokens = tokenSet(tKey)
+            keyed.filter { k ->
+                k.key.isNotEmpty() &&
+                    (k.key.startsWith("$tKey ") || tKey.startsWith("${k.key} ") ||
+                        k.tokens == tTokens)
+            }
+        }
+        if (tier.isEmpty()) return null
+        val yearHits = if (tYear > 0) tier.filter { it.year == tYear } else emptyList()
+        val pool = if (yearHits.isNotEmpty()) yearHits else tier
+        val chosen = pool.first()
+        val yearConflict = tYear > 0 && yearHits.isEmpty() && tier.any { it.year > 0 }
+        val exactFlag = isExactTier && pool.size == 1 && !yearConflict
+        return Match(t.tmdbId, t.type, chosen.candidate.iptvId, exactFlag, !exactFlag)
+    }
+
     /** Best-tier matching for one title; null when nothing is close. */
     fun matchOne(t: TrackerTitle, candidates: List<Candidate>): Match? {
         if (candidates.isEmpty()) return null
-        val (tKey, tYear) = keyOf(t.title, t.year)
-        if (tKey.isEmpty()) return null
-        val keyed = candidates.map { c -> Triple(c, keyOf(c.name, c.year).first, keyOf(c.name, c.year).second) }
-        val exactTier = keyed.filter { it.second == tKey }
-        val fuzzyTier = if (exactTier.isEmpty()) {
-            keyed.filter { (_, cKey, _) ->
-                cKey.isNotEmpty() &&
-                    (cKey.startsWith("$tKey ") || tKey.startsWith("$cKey ") ||
-                        tokenSet(cKey) == tokenSet(tKey))
-            }
-        } else {
-            emptyList()
-        }
-        val isExactTier = exactTier.isNotEmpty()
-        val tier = if (isExactTier) exactTier else fuzzyTier
-        if (tier.isEmpty()) return null
-        val yearHits = if (tYear > 0) tier.filter { it.third == tYear } else emptyList()
-        val pool = if (yearHits.isNotEmpty()) yearHits else tier
-        val chosen = pool.first()
-        val yearConflict = tYear > 0 && yearHits.isEmpty() && tier.any { it.third > 0 }
-        val exact = isExactTier && pool.size == 1 && !yearConflict
-        return Match(t.tmdbId, t.type, chosen.first.iptvId, exact, !exact)
+        val keyed = keyCandidates(candidates)
+        return matchOneKeyed(t, keyed, exactIndex(keyed))
     }
 
     private fun tokenSet(key: String): Set<String> = key.split(' ').filter { it.isNotEmpty() }.toSet()
 
-    /** Match every tracker title against one catalogue, keyed by tmdbId. */
+    /**
+     * Match every tracker title against one catalogue, keyed by
+     * tmdbId. The catalogue is keyed + indexed ONCE for the whole
+     * run (see [KeyedCandidate]) — the cost is O(candidates) key
+     * computations plus one hash lookup per title on the exact
+     * tier, instead of the old O(titles × candidates)
+     * re-normalization.
+     */
     fun matchAll(tracker: List<TrackerTitle>, candidates: List<Candidate>): Map<Long, Match> {
         val out = LinkedHashMap<Long, Match>()
+        if (tracker.isEmpty() || candidates.isEmpty()) return out
+        val keyed = keyCandidates(candidates)
+        val exact = exactIndex(keyed)
         for (t in tracker) {
-            matchOne(t, candidates)?.let { out[t.tmdbId] = it }
+            matchOneKeyed(t, keyed, exact)?.let { out[t.tmdbId] = it }
         }
         return out
     }

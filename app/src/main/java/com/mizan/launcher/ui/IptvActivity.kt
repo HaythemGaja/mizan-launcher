@@ -133,6 +133,7 @@ class IptvActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.mizan.launcher.data.DiagLog.note("iptv browser opened")
         prefs = Prefs(this)
         tab = intent.getStringExtra(X_TAB) ?: TAB_LIVE
         val scroll = ScrollView(this)
@@ -222,6 +223,7 @@ class IptvActivity : Activity() {
      * modes being defended against.)
      */
     private fun rebuild() {
+        progressLineView = null
         try {
             rebuildInner()
         } catch (e: Throwable) {
@@ -292,7 +294,8 @@ class IptvActivity : Activity() {
         title.setTypeface(title.typeface, Typeface.BOLD)
         header.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(headerButton("⟳ Refresh") {
-            IptvClient.refreshAsync(this, force = true) { if (!isFinishing) rebuild() }
+            com.mizan.launcher.data.DiagLog.note("iptv refresh tapped")
+            IptvClient.refreshAsync(this, force = true) { onIptvProgressTick() }
             Toast.makeText(this, "Refreshing IPTV…", Toast.LENGTH_SHORT).show()
         })
         box.addView(header)
@@ -302,11 +305,11 @@ class IptvActivity : Activity() {
         // so its age is always worth showing).
         val progress = IptvClient.ingestProgressText()
         if (progress.isNotEmpty()) {
-            countLine(box, progress)
+            progressLineView = countLine(box, progress)
         } else if (snap.fetchedAt > 0L) {
             val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
                 .format(java.util.Date(snap.fetchedAt))
-            countLine(box, "Updated $timeText")
+            progressLineView = countLine(box, "Updated $timeText")
         }
 
         // Tabs.
@@ -1233,7 +1236,7 @@ class IptvActivity : Activity() {
         return tv
     }
 
-    private fun countLine(box: LinearLayout, text: String) {
+    private fun countLine(box: LinearLayout, text: String): TextView {
         val count = TextView(this)
         count.text = text
         count.setTextColor(0xFFB3B3B3.toInt())
@@ -1242,6 +1245,35 @@ class IptvActivity : Activity() {
         lp.setMargins(0, Ui.dp(this, 4), 0, Ui.dp(this, 10))
         count.layoutParams = lp
         box.addView(count)
+        return count
+    }
+
+    /**
+     * The header status line (ingest progress / "Updated …") —
+     * registered so ingest progress ticks can rewrite its text
+     * (v2.5). Null whenever it isn't on screen; cleared on every
+     * rebuild.
+     */
+    private var progressLineView: TextView? = null
+
+    /**
+     * Ingest progress callback (v2.5): while the ingest runs, a
+     * tick updates ONLY the status line's text — the v2.4 shape
+     * rebuilt the whole browser page on every tick (throttled to
+     * one per ~2 s at the source, but the page is a large
+     * catalogue grid, so a minutes-long ingest still meant
+     * composing thousands of cards again and again on the main
+     * thread). The completion callback — isIngesting() is false
+     * by the time it runs — does the ONE full rebuild that lands
+     * the new catalogue.
+     */
+    private fun onIptvProgressTick() {
+        if (isFinishing || isDestroyed) return
+        if (IptvClient.isIngesting()) {
+            progressLineView?.text = IptvClient.ingestProgressText()
+        } else {
+            rebuild()
+        }
     }
 
     private fun sectionTitle(box: LinearLayout, text: String) {

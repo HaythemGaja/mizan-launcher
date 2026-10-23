@@ -47,6 +47,7 @@
          what the user's own IPTV account already sends to his own
          server. (Diagnostics photo, 2026-10-22; spec §22.) -->
     <application
+        android:name=".App"
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"

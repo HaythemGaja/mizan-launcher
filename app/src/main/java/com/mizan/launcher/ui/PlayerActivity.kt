@@ -149,6 +149,7 @@ class PlayerActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.mizan.launcher.data.DiagLog.note("player opened")
         prefs = Prefs(this)
 
         val root = FrameLayout(this)

@@ -69,6 +69,7 @@ class IptvGuideActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.mizan.launcher.data.DiagLog.note("iptv guide opened")
         prefs = Prefs(this)
         val scroll = ScrollView(this)
         scroll.setBackgroundColor(Design.NETFLIX_BG)
@@ -96,6 +97,7 @@ class IptvGuideActivity : Activity() {
      * on a huge channel list is one of the defended failure modes.
      */
     private fun rebuild() {
+        progressLineView = null
         try {
             rebuildInner()
         } catch (e: Throwable) {
@@ -162,7 +164,8 @@ class IptvGuideActivity : Activity() {
         title.setTypeface(title.typeface, Typeface.BOLD)
         header.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
         val refreshBtn = headerButton("⟳ Refresh") {
-            IptvClient.refreshAsync(this, force = true) { if (!isFinishing) rebuild() }
+            com.mizan.launcher.data.DiagLog.note("iptv refresh tapped")
+            IptvClient.refreshAsync(this, force = true) { onIptvProgressTick() }
         }
         header.addView(refreshBtn)
         box.addView(header)
@@ -170,11 +173,11 @@ class IptvGuideActivity : Activity() {
         val snap = IptvClient.snapshot(this)
         val progress = IptvClient.ingestProgressText()
         if (progress.isNotEmpty()) {
-            noteLine(box, progress)
+            progressLineView = noteLine(box, progress)
         } else if (snap.fetchedAt > 0L) {
             val timeText = SimpleDateFormat("h:mm a", Locale.US)
                 .format(Date(snap.fetchedAt))
-            noteLine(box, "Updated $timeText")
+            progressLineView = noteLine(box, "Updated $timeText")
         }
 
         val hidden = hiddenCatKeys(snap)
@@ -239,7 +242,7 @@ class IptvGuideActivity : Activity() {
         target?.post { target.requestFocus() }
     }
 
-    private fun noteLine(box: LinearLayout, text: String) {
+    private fun noteLine(box: LinearLayout, text: String): TextView {
         val note = TextView(this)
         note.text = text
         note.setTextColor(0xFFB3B3B3.toInt())
@@ -248,6 +251,31 @@ class IptvGuideActivity : Activity() {
         nlp.setMargins(0, Ui.dp(this, 10), 0, Ui.dp(this, 2))
         note.layoutParams = nlp
         box.addView(note)
+        return note
+    }
+
+    /**
+     * The header status line (ingest progress / "Updated …") —
+     * registered so ingest progress ticks can rewrite its text
+     * (v2.5). Null whenever it isn't on screen; cleared on every
+     * rebuild.
+     */
+    private var progressLineView: TextView? = null
+
+    /**
+     * Ingest progress callback (v2.5): same contract as the
+     * browser's — while the ingest runs a tick rewrites only the
+     * status line's text; the completion callback does the one
+     * full rebuild that lands the new catalogue. (The v2.4 shape
+     * rebuilt the whole guide page on every tick.)
+     */
+    private fun onIptvProgressTick() {
+        if (isFinishing || isDestroyed) return
+        if (IptvClient.isIngesting()) {
+            progressLineView?.text = IptvClient.ingestProgressText()
+        } else {
+            rebuild()
+        }
     }
 
     private fun channelRow(

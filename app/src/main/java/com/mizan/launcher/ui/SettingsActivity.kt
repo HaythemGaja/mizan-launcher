@@ -180,6 +180,34 @@ class SettingsActivity : Activity() {
     private var navScroll: ScrollView? = null
     private var detailScrollView: ScrollView? = null
 
+    /**
+     * The IPTV page's progress/updated line (v2.5): ingest
+     * progress ticks update THIS view's text only — see
+     * [onIptvProgressTick]. Cleared on every rebuild; the IPTV
+     * page builder re-registers it when it builds the line.
+     */
+    private var iptvProgressView: TextView? = null
+
+    /**
+     * Ingest progress callback (v2.5): while the ingest runs, a
+     * tick updates only the progress line's text. The v2.4 shape
+     * rebuilt the WHOLE settings page on every tick (throttled to
+     * one per 2 s at the source, but a minutes-long ingest still
+     * meant a full page composition — potentially including the
+     * diagnostics page — every couple of seconds). Completion —
+     * isIngesting() is false by the time the final callback runs —
+     * does the one full rebuild.
+     */
+    private fun onIptvProgressTick() {
+        if (isFinishing || isDestroyed) return
+        val client = com.mizan.launcher.data.IptvClient
+        if (client.isIngesting()) {
+            iptvProgressView?.text = client.ingestProgressText()
+        } else {
+            rebuild()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
@@ -236,6 +264,7 @@ class SettingsActivity : Activity() {
     /** Build the settings UI — called once the entry gate has passed. */
     private fun enterSettings() {
         entered = true
+        com.mizan.launcher.data.DiagLog.note("settings opened")
         nav = SettingsNavMachine(categories.map { it.first })
         rebuild()
     }
@@ -259,6 +288,7 @@ class SettingsActivity : Activity() {
     // ---------------------------------------------------------------- layout
 
     private fun rebuild() {
+        iptvProgressView = null
         layout = prefs.layout
         val preset = Themes.preset(prefs.themeId)
         textColour = preset.text; subColour = preset.subText
@@ -455,6 +485,7 @@ class SettingsActivity : Activity() {
                     tv.post {
                         if (nav.selectedIndex != index) {
                             nav.select(index)
+                            com.mizan.launcher.data.DiagLog.note("settings page: ${nav.selectedId}")
                             if (nav.selectedId != "home") showingMakeHome = false
                             rebuild()
                         }
@@ -465,6 +496,7 @@ class SettingsActivity : Activity() {
         tv.setOnClickListener {
             // OK / tap on a category: select it AND enter its detail.
             nav.select(index)
+            com.mizan.launcher.data.DiagLog.note("settings page: ${nav.selectedId}")
             if (nav.selectedId != "home") showingMakeHome = false
             nav.enterDetail()
             focusedPane = SettingsNavMachine.COLUMN_RIGHT
@@ -852,21 +884,21 @@ class SettingsActivity : Activity() {
                 prefs.iptvServer = text.trim()
                 com.mizan.launcher.data.IptvClient.invalidateEpg()
                 // v2.4: saving the account IS the refresh request.
-                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { onIptvProgressTick() }
                 rebuild()
             }
         })
         content.addView(row("Username", prefs.iptvUser.ifEmpty { "Not set" }) {
             KeyboardDialog.show(this, "IPTV username", accent, prefs.iptvUser, 60, symbols = true) { text ->
                 prefs.iptvUser = text.trim()
-                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { onIptvProgressTick() }
                 rebuild()
             }
         })
         content.addView(row("Password", if (prefs.iptvPass.isEmpty()) "Not set" else "•••••••• (set)") {
             KeyboardDialog.show(this, "IPTV password", accent, prefs.iptvPass, 60, symbols = true, masked = true) { text ->
                 prefs.iptvPass = text
-                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { onIptvProgressTick() }
                 rebuild()
             }
         })
@@ -875,7 +907,7 @@ class SettingsActivity : Activity() {
         content.addView(row("Playlist (M3U) URL", if (prefs.iptvM3uUrl.isEmpty()) "Not set" else "Set") {
             KeyboardDialog.show(this, "M3U playlist URL", accent, prefs.iptvM3uUrl, 300, symbols = true) { text ->
                 prefs.iptvM3uUrl = text.trim()
-                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { onIptvProgressTick() }
                 rebuild()
             }
         })
@@ -883,7 +915,7 @@ class SettingsActivity : Activity() {
             KeyboardDialog.show(this, "XMLTV guide URL", accent, prefs.iptvEpgUrl, 300, symbols = true) { text ->
                 prefs.iptvEpgUrl = text.trim()
                 com.mizan.launcher.data.IptvClient.invalidateEpg()
-                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { onIptvProgressTick() }
                 rebuild()
             }
         })
@@ -909,14 +941,21 @@ class SettingsActivity : Activity() {
         ))
         val progress = com.mizan.launcher.data.IptvClient.ingestProgressText()
         if (progress.isNotEmpty()) {
-            content.addView(info(progress))
+            // v2.5: registered as the tick target — progress
+            // updates rewrite this line's text, never the page.
+            val pv = info(progress)
+            iptvProgressView = pv
+            content.addView(pv)
         } else if (idx != null && idx.fetchedAt > 0L) {
             val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
                 .format(java.util.Date(idx.fetchedAt))
-            content.addView(info("Updated $timeText — data refreshes only when you save the account or tap Refresh."))
+            val uv = info("Updated $timeText — data refreshes only when you save the account or tap Refresh.")
+            iptvProgressView = uv
+            content.addView(uv)
         }
         content.addView(row("Refresh now", "Fetch the catalogues + programme guide again") {
-            com.mizan.launcher.data.IptvClient.refreshAsync(this, force = true) { rebuild() }
+            com.mizan.launcher.data.DiagLog.note("iptv refresh tapped")
+            com.mizan.launcher.data.IptvClient.refreshAsync(this, force = true) { onIptvProgressTick() }
             toast("Refreshing IPTV…")
         })
         if (prefs.iptvAnyConfigured()) {
@@ -955,6 +994,18 @@ class SettingsActivity : Activity() {
                 })
         content.addView(header(appVersionLabel()))
         content.addView(info(diagnosticsText()))
+        content.addView(row("Copy diagnostics", "Copy all of the above — including the freeze/crash logs — to report a problem") {
+            try {
+                val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(
+                    android.content.ClipData.newPlainText("Sreeb diagnostics", diagnosticsText())
+                )
+                toast("Diagnostics copied")
+            } catch (e: Exception) {
+                failOpen("copyDiagnostics", e)
+            }
+        })
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
             prefs.safeMode = it
@@ -1462,6 +1513,25 @@ class SettingsActivity : Activity() {
                 append("\nSpeed up: ${prefs.speedupLastResult}")
             }
             if (lastErr.isNotEmpty()) append("\nLast error: $lastErr")
+            // v2.5: the self-diagnostics (data/DiagLog) — the
+            // breadcrumb trail and the tails of the app's own
+            // freeze/crash logs. Everything below is composed
+            // from bounded, already-recorded text: no live
+            // provider, store or network call happens while this
+            // page builds (the watch: counts above likewise read
+            // the cached match table only — WatchPlay.stats).
+            val crumbs = com.mizan.launcher.data.DiagLog.crumbs()
+            if (crumbs.isNotEmpty()) {
+                append("\nrecent actions: " + crumbs.takeLast(5).joinToString(" · "))
+            }
+            val anrTail = com.mizan.launcher.data.DiagLog.anrTail(this@SettingsActivity, 14)
+            if (anrTail.isNotEmpty()) {
+                append("\nlast freeze (watchdog):\n").append(anrTail)
+            }
+            val crashTail = com.mizan.launcher.data.DiagLog.crashTail(this@SettingsActivity, 10)
+            if (crashTail.isNotEmpty()) {
+                append("\nlast crash:\n").append(crashTail)
+            }
         }
     }
 
@@ -1639,7 +1709,7 @@ class SettingsActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Theme")
             .setSingleChoiceItems(names.toTypedArray(), idx) { dlg, which ->
                 prefs.themeId = Themes.PRESETS[which].id
-                if (Themes.PRESETS[which].dynamic) AccentUtil.recompute(this, prefs)
+                if (Themes.PRESETS[which].dynamic) AccentUtil.recomputeAsync(this, prefs) { rebuild() }
                 dlg.dismiss(); rebuild()
             }
             .setNegativeButton("Cancel", null).show()
@@ -1664,14 +1734,14 @@ class SettingsActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Wallpaper")
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> { prefs.wallpaperKind = "theme"; AccentUtil.recompute(this, prefs); rebuild() }
+                    0 -> { prefs.wallpaperKind = "theme"; AccentUtil.recomputeAsync(this, prefs) { rebuild() }; rebuild() }
                     3 -> {
                         // Weather background (v1.2): drawn from the
                         // current conditions / today's forecast; falls
                         // back to the theme gradient until weather data
                         // arrives (and the home screen fetches it).
                         prefs.wallpaperKind = "weather"
-                        AccentUtil.recompute(this, prefs)
+                        AccentUtil.recomputeAsync(this, prefs) { rebuild() }
                         toast("Weather background on — it follows the forecast on the home screen")
                         rebuild()
                     }
@@ -1683,7 +1753,7 @@ class SettingsActivity : Activity() {
                             .setItems(names.toTypedArray()) { _, w2 ->
                                 prefs.wallpaperKind = "gradient"
                                 prefs.wallpaperValue = names[w2]
-                                AccentUtil.recompute(this, prefs); rebuild()
+                                AccentUtil.recomputeAsync(this, prefs) { rebuild() }; rebuild()
                             }.show()
                     }
                     2 -> {
@@ -1692,7 +1762,7 @@ class SettingsActivity : Activity() {
                             .setItems(names.toTypedArray()) { _, w2 ->
                                 prefs.wallpaperKind = "solid"
                                 prefs.wallpaperValue = Themes.SOLIDS[w2].second.toString()
-                                AccentUtil.recompute(this, prefs); rebuild()
+                                AccentUtil.recomputeAsync(this, prefs) { rebuild() }; rebuild()
                             }.show()
                     }
                     5 -> {
@@ -1720,7 +1790,7 @@ class SettingsActivity : Activity() {
         ) {
             prefs.wallpaperKind = "bing"
             prefs.wallpaperValue = cachedPath
-            AccentUtil.recompute(this, prefs)
+            AccentUtil.recomputeAsync(this, prefs) { rebuild() }
             toast("Bing daily picture set")
             rebuild()
             return
@@ -1733,7 +1803,7 @@ class SettingsActivity : Activity() {
                     prefs.bingCachePath = file.absolutePath
                     prefs.wallpaperKind = "bing"
                     prefs.wallpaperValue = file.absolutePath
-                    AccentUtil.recompute(this, prefs)
+                    AccentUtil.recomputeAsync(this, prefs) { rebuild() }
                     toast("Bing daily picture set")
                     rebuild()
                 } else {
@@ -2133,7 +2203,7 @@ class SettingsActivity : Activity() {
     private fun applyRedditWallpaper(item: com.mizan.launcher.core.RedditImage, file: java.io.File) {
         prefs.wallpaperKind = "reddit"
         prefs.wallpaperValue = file.absolutePath
-        AccentUtil.recompute(this, prefs)
+        AccentUtil.recomputeAsync(this, prefs) { rebuild() }
         toast("Wallpaper set: ${item.title.take(40)}")
         rebuild()
     }
@@ -2342,7 +2412,7 @@ class SettingsActivity : Activity() {
                     }
                     prefs.wallpaperKind = "image"
                     prefs.wallpaperValue = uri.toString()
-                    AccentUtil.recompute(this, prefs)
+                    AccentUtil.recomputeAsync(this, prefs) { rebuild() }
                     toast("Wallpaper set")
                     rebuild()
                 }

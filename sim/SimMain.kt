@@ -48,6 +48,9 @@ import com.mizan.launcher.core.IptvStore
 import com.mizan.launcher.core.IptvStream
 import com.mizan.launcher.core.IptvM3uStream
 import com.mizan.launcher.core.WatchMatch
+import com.mizan.launcher.core.BreadcrumbRing
+import com.mizan.launcher.core.DiagLogs
+import com.mizan.launcher.core.DiagWatchdog
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.AppCategories
@@ -3142,6 +3145,164 @@ fun main() {
         check("hotfix: the version label is read from PackageManager at runtime",
             settingsSrc.contains("getPackageInfo(packageName, 0).versionName") &&
                 settingsSrc.contains("appVersionLabel()"))
+    }
+
+    // ---------- (42) v2.5: ANR hunt — watchdog, breadcrumbs, log codec, keyed matching ----------
+    run {
+        // --- watchdog staleness on a fake clock (core/DiagWatchdog).
+        check("diag: a heartbeat 3.9 s old is fresh",
+            !DiagWatchdog.isStale(1_000L, 4_900L))
+        check("diag: a heartbeat exactly at the threshold is not yet stale (strictly past it is)",
+            !DiagWatchdog.isStale(1_000L, 5_000L) &&
+                DiagWatchdog.isStale(1_000L, 5_001L))
+        check("diag: a heartbeat a minute old is stale",
+            DiagWatchdog.isStale(1_000L, 61_000L))
+        check("diag: a custom threshold is honoured",
+            !DiagWatchdog.isStale(0L, 1_000L, 1_000L) &&
+                DiagWatchdog.isStale(0L, 1_001L, 1_000L))
+        check("diag: no heartbeat yet reads stale once past the threshold",
+            !DiagWatchdog.isStale(0L, DiagWatchdog.STALE_MS) &&
+                DiagWatchdog.isStale(0L, DiagWatchdog.STALE_MS + 1))
+
+        // --- breadcrumb ring (core/BreadcrumbRing).
+        val ring = BreadcrumbRing()
+        check("crumbs: an empty ring snapshots empty", ring.snapshot().isEmpty())
+        ring.add(0L, "home opened")
+        ring.add(61_000L, "settings opened")
+        check("crumbs: snapshot is oldest-first",
+            ring.snapshot().map { it.second } == listOf("home opened", "settings opened"))
+        val capped = BreadcrumbRing(3)
+        capped.add(0L, "1"); capped.add(0L, "2"); capped.add(0L, "3"); capped.add(0L, "4")
+        check("crumbs: the ring keeps only the newest N",
+            capped.snapshot().map { it.second } == listOf("2", "3", "4"))
+        val fmt = BreadcrumbRing()
+        fmt.add(3_661_000L, "opened")
+        check("crumbs: lines render an HH:mm:ss clock + the label",
+            fmt.lines().size == 1 &&
+                Regex("^\\d{2}:\\d{2}:\\d{2} opened$").matches(fmt.lines()[0]))
+        val restored = BreadcrumbRing(3)
+        restored.restore(capped.encode())
+        check("crumbs: the persist/restore round-trip is exact",
+            restored.snapshot() == capped.snapshot())
+        val small = BreadcrumbRing(2)
+        small.restore("0|x\n0|y\n0|z")
+        check("crumbs: restore over capacity keeps the newest",
+            small.snapshot().map { it.second } == listOf("y", "z"))
+        val junk = BreadcrumbRing()
+        junk.restore("garbage\n5|\n7|ok")
+        check("crumbs: restore skips malformed lines",
+            junk.snapshot().map { it.second } == listOf("ok"))
+
+        // --- bounded event-log codec + tail rendering (core/DiagLogs).
+        var logText = ""
+        logText = DiagLogs.appendEvent(logText, "event one\nsecond line", 3)
+        logText = DiagLogs.appendEvent(logText, "event two", 3)
+        check("diaglog: events accumulate oldest-first",
+            DiagLogs.eventCount(logText) == 2 &&
+                logText.indexOf("event one") < logText.indexOf("event two"))
+        logText = DiagLogs.appendEvent(logText, "event three", 3)
+        logText = DiagLogs.appendEvent(logText, "event four", 3)
+        check("diaglog: the event cap keeps the newest events",
+            DiagLogs.eventCount(logText) == 3 &&
+                !logText.contains("event one") && logText.contains("event four"))
+        check("diaglog: tailLines returns the last lines (what diagnostics shows)",
+            DiagLogs.tailLines(logText, 2) ==
+                DiagLogs.EVENT_SEPARATOR + "\nevent four")
+        check("diaglog: a full tail returns every line",
+            DiagLogs.tailLines(logText, 500).split("\n").size ==
+                logText.trimEnd('\n').split("\n").size)
+        check("diaglog: an empty log tails empty",
+            DiagLogs.tailLines("", 10).isEmpty())
+        val huge = DiagLogs.appendEvent("", "x".repeat(500), 3, maxChars = 100)
+        check("diaglog: the char cap never truncates the newest event",
+            huge.contains("x".repeat(500)) && DiagLogs.eventCount(huge) == 1)
+        val squeezed = DiagLogs.appendEvent(huge, "small", 3, maxChars = 100)
+        check("diaglog: an oversized old event is dropped to fit the cap",
+            !squeezed.contains("xxx") && squeezed.contains("small"))
+
+        // --- keyed matching equivalence (the v2.5 WatchMatch rewrite).
+        // matchAll (once-built exact-key index) must return exactly
+        // what the per-title path returns — the index is an
+        // optimization, never a semantics change (§38 pins the
+        // semantics themselves).
+        val kinds = listOf(
+            "The Matrix", "Dark", "Dark Matter", "Severance", "The Office",
+            "Breaking Bad", "Amélie", "1917", "Dune", "Dune Part Two",
+            "Alien", "Aliens", "The Bear", "Shogun", "True Detective",
+            "Fargo", "Chernobyl", "Andor", "The Last of Us", "Fallout"
+        )
+        val candPool = ArrayList<WatchMatch.Candidate>()
+        var cid = 1L
+        for (i in 0 until 410) {
+            val base = kinds[i % kinds.size]
+            val year = if (i % 3 == 0) 1990 + (i % 30) else 0
+            candPool.add(
+                WatchMatch.Candidate(
+                    cid++, (base + if (i % 5 == 0) " Extended" else "").trim(), year
+                )
+            )
+        }
+        val titlePool = kinds.mapIndexed { i, n ->
+            WatchMatch.TrackerTitle(
+                (1000 + i).toLong(), if (i % 2 == 0) "tv" else "movie", n,
+                if (i % 4 == 0) 1990 + (i % 30) else 0
+            )
+        }
+        val viaAll = WatchMatch.matchAll(titlePool, candPool)
+        val viaOne = titlePool.mapNotNull { t ->
+            WatchMatch.matchOne(t, candPool)?.let { t.tmdbId to it }
+        }.toMap()
+        check("watchkey: keyed matchAll == per-title matchOne over ${candPool.size} candidates",
+            viaAll == viaOne)
+        check("watchkey: the fixture actually matches (the equivalence is not vacuous)",
+            viaAll.size >= 10)
+        val yearPick = WatchMatch.matchAll(
+            listOf(WatchMatch.TrackerTitle(7L, "movie", "Dune", 2021)),
+            listOf(
+                WatchMatch.Candidate(1L, "Dune", 1984),
+                WatchMatch.Candidate(2L, "Dune", 2021)
+            )
+        )
+        check("watchkey: the index path keeps the year tie-break",
+            yearPick[7L]?.iptvId == 2L)
+        val ambiguous = WatchMatch.matchAll(
+            listOf(WatchMatch.TrackerTitle(8L, "movie", "Dune", 0)),
+            listOf(
+                WatchMatch.Candidate(3L, "Dune", 1984),
+                WatchMatch.Candidate(4L, "Dune", 2021)
+            )
+        )
+        check("watchkey: the index path keeps ambiguity -> first candidate + possible",
+            ambiguous[8L]?.iptvId == 3L &&
+                ambiguous[8L]?.possible == true)
+
+        // --- source checks: the v2.5 wiring is really in the app.
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val watchPlaySrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+        check("v25src: Watch matching recomputes on the mizan-watch-match worker",
+            watchPlaySrc.contains("mizan-watch-match"))
+        check("v25src: WatchPlay never calls the deleted main-thread tuplesAsync",
+            watchPlaySrc.isNotEmpty() && !watchPlaySrc.contains("tuplesAsync("))
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
+        check("v25src: tuples are a worker-only blocking read now (tuplesBlocking)",
+            clientSrc.contains("fun tuplesBlocking"))
+        check("v25src: the legacy purge lands via a single commit()",
+            clientSrc.contains("commit()"))
+        val manifest = src("app/src/main/AndroidManifest.xml")
+        check("v25src: the manifest bootstraps the App class (DiagLog install)",
+            manifest.contains("android:name=\".App\""))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("v25src: Settings offers Copy diagnostics with the freeze/crash tails",
+            settingsSrc.contains("Copy diagnostics") &&
+                settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
+        val gradleSrc = src("app/build.gradle.kts")
+        check("v25src: the app version is 2.5 / code 18",
+            gradleSrc.contains("versionName = \"2.5\"") &&
+                gradleSrc.contains("versionCode = 18"))
     }
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")

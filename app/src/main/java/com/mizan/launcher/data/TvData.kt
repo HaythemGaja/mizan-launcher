@@ -83,6 +83,58 @@ object TvData {
     }
 
     /** Best-effort WatchNext (Continue Watching) rows from TvContract. */
+    // ------------------------------------------------------------ WatchNext (v2.5)
+
+    /**
+     * The WatchNext cache. [watchNext] is a ContentResolver query
+     * into the TV provider and used to run SYNCHRONOUSLY inside
+     * home builds (the TV-style Continue row and the Tracker
+     * merge both called it mid-build) — a slow or wedged provider
+     * stalls the whole build past the input-dispatch timeout.
+     * Now builders read this volatile cache and a single-flight
+     * background refresh keeps it current (kicked from
+     * MainActivity.onResume, the same pattern as Live TV / Most
+     * Used). Empty until the first refresh lands.
+     */
+    @Volatile
+    private var watchNextMemo: List<WatchItem>? = null
+
+    @Volatile
+    private var watchNextInFlight = false
+
+    /** The last-known WatchNext items. Never queries. */
+    fun watchNextCached(): List<WatchItem> = watchNextMemo ?: emptyList()
+
+    /**
+     * Background-refresh the WatchNext cache; [onChanged] runs on
+     * the main thread ONLY when the list actually changed.
+     */
+    fun refreshWatchNextAsync(ctx: Context, onChanged: (List<WatchItem>) -> Unit = {}) {
+        synchronized(this) {
+            if (watchNextInFlight) return
+            watchNextInFlight = true
+        }
+        val appCtx = ctx.applicationContext
+        kotlin.concurrent.thread(name = "mizan-watchnext") {
+            val fresh = try {
+                watchNext(appCtx)
+            } catch (e: Exception) {
+                watchNextMemo ?: emptyList()
+            }
+            val changed = fresh != watchNextMemo
+            watchNextMemo = fresh
+            synchronized(this) { watchNextInFlight = false }
+            if (changed) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    try { onChanged(fresh) } catch (e: Exception) {
+                        // A dead caller's rebuild must never kill the poster.
+                    }
+                }
+            }
+        }
+    }
+
+    /** The blocking WatchNext query. WORKER THREADS ONLY (see [watchNextCached]). */
     fun watchNext(ctx: Context): List<WatchItem> {
         val out = mutableListOf<WatchItem>()
         try {

@@ -54,6 +54,7 @@ import com.mizan.launcher.core.WeatherLogic
 import com.mizan.launcher.core.WifiLabel
 import com.mizan.launcher.data.AccentUtil
 import com.mizan.launcher.data.AppEntry
+import com.mizan.launcher.data.DiagLog
 import com.mizan.launcher.data.AppLoader
 import com.mizan.launcher.data.ArtworkImages
 import com.mizan.launcher.data.BingFetcher
@@ -192,6 +193,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DiagLog.note("home opened")
         prefs = Prefs(this)
         rebuild()
     }
@@ -217,6 +219,11 @@ class MainActivity : Activity() {
             LiveTv.refreshAsync(this) { result ->
                 if (result != beforeLive && !isTrackerFamily()) rebuild()
             }
+            // v2.5: same pattern for the WatchNext cache — the
+            // Continue rows (TV + Tracker merge) read the cache;
+            // a changed list rebuilds once. The blocking provider
+            // query itself never runs in a build any more.
+            TvData.refreshWatchNextAsync(this) { rebuild() }
             // Same pattern for Most Used: the usage tallies refresh
             // off-thread; a change rebuilds once with the row updated.
             if (MostUsed.isGranted(this)) {
@@ -316,7 +323,13 @@ class MainActivity : Activity() {
         textColour = preset.text
         subColour = preset.subText
         accent = if (preset.dynamic) {
-            if (prefs.accentOverride == 0) AccentUtil.recompute(this, prefs)
+            // v2.5: the recompute (a wallpaper decode for image /
+            // Reddit kinds) runs off the main thread now — this
+            // frame uses the preset accent, a landed change
+            // rebuilds once with the real one.
+            if (prefs.accentOverride == 0) {
+                AccentUtil.recomputeAsync(this, prefs) { rebuild() }
+            }
             if (prefs.accentOverride != 0) prefs.accentOverride else preset.accent
         } else preset.accent
     }
@@ -649,6 +662,7 @@ class MainActivity : Activity() {
      * v2.1 behaviour (the title's details) with a toast.
      */
     private fun playUpNextItem(item: TrackerLogic.UpNextItem, inSnapshot: Boolean) {
+        DiagLog.note("watch: episode play tapped")
         val match = watchMatch("tv", item.tmdbId)
         if (match == null) {
             openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
@@ -677,6 +691,7 @@ class MainActivity : Activity() {
 
     /** Play a matched movie from the Watch home (Movie Night / hero / For You). */
     private fun playMovieItem(movie: TrackerLogic.MovieItem) {
+        DiagLog.note("watch: movie play tapped")
         val match = watchMatch("movie", movie.tmdbId)
         if (match == null) {
             openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
@@ -1949,7 +1964,9 @@ class MainActivity : Activity() {
         FolderTree.breadcrumb(layout.folders, folder.id).joinToString(" › ") { it.name }
 
     private fun buildContinueSection(): View? {
-        val items = TvData.watchNext(this)
+        // v2.5: the cached list — the blocking provider query
+        // moved to TvData.refreshWatchNextAsync (onResume kick).
+        val items = TvData.watchNextCached()
         DiagCache.watchNextCount = items.size
         if (items.isEmpty()) return null
         val box = section("Continue Watching")
@@ -2033,7 +2050,7 @@ class MainActivity : Activity() {
 
         // The merged Continue cards decide that section's availability
         // (and are then built from, below) — system cards included.
-        val system = TvData.watchNext(this)
+        val system = TvData.watchNextCached()
         DiagCache.watchNextCount = system.size
         val continueCards = TrackerLogic.mergeContinue(tCont, system.map { it.title })
 
@@ -4234,7 +4251,9 @@ class MainActivity : Activity() {
             if (cached != null && cached.exists()) {
                 if (prefs.wallpaperValue != cached.absolutePath) {
                     prefs.wallpaperValue = cached.absolutePath
-                    AccentUtil.recompute(this, prefs)
+                    // v2.5: decode off the main thread; the accent
+                    // catch-up rebuild fires only if it changed.
+                    AccentUtil.recomputeAsync(this, prefs) { rebuild() }
                     rebuild()
                 }
             } else if (!bingFetchInFlight) {
@@ -4246,7 +4265,7 @@ class MainActivity : Activity() {
                             prefs.bingCacheDate = today
                             prefs.bingCachePath = file.absolutePath
                             prefs.wallpaperValue = file.absolutePath
-                            AccentUtil.recompute(this, prefs)
+                            AccentUtil.recomputeAsync(this, prefs) { rebuild() }
                             rebuild()
                         }
                     }
@@ -4390,18 +4409,66 @@ class MainActivity : Activity() {
         return null
     }
 
-    /** App list cache so resume-rebuilds don't re-query PackageManager every time. */
+    /**
+     * App list cache so resume-rebuilds don't re-query
+     * PackageManager every time.
+     *
+     * v2.5: stale-while-revalidate. get() used to run the FULL
+     * PackageManager scan (queryIntentActivities + a label and
+     * icon load per app) synchronously on the caller's thread
+     * whenever the 30 s TTL lapsed — and rebuild() runs on every
+     * onResume, so any resume past the TTL paid the whole scan on
+     * the main thread inside the home build. Now get() NEVER
+     * queries: it returns the last-good list immediately (empty
+     * on the very first cold start) and a single-flight
+     * background refresh swaps in the fresh list and rebuilds
+     * once when the package set actually changed — the same
+     * pattern as Live TV / Most Used on resume.
+     */
     object AppCache {
         private var cached: List<AppEntry>? = null
         private var at: Long = 0
+
+        @Volatile
+        private var loading = false
+
         fun get(activity: Activity): List<AppEntry> {
-            val now = System.currentTimeMillis()
             val c = cached
-            if (c != null && now - at < 30_000) return c
-            val fresh = AppLoader.loadApps(activity.packageManager, activity.packageName)
-            cached = fresh; at = now
-            DiagCache.appsCount = fresh.size
-            return fresh
+            if (c == null || System.currentTimeMillis() - at >= 30_000) {
+                refreshAsync(activity)
+            }
+            return c ?: emptyList()
+        }
+
+        private fun refreshAsync(activity: Activity) {
+            synchronized(this) {
+                if (loading) return
+                loading = true
+            }
+            val pm = activity.packageManager
+            val ownPkg = activity.packageName
+            kotlin.concurrent.thread(name = "mizan-apps") {
+                val fresh = try {
+                    AppLoader.loadApps(pm, ownPkg)
+                } catch (e: Exception) {
+                    null
+                }
+                synchronized(this) { loading = false }
+                if (fresh != null) {
+                    val oldPkgs: List<String> = cached?.map { it.pkg } ?: emptyList()
+                    val changed = fresh.map { it.pkg } != oldPkgs
+                    cached = fresh
+                    at = System.currentTimeMillis()
+                    DiagCache.appsCount = fresh.size
+                    if (changed && !activity.isFinishing && !activity.isDestroyed) {
+                        activity.runOnUiThread {
+                            (activity as? MainActivity)?.let { host ->
+                                if (!host.isFinishing && !host.isDestroyed) host.rebuild()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

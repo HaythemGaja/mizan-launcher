@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 02:28 UTC
+Date: 2026-10-23 03:24 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -124,6 +124,20 @@ guide retention window, oversized-segment resync, sliced
 home composition, and source checks (legacy prefs purge, no
 auto-fetch on home builds, downsampled image decode + byte-
 bounded bitmap cache). All v2.3.2 checks carry over.
+
+Note (v2.5): the ANR hunt (spec S25) — self-instrumentation
+(crash log, main-thread watchdog, breadcrumbs, all surfaced
+in Settings > Data & about with Copy diagnostics) plus the
+main-thread audit fixes. Proven root cause (dropbox ANR
+2026-10-22 22:50): Watch matching ran ON the main thread
+inside IptvClient.tuplesAsync's Handler delivery — it now
+runs worker-only over a once-built key index. New section
+42: watchdog staleness on a fake clock, the breadcrumb
+ring + persistence codec, the bounded event-log codec and
+tail rendering, keyed matchAll == per-title matchOne over
+an 820-candidate fixture, and source checks (worker match
+thread, purge commit, App bootstrap, Copy diagnostics).
+All v2.4 checks carry over.
 
 Note (v2.3.2): hotfix from on-device evidence (spec S23):
 with the cleartext fix the real panel finally loaded, and
@@ -744,5 +758,35 @@ PASS  iptvstore: image decode is downsampled and the bitmap cache is byte-bounde
 PASS  hotfix: manifest permits cleartext HTTP (Xtream panels / M3U / XMLTV are http://)
 PASS  hotfix: no hardcoded 'Sreeb v<digit>' label remains in SettingsActivity
 PASS  hotfix: the version label is read from PackageManager at runtime
-RESULT: 604 passed, 0 failed, 604 total
+PASS  diag: a heartbeat 3.9 s old is fresh
+PASS  diag: a heartbeat exactly at the threshold is not yet stale (strictly past it is)
+PASS  diag: a heartbeat a minute old is stale
+PASS  diag: a custom threshold is honoured
+PASS  diag: no heartbeat yet reads stale once past the threshold
+PASS  crumbs: an empty ring snapshots empty
+PASS  crumbs: snapshot is oldest-first
+PASS  crumbs: the ring keeps only the newest N
+PASS  crumbs: lines render an HH:mm:ss clock + the label
+PASS  crumbs: the persist/restore round-trip is exact
+PASS  crumbs: restore over capacity keeps the newest
+PASS  crumbs: restore skips malformed lines
+PASS  diaglog: events accumulate oldest-first
+PASS  diaglog: the event cap keeps the newest events
+PASS  diaglog: tailLines returns the last lines (what diagnostics shows)
+PASS  diaglog: a full tail returns every line
+PASS  diaglog: an empty log tails empty
+PASS  diaglog: the char cap never truncates the newest event
+PASS  diaglog: an oversized old event is dropped to fit the cap
+PASS  watchkey: keyed matchAll == per-title matchOne over 410 candidates
+PASS  watchkey: the fixture actually matches (the equivalence is not vacuous)
+PASS  watchkey: the index path keeps the year tie-break
+PASS  watchkey: the index path keeps ambiguity -> first candidate + possible
+PASS  v25src: Watch matching recomputes on the mizan-watch-match worker
+PASS  v25src: WatchPlay never calls the deleted main-thread tuplesAsync
+PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
+PASS  v25src: the legacy purge lands via a single commit()
+PASS  v25src: the manifest bootstraps the App class (DiagLog install)
+PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
+PASS  v25src: the app version is 2.5 / code 18
+RESULT: 634 passed, 0 failed, 634 total
 ```

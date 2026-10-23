@@ -146,21 +146,54 @@ object TrackerClient {
     private fun prefs(ctx: Context) =
         ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
 
+    // v2.5: parsed-snapshot memo. cached() used to re-parse all
+    // five snapshot documents on EVERY call — and it is called
+    // several times inside a single home build / details rebuild
+    // / diagnostics composition (status() alone called it twice),
+    // so one screen composition re-parsed the same JSON again and
+    // again on the main thread. The memo keys on the raw stored
+    // strings + the stamp fields: a fetch landing new documents
+    // invalidates it by value, unchanged data returns the SAME
+    // instance (callers may rely on reference-stable strings,
+    // e.g. DetailsActivity's parse memo).
+    @Volatile
+    private var cachedMemo: Snapshots? = null
+
+    @Volatile
+    private var cachedMemoKey: List<Any?>? = null
+
     /** The last-good snapshots, parsed. Never blocks on the provider. */
     fun cached(ctx: Context): Snapshots {
         return try {
             val p = prefs(ctx)
-            Snapshots(
-                upNext = TrackerLogic.parseUpNext(p.getString(K_UPNEXT, null)),
-                cont = TrackerLogic.parseContinue(p.getString(K_CONTINUE, null)),
-                movies = TrackerLogic.parseMovies(p.getString(K_MOVIES, null)),
-                tracked = TrackerLogic.parseTrackedShows(p.getString(K_TRACKED, null)),
-                forYou = TrackerLogic.parseForYou(p.getString(K_FORYOU, null)),
-                trackedJson = p.getString(K_TRACKED, null) ?: "",
-                updated = p.getLong(K_UPDATED, 0L),
-                forYouUpdated = p.getLong(K_FORYOU_UPDATED, 0L),
-                fetchedAt = p.getLong(K_FETCHED, 0L)
+            val rawUp = p.getString(K_UPNEXT, null)
+            val rawCont = p.getString(K_CONTINUE, null)
+            val rawMovies = p.getString(K_MOVIES, null)
+            val rawTracked = p.getString(K_TRACKED, null)
+            val rawForYou = p.getString(K_FORYOU, null)
+            val updated = p.getLong(K_UPDATED, 0L)
+            val forYouUpdated = p.getLong(K_FORYOU_UPDATED, 0L)
+            val fetchedAt = p.getLong(K_FETCHED, 0L)
+            val key = listOf<Any?>(
+                rawUp, rawCont, rawMovies, rawTracked, rawForYou,
+                updated, forYouUpdated, fetchedAt
             )
+            val memo = cachedMemo
+            if (memo != null && cachedMemoKey == key) return memo
+            val snap = Snapshots(
+                upNext = TrackerLogic.parseUpNext(rawUp),
+                cont = TrackerLogic.parseContinue(rawCont),
+                movies = TrackerLogic.parseMovies(rawMovies),
+                tracked = TrackerLogic.parseTrackedShows(rawTracked),
+                forYou = TrackerLogic.parseForYou(rawForYou),
+                trackedJson = rawTracked ?: "",
+                updated = updated,
+                forYouUpdated = forYouUpdated,
+                fetchedAt = fetchedAt
+            )
+            cachedMemo = snap
+            cachedMemoKey = key
+            snap
         } catch (e: Exception) {
             Snapshots.EMPTY
         }

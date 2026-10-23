@@ -57,6 +57,7 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/IptvLocks.kt \
   app/src/main/java/com/mizan/launcher/core/IptvStatus.kt \
   app/src/main/java/com/mizan/launcher/core/WatchMatch.kt \
+  app/src/main/java/com/mizan/launcher/core/Diag.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -186,6 +187,20 @@ export JAVA_OPTS
   echo "home composition, and source checks (legacy prefs purge, no"
   echo "auto-fetch on home builds, downsampled image decode + byte-"
   echo "bounded bitmap cache). All v2.3.2 checks carry over."
+  echo
+  echo "Note (v2.5): the ANR hunt (spec S25) — self-instrumentation"
+  echo "(crash log, main-thread watchdog, breadcrumbs, all surfaced"
+  echo "in Settings > Data & about with Copy diagnostics) plus the"
+  echo "main-thread audit fixes. Proven root cause (dropbox ANR"
+  echo "2026-10-22 22:50): Watch matching ran ON the main thread"
+  echo "inside IptvClient.tuplesAsync's Handler delivery — it now"
+  echo "runs worker-only over a once-built key index. New section"
+  echo "42: watchdog staleness on a fake clock, the breadcrumb"
+  echo "ring + persistence codec, the bounded event-log codec and"
+  echo "tail rendering, keyed matchAll == per-title matchOne over"
+  echo "an 820-candidate fixture, and source checks (worker match"
+  echo "thread, purge commit, App bootstrap, Copy diagnostics)."
+  echo "All v2.4 checks carry over."
   echo
   echo "Note (v2.3.2): hotfix from on-device evidence (spec S23):"
   echo "with the cleartext fix the real panel finally loaded, and"

@@ -19,6 +19,47 @@ import com.mizan.launcher.core.WeatherLogic
  */
 object AccentUtil {
 
+    @Volatile
+    private var recomputeInFlight = false
+
+    /**
+     * [recompute] off the caller's thread (v2.5): for image and
+     * Reddit wallpapers the compute opens a content-resolver
+     * stream and decodes a bitmap, and it used to be called
+     * synchronously from rebuild paths and click handlers on the
+     * main thread (MainActivity.resolveColours on EVERY rebuild
+     * while no override was stored, the Bing apply path, a dozen
+     * Settings pickers). Single-flight; [onDone] runs on the main
+     * thread only when the stored accent actually changed, so
+     * callers rebuild exactly when the new accent matters.
+     * Callers that are ALREADY on a background thread (the
+     * wallpaper rotator) keep using the synchronous [recompute].
+     */
+    fun recomputeAsync(ctx: Context, prefs: Prefs, onDone: () -> Unit = {}) {
+        synchronized(this) {
+            if (recomputeInFlight) return
+            recomputeInFlight = true
+        }
+        val appCtx = ctx.applicationContext
+        val before = try { prefs.accentOverride } catch (e: Exception) { 0 }
+        kotlin.concurrent.thread(name = "mizan-accent") {
+            try {
+                recompute(appCtx, prefs)
+            } catch (e: Exception) {
+                // recompute already fails open; this is belt-and-braces.
+            }
+            val changed = (try { prefs.accentOverride } catch (e: Exception) { 0 }) != before
+            synchronized(this) { recomputeInFlight = false }
+            if (changed) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    try { onDone() } catch (e: Exception) {
+                        // A dead caller's rebuild must never kill the poster.
+                    }
+                }
+            }
+        }
+    }
+
     fun recompute(ctx: Context, prefs: Prefs) {
         try {
             val bmp = wallpaperBitmap(ctx, prefs) ?: return

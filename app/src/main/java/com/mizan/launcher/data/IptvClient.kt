@@ -127,23 +127,52 @@ object IptvClient {
     /**
      * First-v2.4-run migration: DELETE the giant legacy catalogue
      * documents from SharedPreferences (the prefs map — and its
-     * permanent heap — shrinks at the apply). Conversion is
+     * permanent heap — shrinks once the edit lands). Conversion is
      * deliberately NOT attempted: re-parsing the very strings
      * that OOM would risk the same blow-up on the migration path;
      * the store repopulates on the first Refresh instead.
      * Credentials, favorites, resume, locks and the series-info
-     * cache are small and stay. Idempotent; runs inline (removals
-     * only — no giant value is ever read here).
+     * cache are small and stay. Idempotent.
+     *
+     * v2.5 threading (the audit's item 1): the purge used to run
+     * INLINE — synchronized, on whichever thread called first,
+     * which in practice was an activity's main thread via
+     * storeIndex()/snapshot(). Worse, its durability rode on
+     * apply(): if the process died before the queued write
+     * flushed, the flag + removals were lost and the giant file
+     * (and its parse cost on every cold start, paid by every
+     * prefs getter process-wide) survived to the next launch —
+     * a self-sustaining ANR loop. Now:
+     *  - ensureStore() NEVER blocks: it claims the single purge
+     *    run and returns; the purge executes on a dedicated
+     *    background thread (kicked from App.onCreate, before any
+     *    activity exists — its prefs read is also the process's
+     *    first, so the giant file is parsed off the main thread);
+     *  - removals + the done flag land in ONE commit(): durable
+     *    the moment it returns, even if the process is killed a
+     *    millisecond later;
+     *  - death BEFORE the commit leaves the flag unset, so the
+     *    next start simply re-runs the purge — re-runnable by
+     *    construction;
+     *  - NOTHING gates on it: the store lives in files, and every
+     *    reader here works (fail-open) while the purge is pending.
      */
     @Volatile
     private var storeReady = false
 
+    @Volatile
+    private var purgeStarted = false
+
     fun ensureStore(ctx: Context) {
         if (storeReady) return
         synchronized(this) {
-            if (storeReady) return
+            if (storeReady || purgeStarted) return
+            purgeStarted = true
+        }
+        val appCtx = ctx.applicationContext
+        thread(name = "mizan-iptv-purge") {
             try {
-                val p = prefs(ctx)
+                val p = prefs(appCtx)
                 val done = try {
                     p.getBoolean(K_STORE_V2, false)
                 } catch (e: Exception) {
@@ -153,7 +182,7 @@ object IptvClient {
                     val ed = p.edit()
                     for (k in LEGACY_KEYS) ed.remove(k)
                     ed.putBoolean(K_STORE_V2, true)
-                    ed.apply()
+                    ed.commit()
                 }
             } catch (e: Exception) {
                 // Migration trouble must never block the store.
@@ -424,50 +453,49 @@ object IptvClient {
         return if (memo != null && tuplesStamp == stamp) memo else null
     }
 
-    /** Load the match tuples on a worker thread (memoized per store generation). */
-    fun tuplesAsync(
-        ctx: Context,
-        onReady: (List<IptvStore.Tuple>, List<IptvStore.Tuple>) -> Unit
-    ) {
-        val appCtx = ctx.applicationContext
-        tuplesIfLoaded(appCtx)?.let { (series, vods) ->
-            Handler(Looper.getMainLooper()).post {
-                try { onReady(series, vods) } catch (e: Exception) {
-                    // Dead caller — nothing to update.
+    /**
+     * Load (or return the memoized) match tuples, scanning both
+     * store files end to end. WORKER THREADS ONLY.
+     *
+     * v2.5: this replaces tuplesAsync, whose callback was posted
+     * to the MAIN thread carrying these UNBOUNDED lists (one
+     * tuple per catalogue entry — tens of thousands on a real
+     * panel) — and its one consumer, data/WatchPlay, ran the
+     * whole tracker↔IPTV match inside that callback. That is the
+     * proven 2026-10-22 22:50 ANR: main thread inside
+     * WatchMatch.normalizeKey under WatchPlay.computeMatches
+     * under the tuplesAsync Handler delivery, 545 MB allocated
+     * in the stall. The rule from here on: unbounded data never
+     * crosses to the main thread — consumers load on their own
+     * worker thread and only FINISHED, bounded results are
+     * posted back.
+     */
+    fun tuplesBlocking(ctx: Context): Pair<List<IptvStore.Tuple>, List<IptvStore.Tuple>> {
+        tuplesIfLoaded(ctx)?.let { return it }
+        var series: List<IptvStore.Tuple> = emptyList()
+        var vods: List<IptvStore.Tuple> = emptyList()
+        try {
+            val sf = storeFile(ctx, IptvStore.FILE_SERIES)
+            if (sf.isFile) {
+                series = sf.bufferedReader().use { r ->
+                    IptvStore.seriesTuples(r.lineSequence())
                 }
             }
-            return
+            val vf = storeFile(ctx, IptvStore.FILE_VOD)
+            if (vf.isFile) {
+                vods = vf.bufferedReader().use { r ->
+                    IptvStore.vodTuples(r.lineSequence())
+                }
+            }
+        } catch (e: Exception) {
+            // Tuples are an optimization for matching; empty is safe.
         }
-        thread(name = "mizan-iptv-tuples") {
-            var series: List<IptvStore.Tuple> = emptyList()
-            var vods: List<IptvStore.Tuple> = emptyList()
-            try {
-                val sf = storeFile(appCtx, IptvStore.FILE_SERIES)
-                if (sf.isFile) {
-                    series = sf.bufferedReader().use { r ->
-                        IptvStore.seriesTuples(r.lineSequence())
-                    }
-                }
-                val vf = storeFile(appCtx, IptvStore.FILE_VOD)
-                if (vf.isFile) {
-                    vods = vf.bufferedReader().use { r ->
-                        IptvStore.vodTuples(r.lineSequence())
-                    }
-                }
-            } catch (e: Exception) {
-                // Tuples are an optimization for matching; empty is safe.
-            }
-            val stamp = storeStamp(appCtx)
-            if (stamp != 0L) {
-                tuplesMemo = Pair(series, vods)
-                tuplesStamp = stamp
-            }
-            Handler(Looper.getMainLooper()).post {
-                try { onReady(series, vods) } catch (e: Exception) {
-                    // Dead caller — nothing to update.
-                }
-            }
+        val stamp = storeStamp(ctx)
+        if (stamp != 0L) {
+            tuplesMemo = Pair(series, vods)
+            tuplesStamp = stamp
         }
+        return Pair(series, vods)
     }
 
     // ------------------------------------------------------------ status + last error
@@ -727,6 +755,7 @@ object IptvClient {
     }
 
     private fun runIngestLoop(appCtx: Context) {
+        DiagLog.note("iptv ingest started")
         try {
             while (true) {
                 try {
@@ -748,6 +777,7 @@ object IptvClient {
             synchronized(ingestLock) { ingestActive = false }
             progressEndpoint = ""
             progressItems = 0
+            DiagLog.note("iptv ingest finished")
             fireCallbacks(drain = true)
         }
     }
@@ -1207,14 +1237,33 @@ object IptvClient {
     private fun seriesInfoKey(ctx: Context, seriesId: Long): String =
         "iptv_series_info_" + fingerprint(ctx) + "_" + seriesId
 
+    /**
+     * v2.5: parsed series-info memo, keyed by the full prefs key
+     * and validated against the raw body. cachedSeriesInfo used
+     * to re-PARSE the body on every call — and callers loop it
+     * (Watch stats per Up Next item, home/hero card builders), so
+     * one composition re-parsed the same documents again and
+     * again on the main thread. The prefs read stays per call
+     * (cheap); the parse happens once per distinct body.
+     */
+    private val seriesInfoMemo =
+        java.util.concurrent.ConcurrentHashMap<String, Pair<String, IptvLogic.SeriesInfo>>()
+
     /** The cached series info for [seriesId], parsed; null when never fetched. Never touches the network. */
     fun cachedSeriesInfo(ctx: Context, seriesId: Long): IptvLogic.SeriesInfo? {
+        val key = seriesInfoKey(ctx, seriesId)
         val raw = try {
-            prefs(ctx).getString(seriesInfoKey(ctx, seriesId), null)
+            prefs(ctx).getString(key, null)
         } catch (e: Exception) {
             null
+        } ?: return null
+        seriesInfoMemo[key]?.let { (memoRaw, parsed) ->
+            if (memoRaw == raw) return parsed
         }
-        return IptvLogic.parseSeriesInfo(raw, seriesId)
+        val parsed = IptvLogic.parseSeriesInfo(raw, seriesId) ?: return null
+        if (seriesInfoMemo.size > 32) seriesInfoMemo.clear()
+        seriesInfoMemo[key] = raw to parsed
+        return parsed
     }
 
     /**
