@@ -10,56 +10,78 @@ import java.net.URL
 import kotlin.concurrent.thread
 
 /**
- * TMDB image loading for the Tracker view (v1.8): posters (w500) and
- * hero backdrops (w780) from image.tmdb.org. Follows the project's
- * service-free pattern (RedditFetcher/BingFetcher): plain
- * HttpURLConnection on a named background thread, result posted back
- * to the main thread. An in-memory LRU cache (no disk) keeps row
- * scrolling cheap; every failure is fail-open — the ImageView simply
- * keeps whatever it already shows (the theme gradient behind it).
+ * Image loading for posters, backdrops and IPTV logos (v1.8;
+ * v2.4 memory discipline): plain HttpURLConnection on a named
+ * background thread, result posted back to the main thread, every
+ * failure fail-open — the ImageView keeps whatever it shows.
+ *
+ * v2.4: two memory fixes, both learned from the IPTV catalogue —
+ * IPTV cards load FULL panel URLs through here, and panel posters
+ * arrive at full resolution:
+ *
+ * - DOWNSAMPLED DECODE: bitmaps are decoded with inSampleSize so
+ *   the longest side lands near the caller's [maxDim] (cards pass
+ *   the default 512; the hero passes 1024). A 2000×3000 poster no
+ *   longer becomes a 24 MB bitmap to fill a 300 px card.
+ * - BYTE-BOUNDED CACHE: the LRU is capped by total bitmap BYTES
+ *   (24 MB), not by entry count — 48 full-size posters could
+ *   previously pin hundreds of MB on a TV box.
  */
 object TmdbImages {
 
     private const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 12; TV) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 MizanLauncher/1.8"
-    private const val MAX_BYTES = 6 * 1024 * 1024
-    private const val MAX_ENTRIES = 48
+    private const val MAX_DOWNLOAD_BYTES = 6 * 1024 * 1024
+    private const val MAX_CACHE_BYTES = 24 * 1024 * 1024
+
+    /** Default decode bound (longest side, px) for card-sized images. */
+    const val DEFAULT_MAX_DIM = 512
+
+    /** Decode bound for the full-screen hero backdrop. */
+    const val HERO_MAX_DIM = 1024
 
     /** Full TMDB image URL for a raw path ("/abc.jpg") at [size] ("w500", "w780"). */
     fun url(size: String, path: String): String = "https://image.tmdb.org/t/p/$size$path"
 
-    private val cache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
-        override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<String, Bitmap>?
-        ): Boolean = size > MAX_ENTRIES
-    }
+    private val cache = LinkedHashMap<String, Bitmap>(16, 0.75f, true)
+    private var cacheBytes = 0
     private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** The cached bitmap for [url], or null (never blocks). */
-    fun cached(url: String): Bitmap? = synchronized(lock) { cache[url] }
+    private fun cacheKey(url: String, maxDim: Int): String = "$url@$maxDim"
+
+    /** The cached bitmap for [url] at the default size bucket, or null (never blocks). */
+    fun cached(url: String): Bitmap? = cached(url, DEFAULT_MAX_DIM)
+
+    /** The cached bitmap for [url] decoded for [maxDim], or null (never blocks). */
+    fun cached(url: String, maxDim: Int): Bitmap? =
+        synchronized(lock) { cache[cacheKey(url, maxDim)] }
 
     /**
      * Load [url] into [target]: cache hit applies immediately;
      * otherwise a background download applies on completion — but
      * only if the view still wants this URL (its tag), so recycled
-     * row cards never flash the wrong poster. [onApplied] (v2.0, for
-     * the hero crossfade) fires on the main thread right after the
-     * bitmap is set; it never fires on failure (fail-open: the view
-     * keeps what it shows).
+     * row cards never flash the wrong poster. [onApplied] fires on
+     * the main thread right after the bitmap is set; it never
+     * fires on failure (fail-open).
      */
-    fun load(url: String, target: ImageView, onApplied: (() -> Unit)? = null) {
+    fun load(
+        url: String,
+        target: ImageView,
+        maxDim: Int = DEFAULT_MAX_DIM,
+        onApplied: (() -> Unit)? = null
+    ) {
         if (url.isBlank()) return
-        cached(url)?.let {
+        cached(url, maxDim)?.let {
             target.setImageBitmap(it)
             onApplied?.invoke()
             return
         }
         target.tag = url
         thread(name = "mizan-tmdb-img") {
-            val bmp = download(url) ?: return@thread
-            synchronized(lock) { cache[url] = bmp }
+            val bmp = download(url, maxDim) ?: return@thread
+            synchronized(lock) { putCached(cacheKey(url, maxDim), bmp) }
             mainHandler.post {
                 if (target.tag == url) {
                     target.setImageBitmap(bmp)
@@ -69,7 +91,19 @@ object TmdbImages {
         }
     }
 
-    private fun download(url: String): Bitmap? {
+    /** Insert under the byte budget, evicting least-recently-used entries. Caller holds [lock]. */
+    private fun putCached(key: String, bmp: Bitmap) {
+        cache.remove(key)?.let { cacheBytes -= it.byteCount }
+        cache[key] = bmp
+        cacheBytes += bmp.byteCount
+        while (cacheBytes > MAX_CACHE_BYTES && cache.size > 1) {
+            val eldest = cache.entries.firstOrNull() ?: break
+            cacheBytes -= eldest.value.byteCount
+            cache.remove(eldest.key)
+        }
+    }
+
+    private fun download(url: String, maxDim: Int): Bitmap? {
         val conn = URL(url).openConnection() as HttpURLConnection
         return try {
             conn.connectTimeout = 10_000
@@ -85,12 +119,26 @@ object TmdbImages {
                     val n = stream.read(chunk)
                     if (n < 0) break
                     total += n
-                    if (total > MAX_BYTES) return null
+                    if (total > MAX_DOWNLOAD_BYTES) return null
                     buf.write(chunk, 0, n)
                 }
                 buf.toByteArray()
             }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            // Two-pass decode: bounds first, then a sampled decode
+            // whose longest side lands within ~2× of maxDim.
+            val bounds = BitmapFactory.Options()
+            bounds.inJustDecodeBounds = true
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= maxDim &&
+                bounds.outHeight / (sample * 2) >= maxDim
+            ) {
+                sample *= 2
+            }
+            val opts = BitmapFactory.Options()
+            opts.inSampleSize = sample
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
         } catch (e: Exception) {
             null
         } finally {

@@ -381,21 +381,24 @@ class DetailsActivity : Activity() {
         if (movieMatch != null) {
             buttons.add(
                 actionButton("▶ Play on IPTV", "play_iptv") {
-                    val vod = WatchPlay.vodFor(this, movieMatch)
-                    if (vod == null) {
-                        Toast.makeText(
-                            this, "That movie isn't on your IPTV right now",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        WatchPlay.playMovie(
-                            this, vod,
-                            if (inSnapshot) {
-                                WatchPlay.Token(tmdbId, "movie", 0, 0)
-                            } else {
-                                null
-                            }
-                        )
+                    // v2.4: store resolution on a worker thread.
+                    WatchPlay.resolveVod(this, movieMatch) { vod ->
+                        if (isFinishing || isDestroyed) return@resolveVod
+                        if (vod == null) {
+                            Toast.makeText(
+                                this, "That movie isn't on your IPTV right now",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            WatchPlay.playMovie(
+                                this, vod,
+                                if (inSnapshot) {
+                                    WatchPlay.Token(tmdbId, "movie", 0, 0)
+                                } else {
+                                    null
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -707,20 +710,23 @@ class DetailsActivity : Activity() {
      * stays fully usable either way.
      */
     private fun playEpisodeFromDetails(match: WatchMatch.Match, season: Int, episode: Int) {
-        val series = WatchPlay.seriesFor(this, match)
-        if (series == null) {
-            Toast.makeText(
-                this, "That show isn't on your IPTV right now", Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-        WatchPlay.playEpisode(
-            this, series, tmdbId, season, episode,
-            displayTitle(), displayPoster(), withToken = inSnapshot
-        ) {
-            Toast.makeText(
-                this, "That episode isn't on your IPTV", Toast.LENGTH_LONG
-            ).show()
+        // v2.4: store resolution on a worker thread.
+        WatchPlay.resolveSeries(this, match) { series ->
+            if (isFinishing || isDestroyed) return@resolveSeries
+            if (series == null) {
+                Toast.makeText(
+                    this, "That show isn't on your IPTV right now", Toast.LENGTH_SHORT
+                ).show()
+                return@resolveSeries
+            }
+            WatchPlay.playEpisode(
+                this, series, tmdbId, season, episode,
+                displayTitle(), displayPoster(), withToken = inSnapshot
+            ) {
+                Toast.makeText(
+                    this, "That episode isn't on your IPTV", Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 

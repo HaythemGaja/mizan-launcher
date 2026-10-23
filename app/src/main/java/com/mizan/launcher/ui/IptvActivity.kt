@@ -25,24 +25,30 @@ import com.mizan.launcher.data.Prefs
 import kotlin.concurrent.thread
 
 /**
- * The IPTV browser (v2.2, spec §20.4) — the LibraryActivity-shaped
- * home for the IPTV style's catalogues: tabs Live / Movies / Series
- * / Favorites / Search, category chips per tab, poster/logo grids.
+ * The IPTV browser (v2.2, spec §20.4; v2.4 data flow, spec §24) —
+ * the LibraryActivity-shaped home for the IPTV catalogues: tabs
+ * Live / Movies / Series / Favorites / Search, category chips per
+ * tab, poster/logo grids.
  *
- * - Channel OK → play immediately (the visible list becomes the
- *   player's zap queue). Movie OK → play (the player resumes a
- *   saved position). Series OK → an in-screen details view with
- *   seasons/episodes from get_series_info → episode play + resume.
+ * v2.4 DATA FLOW: the browser NEVER holds a catalogue. Categories
+ * + counts come from the disk store's index (data/IptvClient.
+ * snapshot — small, synchronous); items arrive as SLICES scanned
+ * from the store files on worker threads (IptvClient.sliceAsync),
+ * one window per tab/category, with "showing N of M" + Load more
+ * walking the window forward. The player's zap queue is the
+ * currently loaded slice. Refresh happens ONLY from the header
+ * button (and Settings › IPTV) — opening or resuming this screen
+ * fetches nothing.
+ *
+ * - Channel OK → play immediately. Movie OK → play (the player
+ *   resumes a saved position). Series OK → an in-screen details
+ *   view with seasons/episodes from get_series_info.
  * - Hold-OK anywhere → a menu: Play/Open, Favorite/Unfavorite,
  *   plus Watch from start on archive channels with EPG data.
- * - Category chips: OK selects; hold-OK locks/unlocks the category
- *   (spec §20.8) behind the profile's arrow pattern (PatternGate —
- *   the same gate + grace rules as app/folder locks). Locked
- *   categories show as 🔒 chips with no content until unlocked.
- * - The Live tab's top button opens the programme guide
- *   (IptvGuideActivity, §20.7).
+ * - Category chips: OK selects; hold-OK locks/unlocks the
+ *   category (spec §20.8) behind the profile's arrow pattern.
  *
- * Fail-open throughout: no account / no data / fetch trouble all
+ * Fail-open throughout: no account / no data / store trouble all
  * render as worded empty states (core/IptvStatus), never a crash.
  */
 class IptvActivity : Activity() {
@@ -53,6 +59,9 @@ class IptvActivity : Activity() {
         const val TAB_SERIES = "series"
         const val TAB_FAVORITES = "favorites"
         const val TAB_SEARCH = "search"
+
+        /** Hard ceiling on rendered cards per tab (Load-more stops here — narrow down instead). */
+        private const val MAX_RENDERED = 1000
 
         private const val X_TAB = "tab"
         private const val X_SERIES_ID = "series_id"
@@ -76,6 +85,45 @@ class IptvActivity : Activity() {
     private var focusedKey: String? = null
     private var firstCard: View? = null
 
+    // v2.4 slice state per catalogue kind: the loaded window, its
+    // true total, the state key it belongs to (kind|category), a
+    // generation counter that retires stale slice callbacks, and
+    // whether a slice is in flight.
+    private var liveItems: List<IptvLogic.LiveChannel> = emptyList()
+    private var liveTotal = 0
+    private var liveKey = ""
+    private var liveGen = 0
+    private var liveLoading = false
+
+    private var vodItems: List<IptvLogic.VodItem> = emptyList()
+    private var vodTotal = 0
+    private var vodKey = ""
+    private var vodGen = 0
+    private var vodLoading = false
+
+    private var seriesItems: List<IptvLogic.SeriesItem> = emptyList()
+    private var seriesTotal = 0
+    private var seriesKey = ""
+    private var seriesGen = 0
+    private var seriesLoading = false
+
+    // Search slice state (per kind, keyed by the query).
+    private var searchKey = ""
+    private var searchGen = 0
+    private var searchLive: List<IptvLogic.LiveChannel> = emptyList()
+    private var searchLiveTotal = 0
+    private var searchVods: List<IptvLogic.VodItem> = emptyList()
+    private var searchVodTotal = 0
+    private var searchSeries: List<IptvLogic.SeriesItem> = emptyList()
+    private var searchSeriesTotal = 0
+    private var searchLoading = false
+
+    /** Favorites are a prefs list (small); paging is local. */
+    private var favShown: Int = IptvLogic.GRID_CAP
+
+    /** The store generation the loaded slices belong to. */
+    private var sliceStamp: Long = Long.MIN_VALUE
+
     // Series details state.
     private var detailSeries: IptvLogic.SeriesItem? = null
     private var detailInfo: IptvLogic.SeriesInfo? = null
@@ -98,27 +146,37 @@ class IptvActivity : Activity() {
 
         val seriesId = intent.getLongExtra(X_SERIES_ID, 0L)
         if (seriesId > 0L) {
-            IptvClient.cached(this).series.firstOrNull { it.id == seriesId }?.let { openSeries(it) }
-            if (detailSeries == null) tab = TAB_SERIES
+            tab = TAB_SERIES
+            // v2.4: resolve the deep-linked series from the store
+            // on a worker thread; the tab renders meanwhile.
+            thread(name = "mizan-iptv-deeplink") {
+                val s = IptvClient.findSeriesBlocking(this, seriesId)
+                runOnUiThread {
+                    if (isFinishing) return@runOnUiThread
+                    if (s != null) {
+                        openSeries(s)
+                    }
+                    rebuild()
+                }
+            }
         }
         rebuild()
-        IptvClient.refreshAsync(this) { if (!isFinishing) rebuild() }
+        // Local EPG index from the store file (disk, not network).
         IptvClient.epgIndex(this) { if (!isFinishing) rebuild() }
     }
 
     override fun onResume() {
         super.onResume()
+        // v2.4: resume rebuilds from the store as-is; it never
+        // triggers a fetch (refresh is on request only).
         rebuild()
-        IptvClient.refreshAsync(this) { if (!isFinishing) rebuild() }
     }
 
     // ------------------------------------------------------------ lock state
 
-    private fun allCategories(cats: IptvLogic.Catalogues): List<IptvLogic.Category> {
+    private fun allCategories(snap: IptvClient.Snapshot): List<IptvLogic.Category> {
         val out = ArrayList<IptvLogic.Category>()
-        out.addAll(cats.liveCats)
-        out.addAll(cats.vodCats)
-        out.addAll(cats.seriesCats)
+        out.addAll(snap.allCats())
         // Categories referenced only by favorites (catalogue may
         // have moved on) still lock/unlock by key.
         val known = out.map { it.key }.toSet()
@@ -131,9 +189,9 @@ class IptvActivity : Activity() {
         return out
     }
 
-    private fun hiddenCatKeys(cats: IptvLogic.Catalogues): Set<String> =
+    private fun hiddenCatKeys(snap: IptvClient.Snapshot): Set<String> =
         IptvLocks.hiddenKeys(
-            allCategories(cats),
+            allCategories(snap),
             IptvLocks.decodeKeys(prefs.iptvLockedCats),
             IptvLocks.decodeStamps(prefs.iptvCatUnlockStamps),
             prefs.unlockGraceMinutes,
@@ -157,12 +215,11 @@ class IptvActivity : Activity() {
 
     /**
      * v2.3.2: EVERY browser build runs behind this guard. Real
-     * panel data (tens of thousands of entries, odd shapes) must
-     * never leave this activity black: any escape — exception or
-     * an inflation OOM — is recorded and replaced by a worded
-     * error screen. (Throwable, not Exception: running out of
-     * memory mid-inflate is precisely one of the failure modes
-     * being defended against, and the fallback renders two views.)
+     * panel data must never leave this activity black: any escape
+     * — exception or an inflation OOM — is recorded and replaced
+     * by a worded error screen. (Throwable, not Exception: running
+     * out of memory mid-inflate is precisely one of the failure
+     * modes being defended against.)
      */
     private fun rebuild() {
         try {
@@ -205,7 +262,24 @@ class IptvActivity : Activity() {
         box.removeAllViews()
         firstCard = null
 
-        val cats = IptvClient.cached(this)
+        val snap = IptvClient.snapshot(this)
+
+        // A completed refresh swaps the store under the loaded
+        // slices: retire every window so each tab re-reads its
+        // slice from the new generation.
+        val stamp = IptvClient.storeStamp(this)
+        if (stamp != sliceStamp) {
+            sliceStamp = stamp
+            liveKey = ""; vodKey = ""; seriesKey = ""; searchKey = ""
+            liveItems = emptyList(); vodItems = emptyList(); seriesItems = emptyList()
+            // Retire in-flight slice callbacks (their results
+            // belong to the old generation) and free the loading
+            // flags they owned — their callbacks return early on
+            // the generation check without touching either.
+            liveGen++; vodGen++; seriesGen++; searchGen++
+            liveLoading = false; vodLoading = false
+            seriesLoading = false; searchLoading = false
+        }
 
         // Header.
         val header = LinearLayout(this)
@@ -222,6 +296,18 @@ class IptvActivity : Activity() {
             Toast.makeText(this, "Refreshing IPTV…", Toast.LENGTH_SHORT).show()
         })
         box.addView(header)
+
+        // Slim status line: ingest progress while a refresh runs,
+        // else the store's age (v2.4: data loads on request only,
+        // so its age is always worth showing).
+        val progress = IptvClient.ingestProgressText()
+        if (progress.isNotEmpty()) {
+            countLine(box, progress)
+        } else if (snap.fetchedAt > 0L) {
+            val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
+                .format(java.util.Date(snap.fetchedAt))
+            countLine(box, "Updated $timeText")
+        }
 
         // Tabs.
         val tabsRow = LinearLayout(this)
@@ -246,24 +332,24 @@ class IptvActivity : Activity() {
         box.addView(tabsRow)
 
         if (detailSeries != null) {
-            buildSeriesDetail(box, cats)
+            buildSeriesDetail(box)
         } else when (tab) {
-            TAB_MOVIES -> buildCatalogueTab(box, cats, IptvLogic.KIND_VOD)
-            TAB_SERIES -> buildCatalogueTab(box, cats, IptvLogic.KIND_SERIES)
-            TAB_FAVORITES -> buildFavoritesTab(box, cats)
-            TAB_SEARCH -> buildSearchTab(box, cats)
-            else -> buildCatalogueTab(box, cats, IptvLogic.KIND_LIVE)
+            TAB_MOVIES -> buildCatalogueTab(box, snap, IptvLogic.KIND_VOD)
+            TAB_SERIES -> buildCatalogueTab(box, snap, IptvLogic.KIND_SERIES)
+            TAB_FAVORITES -> buildFavoritesTab(box, snap)
+            TAB_SEARCH -> buildSearchTab(box, snap)
+            else -> buildCatalogueTab(box, snap, IptvLogic.KIND_LIVE)
         }
 
         val target = focusedBefore?.let { findFrameByTag(box, it) } ?: firstCard
         target?.post { target.requestFocus() }
     }
 
-    private fun emptyState(box: LinearLayout, cats: IptvLogic.Catalogues) {
+    private fun emptyState(box: LinearLayout, snap: IptvClient.Snapshot) {
         val kind = IptvClient.status(this)
         val line = TextView(this)
         line.text = IptvStatus.emptyLine(kind)
-            ?: if (!cats.hasData) "Nothing here yet — try Refresh" else ""
+            ?: if (!snap.hasData) "Nothing here yet — try Refresh" else ""
         line.setTextColor(0xFFB3B3B3.toInt())
         line.textSize = 17f
         box.addView(line)
@@ -279,15 +365,101 @@ class IptvActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------ slices
+
+    private fun kindKey(kind: String): String = kind + "|" + (selectedCat[kind] ?: "")
+
+    private fun requestSlice(kind: String, append: Boolean) {
+        val offset: Int
+        val gen: Int
+        when (kind) {
+            IptvLogic.KIND_VOD -> {
+                if (vodLoading) return
+                vodLoading = true
+                gen = ++vodGen
+                offset = if (append) vodItems.size else 0
+            }
+            IptvLogic.KIND_SERIES -> {
+                if (seriesLoading) return
+                seriesLoading = true
+                gen = ++seriesGen
+                offset = if (append) seriesItems.size else 0
+            }
+            else -> {
+                if (liveLoading) return
+                liveLoading = true
+                gen = ++liveGen
+                offset = if (append) liveItems.size else 0
+            }
+        }
+        IptvClient.sliceAsync(
+            this, kind,
+            catKey = selectedCat[kind],
+            offset = offset,
+            limit = IptvLogic.GRID_CAP
+        ) { page ->
+            if (isFinishing) return@sliceAsync
+            when (kind) {
+                IptvLogic.KIND_VOD -> {
+                    if (gen != vodGen) return@sliceAsync
+                    vodLoading = false
+                    vodTotal = page.total
+                    vodItems = if (append) vodItems + page.vods else page.vods
+                }
+                IptvLogic.KIND_SERIES -> {
+                    if (gen != seriesGen) return@sliceAsync
+                    seriesLoading = false
+                    seriesTotal = page.total
+                    seriesItems = if (append) seriesItems + page.series else page.series
+                }
+                else -> {
+                    if (gen != liveGen) return@sliceAsync
+                    liveLoading = false
+                    liveTotal = page.total
+                    liveItems = if (append) liveItems + page.live else page.live
+                }
+            }
+            rebuild()
+        }
+    }
+
+    /** Ensure the window for (kind, selected category) is loaded; true when it already was. */
+    private fun ensureSlice(kind: String): Boolean {
+        val key = kindKey(kind)
+        val current = when (kind) {
+            IptvLogic.KIND_VOD -> vodKey
+            IptvLogic.KIND_SERIES -> seriesKey
+            else -> liveKey
+        }
+        if (current == key) return true
+        when (kind) {
+            IptvLogic.KIND_VOD -> { vodKey = key; vodItems = emptyList(); vodTotal = 0 }
+            IptvLogic.KIND_SERIES -> { seriesKey = key; seriesItems = emptyList(); seriesTotal = 0 }
+            else -> { liveKey = key; liveItems = emptyList(); liveTotal = 0 }
+        }
+        requestSlice(kind, append = false)
+        return false
+    }
+
+    private fun loadingFor(kind: String): Boolean = when (kind) {
+        IptvLogic.KIND_VOD -> vodLoading
+        IptvLogic.KIND_SERIES -> seriesLoading
+        else -> liveLoading
+    }
+
+    private fun loadMoreButton(box: LinearLayout, label: String, onClick: () -> Unit) {
+        val btn = headerButton(label) { onClick() }
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.setMargins(0, Ui.dp(this, 10), 0, Ui.dp(this, 6))
+        btn.layoutParams = lp
+        box.addView(btn)
+    }
+
     // ------------------------------------------------------------ catalogue tabs
 
-    private fun buildCatalogueTab(box: LinearLayout, cats: IptvLogic.Catalogues, kind: String) {
-        val categories: List<IptvLogic.Category> = when (kind) {
-            IptvLogic.KIND_VOD -> cats.vodCats
-            IptvLogic.KIND_SERIES -> cats.seriesCats
-            else -> cats.liveCats
-        }
-        val hidden = hiddenCatKeys(cats)
+    private fun buildCatalogueTab(box: LinearLayout, snap: IptvClient.Snapshot, kind: String) {
+        val categories = snap.categories(kind)
+        val hidden = hiddenCatKeys(snap)
 
         if (kind == IptvLogic.KIND_LIVE) {
             val guideBtn = headerButton("📖 Programme guide") {
@@ -340,81 +512,88 @@ class IptvActivity : Activity() {
             return
         }
 
-        // v2.3.2: views render ONE PAGE of the filtered list
-        // (core/IptvLogic.gridPage, GRID_CAP) — a real category can
-        // hold thousands of entries, and one inflated view per
-        // entry is what blacked this screen out on-device. The
-        // count line says when the page is a prefix; categories and
-        // Search remain the way to narrow down, and the player's
-        // zap queue follows the visible page.
+        ensureSlice(kind)
+        val loading = loadingFor(kind)
         when (kind) {
             IptvLogic.KIND_VOD -> {
-                val items = cats.vods.filter {
-                    (selected == null || it.catKey == selected) && it.catKey !in hidden
-                }
-                if (items.isEmpty()) {
-                    emptyState(box, cats)
+                if (vodItems.isEmpty()) {
+                    if (loading) countLine(box, "Loading…") else emptyState(box, snap)
                     return
                 }
-                val page = IptvLogic.gridPage(items)
                 countLine(
                     box,
-                    if (page.truncated) {
-                        "${items.size} movies — showing the first ${page.items.size}; " +
-                            "pick a category or use Search to narrow it down"
+                    if (vodTotal > vodItems.size) {
+                        "${vodItems.size} of $vodTotal movies — OK plays, hold OK for options"
                     } else {
-                        "${items.size} movies — OK plays, hold OK for options"
+                        "$vodTotal movies — OK plays, hold OK for options"
                     }
                 )
-                grid(box, page.items.map { vod -> vodCardData(vod) }, wide = false)
+                grid(box, vodItems.map { vod -> vodCardData(vod) }, wide = false)
+                if (vodItems.size < vodTotal) {
+                    if (vodItems.size >= MAX_RENDERED) {
+                        countLine(box, "Showing the first ${vodItems.size} — pick a category or use Search to narrow it down")
+                    } else {
+                        loadMoreButton(box, "Load more (${vodTotal - vodItems.size} more)") {
+                            requestSlice(kind, append = true)
+                        }
+                    }
+                }
             }
             IptvLogic.KIND_SERIES -> {
-                val items = cats.series.filter {
-                    (selected == null || it.catKey == selected) && it.catKey !in hidden
-                }
-                if (items.isEmpty()) {
-                    emptyState(box, cats)
+                if (seriesItems.isEmpty()) {
+                    if (loading) countLine(box, "Loading…") else emptyState(box, snap)
                     return
                 }
-                val page = IptvLogic.gridPage(items)
                 countLine(
                     box,
-                    if (page.truncated) {
-                        "${items.size} series — showing the first ${page.items.size}; " +
-                            "pick a category or use Search to narrow it down"
+                    if (seriesTotal > seriesItems.size) {
+                        "${seriesItems.size} of $seriesTotal series — OK opens seasons & episodes"
                     } else {
-                        "${items.size} series — OK opens seasons & episodes"
+                        "$seriesTotal series — OK opens seasons & episodes"
                     }
                 )
-                grid(box, page.items.map { s -> seriesCardData(s) }, wide = false)
+                grid(box, seriesItems.map { s -> seriesCardData(s) }, wide = false)
+                if (seriesItems.size < seriesTotal) {
+                    if (seriesItems.size >= MAX_RENDERED) {
+                        countLine(box, "Showing the first ${seriesItems.size} — pick a category or use Search to narrow it down")
+                    } else {
+                        loadMoreButton(box, "Load more (${seriesTotal - seriesItems.size} more)") {
+                            requestSlice(kind, append = true)
+                        }
+                    }
+                }
             }
             else -> {
-                val items = cats.live.filter {
-                    (selected == null || it.catKey == selected) && it.catKey !in hidden
-                }
-                if (items.isEmpty()) {
-                    emptyState(box, cats)
+                if (liveItems.isEmpty()) {
+                    if (loading) countLine(box, "Loading…") else emptyState(box, snap)
                     return
                 }
-                val page = IptvLogic.gridPage(items)
                 countLine(
                     box,
-                    if (page.truncated) {
-                        "${items.size} channels — showing the first ${page.items.size}; " +
-                            "pick a category or use Search to narrow it down"
+                    if (liveTotal > liveItems.size) {
+                        "${liveItems.size} of $liveTotal channels — OK plays, hold OK for options"
                     } else {
-                        "${items.size} channels — OK plays, hold OK for options"
+                        "$liveTotal channels — OK plays, hold OK for options"
                     }
                 )
-                grid(box, page.items.map { ch -> liveCardData(ch, page.items) }, wide = true)
+                grid(box, liveItems.map { ch -> liveCardData(ch, liveItems) }, wide = true)
+                if (liveItems.size < liveTotal) {
+                    if (liveItems.size >= MAX_RENDERED) {
+                        countLine(box, "Showing the first ${liveItems.size} — pick a category or use Search to narrow it down")
+                    } else {
+                        loadMoreButton(box, "Load more (${liveTotal - liveItems.size} more)") {
+                            requestSlice(kind, append = true)
+                        }
+                    }
+                }
             }
         }
     }
 
     // ------------------------------------------------------------ favorites + search tabs
 
-    private fun buildFavoritesTab(box: LinearLayout, cats: IptvLogic.Catalogues) {
-        val hidden = hiddenCatKeys(cats)
+    private fun buildFavoritesTab(box: LinearLayout, snap: IptvClient.Snapshot) {
+        val hidden = hiddenCatKeys(snap)
         val favs = prefs.iptvFavoriteList().filter { it.catKey !in hidden }
         if (favs.isEmpty()) {
             val line = TextView(this)
@@ -424,21 +603,69 @@ class IptvActivity : Activity() {
             box.addView(line)
             return
         }
-        // v2.3.2: same page cap as the catalogue tabs.
-        val page = IptvLogic.gridPage(favs)
+        // Local paging over the prefs list (v2.3.2's cap, kept):
+        // page through gridPage-sized windows; Load more widens.
+        val page = IptvLogic.gridPage(favs.take(favShown))
         countLine(
             box,
-            if (page.truncated) {
-                "${favs.size} favorites — showing the first ${page.items.size}"
+            if (page.total > page.items.size) {
+                "${page.items.size} of ${page.total} favorites — hold OK to remove"
             } else {
-                "${favs.size} favorites — hold OK to remove"
+                "${page.total} favorites — hold OK to remove"
             }
         )
         val liveFavs = page.items.filter { it.kind == IptvLogic.KIND_LIVE }
         grid(box, page.items.map { fav -> favCardData(fav, liveFavs) }, wide = false)
+        if (page.total > page.items.size) {
+            loadMoreButton(box, "Load more (${page.total - page.items.size} more)") {
+                favShown += IptvLogic.GRID_CAP
+                rebuild()
+            }
+        }
     }
 
-    private fun buildSearchTab(box: LinearLayout, cats: IptvLogic.Catalogues) {
+    private fun requestSearchSlices(appendKind: String?) {
+        val hidden = hiddenCatKeys(IptvClient.snapshot(this))
+        val gen = searchGen
+        fun fire(kind: String, offset: Int) {
+            IptvClient.sliceAsync(
+                this, kind, query = searchQuery, excludeCats = hidden,
+                offset = offset, limit = IptvLogic.GRID_CAP
+            ) { page ->
+                if (isFinishing || gen != searchGen) return@sliceAsync
+                when (kind) {
+                    IptvLogic.KIND_LIVE -> {
+                        searchLiveTotal = page.total
+                        searchLive = if (offset > 0) searchLive + page.live else page.live
+                    }
+                    IptvLogic.KIND_VOD -> {
+                        searchVodTotal = page.total
+                        searchVods = if (offset > 0) searchVods + page.vods else page.vods
+                    }
+                    else -> {
+                        searchSeriesTotal = page.total
+                        searchSeries = if (offset > 0) searchSeries + page.series else page.series
+                    }
+                }
+                if (appendKind == null) searchLoading = false
+                rebuild()
+            }
+        }
+        if (appendKind == null) {
+            searchLoading = true
+            fire(IptvLogic.KIND_LIVE, 0)
+            fire(IptvLogic.KIND_VOD, 0)
+            fire(IptvLogic.KIND_SERIES, 0)
+        } else {
+            when (appendKind) {
+                IptvLogic.KIND_LIVE -> fire(appendKind, searchLive.size)
+                IptvLogic.KIND_VOD -> fire(appendKind, searchVods.size)
+                else -> fire(appendKind, searchSeries.size)
+            }
+        }
+    }
+
+    private fun buildSearchTab(box: LinearLayout, snap: IptvClient.Snapshot) {
         val btn = headerButton(
             if (searchQuery.isEmpty()) "⌨ Type to search…" else "⌨ “$searchQuery” — type to change"
         ) {
@@ -447,6 +674,7 @@ class IptvActivity : Activity() {
             ) { text ->
                 searchQuery = text.trim()
                 focusedKey = null
+                searchKey = ""
                 rebuild()
             }
         }
@@ -455,36 +683,44 @@ class IptvActivity : Activity() {
             countLine(box, "Searches live channels, movies and series by name.")
             return
         }
-        val results = IptvLogic.search(cats, searchQuery, hiddenCatKeys(cats))
-        if (results.isEmpty) {
-            countLine(box, "No matches for “$searchQuery”.")
+        if (searchKey != searchQuery) {
+            searchKey = searchQuery
+            searchGen++
+            searchLive = emptyList(); searchLiveTotal = 0
+            searchVods = emptyList(); searchVodTotal = 0
+            searchSeries = emptyList(); searchSeriesTotal = 0
+            requestSearchSlices(appendKind = null)
+        }
+        if (searchLive.isEmpty() && searchVods.isEmpty() && searchSeries.isEmpty()) {
+            countLine(box, if (searchLoading) "Searching…" else "No matches for “$searchQuery”.")
             return
         }
-        // v2.3.2: each result section renders one page (a one-letter
-        // search over a real catalogue matches thousands).
-        if (results.live.isNotEmpty()) {
-            val page = IptvLogic.gridPage(results.live)
-            sectionTitle(box, "Live — ${results.live.size}")
-            if (page.truncated) {
-                countLine(box, "Showing the first ${page.items.size} — refine the search to see more")
+        if (searchLive.isNotEmpty()) {
+            sectionTitle(box, "Live — $searchLiveTotal")
+            grid(box, searchLive.map { ch -> liveCardData(ch, searchLive) }, wide = true)
+            if (searchLive.size < searchLiveTotal && searchLive.size < MAX_RENDERED) {
+                loadMoreButton(box, "Load more live (${searchLiveTotal - searchLive.size} more)") {
+                    requestSearchSlices(IptvLogic.KIND_LIVE)
+                }
             }
-            grid(box, page.items.map { ch -> liveCardData(ch, page.items) }, wide = true)
         }
-        if (results.vods.isNotEmpty()) {
-            val page = IptvLogic.gridPage(results.vods)
-            sectionTitle(box, "Movies — ${results.vods.size}")
-            if (page.truncated) {
-                countLine(box, "Showing the first ${page.items.size} — refine the search to see more")
+        if (searchVods.isNotEmpty()) {
+            sectionTitle(box, "Movies — $searchVodTotal")
+            grid(box, searchVods.map { vodCardData(it) }, wide = false)
+            if (searchVods.size < searchVodTotal && searchVods.size < MAX_RENDERED) {
+                loadMoreButton(box, "Load more movies (${searchVodTotal - searchVods.size} more)") {
+                    requestSearchSlices(IptvLogic.KIND_VOD)
+                }
             }
-            grid(box, page.items.map { vodCardData(it) }, wide = false)
         }
-        if (results.series.isNotEmpty()) {
-            val page = IptvLogic.gridPage(results.series)
-            sectionTitle(box, "Series — ${results.series.size}")
-            if (page.truncated) {
-                countLine(box, "Showing the first ${page.items.size} — refine the search to see more")
+        if (searchSeries.isNotEmpty()) {
+            sectionTitle(box, "Series — $searchSeriesTotal")
+            grid(box, searchSeries.map { seriesCardData(it) }, wide = false)
+            if (searchSeries.size < searchSeriesTotal && searchSeries.size < MAX_RENDERED) {
+                loadMoreButton(box, "Load more series (${searchSeriesTotal - searchSeries.size} more)") {
+                    requestSearchSlices(IptvLogic.KIND_SERIES)
+                }
             }
-            grid(box, page.items.map { seriesCardData(it) }, wide = false)
         }
     }
 
@@ -518,7 +754,7 @@ class IptvActivity : Activity() {
         }
     }
 
-    private fun buildSeriesDetail(box: LinearLayout, cats: IptvLogic.Catalogues) {
+    private fun buildSeriesDetail(box: LinearLayout) {
         val series = detailSeries ?: return
         val back = headerButton("‹ Back to series") {
             detailSeries = null
@@ -697,18 +933,21 @@ class IptvActivity : Activity() {
                 tag = fav.key, image = fav.icon, title = fav.name, meta = "Series", line2 = null,
                 glyph = "📚", progress = -1f,
                 onClick = {
-                    val cats = IptvClient.cached(this)
-                    val s = cats.series.firstOrNull { it.id.toString() == fav.id }
-                    if (s != null) {
-                        openSeries(s)
-                    } else {
-                        // Catalogue moved on: open a minimal detail from the favorite itself.
-                        openSeries(
-                            IptvLogic.SeriesItem(
-                                fav.id.toLongOrNull() ?: 0L, fav.name, fav.icon,
-                                fav.catKey.substringAfterLast(':'), "", "", ""
+                    // v2.4: resolve the series from the store on a
+                    // worker thread; a miss opens a minimal detail
+                    // built from the favorite itself (as before).
+                    thread(name = "mizan-iptv-fav-series") {
+                        val s = IptvClient.findSeriesBlocking(this, fav.id.toLongOrNull() ?: -1L)
+                        runOnUiThread {
+                            if (isFinishing) return@runOnUiThread
+                            openSeries(
+                                s ?: IptvLogic.SeriesItem(
+                                    fav.id.toLongOrNull() ?: 0L, fav.name, fav.icon,
+                                    fav.catKey.substringAfterLast(':'), "", "", ""
+                                )
                             )
-                        )
+                            rebuild()
+                        }
                     }
                 },
                 onLong = { favMenu(fav) }

@@ -851,18 +851,22 @@ class SettingsActivity : Activity() {
             KeyboardDialog.show(this, "IPTV server", accent, prefs.iptvServer, 120, symbols = true) { text ->
                 prefs.iptvServer = text.trim()
                 com.mizan.launcher.data.IptvClient.invalidateEpg()
+                // v2.4: saving the account IS the refresh request.
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
                 rebuild()
             }
         })
         content.addView(row("Username", prefs.iptvUser.ifEmpty { "Not set" }) {
             KeyboardDialog.show(this, "IPTV username", accent, prefs.iptvUser, 60, symbols = true) { text ->
                 prefs.iptvUser = text.trim()
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
                 rebuild()
             }
         })
         content.addView(row("Password", if (prefs.iptvPass.isEmpty()) "Not set" else "•••••••• (set)") {
             KeyboardDialog.show(this, "IPTV password", accent, prefs.iptvPass, 60, symbols = true, masked = true) { text ->
                 prefs.iptvPass = text
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
                 rebuild()
             }
         })
@@ -871,6 +875,7 @@ class SettingsActivity : Activity() {
         content.addView(row("Playlist (M3U) URL", if (prefs.iptvM3uUrl.isEmpty()) "Not set" else "Set") {
             KeyboardDialog.show(this, "M3U playlist URL", accent, prefs.iptvM3uUrl, 300, symbols = true) { text ->
                 prefs.iptvM3uUrl = text.trim()
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
                 rebuild()
             }
         })
@@ -878,20 +883,38 @@ class SettingsActivity : Activity() {
             KeyboardDialog.show(this, "XMLTV guide URL", accent, prefs.iptvEpgUrl, 300, symbols = true) { text ->
                 prefs.iptvEpgUrl = text.trim()
                 com.mizan.launcher.data.IptvClient.invalidateEpg()
+                com.mizan.launcher.data.IptvClient.refreshAsync(this) { rebuild() }
                 rebuild()
             }
         })
         content.addView(header("Catalogue"))
-        val cats = com.mizan.launcher.data.IptvClient.cached(this)
+        // v2.4: counts come from the disk store's INDEX (no
+        // catalogue is materialized to count it), the line shows
+        // the store size, and the section says when the data was
+        // updated + live ingest progress while a refresh runs.
+        // Data loads ONLY when the account is saved or Refresh is
+        // tapped — opening screens never fetches.
+        val idx = com.mizan.launcher.data.IptvClient.storeIndex(this)
         val kind = com.mizan.launcher.data.IptvClient.status(this)
         content.addView(info(
             "Status: " + com.mizan.launcher.core.IptvStatus.diagText(
-                kind, cats.live.size, cats.vods.size, cats.series.size,
+                kind, idx?.liveCount ?: 0, idx?.vodCount ?: 0, idx?.seriesCount ?: 0,
                 prefs.iptvFavoriteList().size,
                 com.mizan.launcher.data.IptvClient.epgChannelCount(this), "",
-                com.mizan.launcher.data.IptvClient.lastErrorClass(this)
+                com.mizan.launcher.data.IptvClient.lastErrorClass(this),
+                com.mizan.launcher.core.IptvStore.sizeText(
+                    com.mizan.launcher.data.IptvClient.storeBytes(this)
+                )
             )
         ))
+        val progress = com.mizan.launcher.data.IptvClient.ingestProgressText()
+        if (progress.isNotEmpty()) {
+            content.addView(info(progress))
+        } else if (idx != null && idx.fetchedAt > 0L) {
+            val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+                .format(java.util.Date(idx.fetchedAt))
+            content.addView(info("Updated $timeText — data refreshes only when you save the account or tap Refresh."))
+        }
         content.addView(row("Refresh now", "Fetch the catalogues + programme guide again") {
             com.mizan.launcher.data.IptvClient.refreshAsync(this, force = true) { rebuild() }
             toast("Refreshing IPTV…")
@@ -903,6 +926,8 @@ class SettingsActivity : Activity() {
                     .setPositiveButton("Clear") { _, _ ->
                         prefs.clearIptvAccount()
                         com.mizan.launcher.data.IptvClient.invalidateEpg()
+                        // v2.4: the on-disk store goes with the sources.
+                        com.mizan.launcher.data.IptvClient.clearStore(this@SettingsActivity)
                         rebuild()
                         toast("IPTV sources cleared")
                     }
@@ -1371,7 +1396,7 @@ class SettingsActivity : Activity() {
             // v2.2: the iptv: line — classified state + counts only
             // (core/IptvStatus). The server, credentials and playlist
             // URLs NEVER appear here (or in any backup/log/file).
-            val iCats = com.mizan.launcher.data.IptvClient.cached(this@SettingsActivity)
+            val iIdx = com.mizan.launcher.data.IptvClient.storeIndex(this@SettingsActivity)
             val iKind = com.mizan.launcher.data.IptvClient.status(this@SettingsActivity)
             val iFetchedAt = com.mizan.launcher.data.IptvClient.fetchedAt(this@SettingsActivity)
             val iTime = if (iFetchedAt > 0) {
@@ -1380,11 +1405,14 @@ class SettingsActivity : Activity() {
             } else ""
             append(
                 "\niptv: " + com.mizan.launcher.core.IptvStatus.diagText(
-                    iKind, iCats.live.size, iCats.vods.size, iCats.series.size,
+                    iKind, iIdx?.liveCount ?: 0, iIdx?.vodCount ?: 0, iIdx?.seriesCount ?: 0,
                     prefs.iptvFavoriteList().size,
                     com.mizan.launcher.data.IptvClient.epgChannelCount(this@SettingsActivity),
                     iTime,
-                    com.mizan.launcher.data.IptvClient.lastErrorClass(this@SettingsActivity)
+                    com.mizan.launcher.data.IptvClient.lastErrorClass(this@SettingsActivity),
+                    com.mizan.launcher.core.IptvStore.sizeText(
+                        com.mizan.launcher.data.IptvClient.storeBytes(this@SettingsActivity)
+                    )
                 )
             )
             // v2.3: the watch: line — match coverage + resolved

@@ -181,25 +181,12 @@ object IptvEpg {
             if (tagStart < 0) break
             val tagEnd = xml.indexOf('>', tagStart)
             if (tagEnd < 0) break
-            val tag = xml.substring(tagStart, tagEnd)
-            val channel = attrOf(tag, "channel").trim()
-            val start = parseXmltvTime(attrOf(tag, "start"))
-            val stop = parseXmltvTime(attrOf(tag, "stop"))
-            val close = xml.indexOf("</programme>", tagEnd)
-            val bodyEnd = if (close < 0) tagEnd else close
-            var title = ""
-            val tStart = xml.indexOf("<title", tagEnd)
-            if (tStart in tagEnd until bodyEnd) {
-                val tOpen = xml.indexOf('>', tStart)
-                val tClose = xml.indexOf("</title>", tOpen)
-                if (tOpen >= 0 && tClose in tOpen..bodyEnd) {
-                    title = xml.substring(tOpen + 1, tClose).trim()
-                        .removePrefix("<![CDATA[").removeSuffix("]]>").trim()
-                }
-            }
-            if (channel.isNotEmpty() && start >= 0 && stop > start) {
-                byChannel.getOrPut(channel) { ArrayList() }
-                    .add(Programme(channel, start, stop, xmlUnescape(title)))
+            val close = xml.indexOf("</programme>", tagStart)
+            // An unclosed programme contributes its tag only (no
+            // body, hence no title) — the scanner's original rule.
+            val segmentEnd = if (close < 0) tagEnd + 1 else close + 12
+            programmeFromSegment(xml.substring(tagStart, segmentEnd))?.let { p ->
+                byChannel.getOrPut(p.channelId) { ArrayList() }.add(p)
             }
             cursor = if (close < 0) tagEnd + 1 else close + 12
         }
@@ -207,6 +194,105 @@ object IptvEpg {
         for ((k, v) in byChannel) out[k] = v.sortedBy { it.startMs }
         return out
     }
+
+    /**
+     * One `<programme …>…</programme>` segment → its [Programme],
+     * or null when the segment is unusable (empty channel,
+     * unparseable times, stop ≤ start). The FIRST `<title>` in the
+     * body is the title; CDATA titles are unwrapped; entities are
+     * unescaped. Shared by the document parser above and the v2.4
+     * streaming reader below, so both read a programme identically.
+     */
+    fun programmeFromSegment(segment: String): Programme? {
+        val tagEnd = segment.indexOf('>')
+        if (tagEnd < 0) return null
+        val tag = segment.substring(0, tagEnd)
+        val channel = attrOf(tag, "channel").trim()
+        val start = parseXmltvTime(attrOf(tag, "start"))
+        val stop = parseXmltvTime(attrOf(tag, "stop"))
+        if (channel.isEmpty() || start < 0 || stop <= start) return null
+        var title = ""
+        val tStart = segment.indexOf("<title", tagEnd)
+        if (tStart >= 0) {
+            val tOpen = segment.indexOf('>', tStart)
+            val tClose = segment.indexOf("</title>", tOpen)
+            if (tOpen >= 0 && tClose > tOpen) {
+                title = segment.substring(tOpen + 1, tClose).trim()
+                    .removePrefix("<![CDATA[").removeSuffix("]]>").trim()
+            }
+        }
+        return Programme(channel, start, stop, xmlUnescape(title))
+    }
+
+    /** Longest programme segment the streaming reader will buffer (bytes of text). */
+    const val MAX_SEGMENT_CHARS = 256 * 1024
+
+    /**
+     * Stream an XMLTV document from [reader] one programme at a
+     * time (v2.4): the document is consumed in chunks and only one
+     * `<programme>` segment is ever held in memory (bounded by
+     * [MAX_SEGMENT_CHARS] — a segment that overruns is dropped and
+     * the scanner resynchronizes at the next programme). Each
+     * usable programme is delivered to [onProgramme] as it is
+     * read; returns the number delivered. I/O failures propagate
+     * as IOException — the caller decides what a partial guide is
+     * worth (the ingest keeps the old guide file).
+     */
+    fun streamXmltv(reader: java.io.Reader, onProgramme: (Programme) -> Unit): Int {
+        var delivered = 0
+        val chunk = CharArray(32 * 1024)
+        val buf = StringBuilder()
+        var inSegment = false
+        while (true) {
+            val n = reader.read(chunk)
+            if (n < 0) break
+            buf.append(chunk, 0, n)
+            // Drain every complete segment (and resync point) the
+            // buffer currently holds; keep only the live tail.
+            while (true) {
+                if (!inSegment) {
+                    val start = buf.indexOf("<programme")
+                    if (start < 0) {
+                        // Keep a tail shorter than the needle so a
+                        // tag straddling chunks is not missed.
+                        if (buf.length > 10) buf.delete(0, buf.length - 10)
+                        break
+                    }
+                    if (start > 0) buf.delete(0, start)
+                    inSegment = true
+                }
+                val close = buf.indexOf("</programme>")
+                if (close < 0) {
+                    if (buf.length > MAX_SEGMENT_CHARS) {
+                        // Pathological segment: drop it and resync.
+                        buf.delete(0, buf.length - 10)
+                        inSegment = false
+                        continue
+                    }
+                    break // need more input
+                }
+                val segment = buf.substring(0, close + 12)
+                buf.delete(0, close + 12)
+                inSegment = false
+                programmeFromSegment(segment)?.let {
+                    onProgramme(it)
+                    delivered++
+                }
+            }
+        }
+        return delivered
+    }
+
+    /**
+     * The EPG retention window (v2.4): the store keeps a programme
+     * only while it can still matter to the guide / catch-up —
+     * it ends after [nowMs] − 1h and starts before [nowMs] + 24h.
+     * A full XMLTV document covers days of listings for thousands
+     * of channels; retaining all of it is the same unbounded-memory
+     * mistake as the catalogue documents were.
+     */
+    fun inGuideWindow(p: Programme, nowMs: Long): Boolean =
+        p.stopMs > nowMs - 3_600_000L && p.startMs < nowMs + 24L * 3_600_000L
 
     // ------------------------------------------------------------ short EPG (Xtream)
 

@@ -51,6 +51,8 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/QuickSettings.kt \
   app/src/main/java/com/mizan/launcher/core/LiveTv.kt \
   app/src/main/java/com/mizan/launcher/core/IptvLogic.kt \
+  app/src/main/java/com/mizan/launcher/core/IptvStream.kt \
+  app/src/main/java/com/mizan/launcher/core/IptvStore.kt \
   app/src/main/java/com/mizan/launcher/core/IptvEpg.kt \
   app/src/main/java/com/mizan/launcher/core/IptvLocks.kt \
   app/src/main/java/com/mizan/launcher/core/IptvStatus.kt \
@@ -170,6 +172,20 @@ export JAVA_OPTS
   echo "hardcoded 'Sreeb v<digit>' label — the version is read from"
   echo "PackageManager at runtime (the photo showed two different"
   echo "stale labels at once). All v2.3 checks carry over."
+  echo
+  echo "Note (v2.4): the IPTV data layer is rebuilt disk-first"
+  echo "(spec S24) — catalogues live in .jsonl files + a small index"
+  echo "under filesDir/iptv, ingest streams endpoints element-by-"
+  echo "element and swaps atomically (all-or-nothing), reads are"
+  echo "worker-thread slices, and refresh is on request only (save"
+  echo "account / Refresh buttons). New section 41: streaming JSON"
+  echo "+ XMLTV equivalence with the document parsers, the M3U"
+  echo "stream parser, store line/index codecs, exact slice windows"
+  echo "over a 5,000-entry fixture, find/tuples, the swap rule, the"
+  echo "guide retention window, oversized-segment resync, sliced"
+  echo "home composition, and source checks (legacy prefs purge, no"
+  echo "auto-fetch on home builds, downsampled image decode + byte-"
+  echo "bounded bitmap cache). All v2.3.2 checks carry over."
   echo
   echo "Note (v2.3.2): hotfix from on-device evidence (spec S23):"
   echo "with the cleartext fix the real panel finally loaded, and"

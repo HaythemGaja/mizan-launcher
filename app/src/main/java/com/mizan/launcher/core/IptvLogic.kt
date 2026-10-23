@@ -242,82 +242,87 @@ object IptvLogic {
         return longOf(info["auth"]) == 1L
     }
 
+    // ------------------------------------------------------------ row mappers (v2.4)
+    //
+    // One Xtream array element → one model (null when the element
+    // is unusable). The whole-document parsers below AND the v2.4
+    // streaming ingest (core/IptvStream) both go through these, so
+    // the acceptance rules can never drift apart.
+
+    fun categoryFromRow(row: Map<String, Any?>, kind: String, source: String = SRC_XTREAM): Category? {
+        val id = strOf(row["category_id"])
+        val name = strOf(row["category_name"]).trim()
+        if (name.isEmpty()) return null
+        return Category(id, name, source, kind)
+    }
+
+    fun liveFromRow(row: Map<String, Any?>, catNames: Map<String, String>): LiveChannel? {
+        val id = longOf(row["stream_id"])
+        val name = strOf(row["name"]).trim()
+        if (id <= 0L || name.isEmpty()) return null
+        val catId = strOf(row["category_id"])
+        return LiveChannel(
+            id = id, name = name, icon = strOf(row["stream_icon"]).trim(),
+            categoryId = catId, categoryName = catNames[catId] ?: "",
+            epgId = strOf(row["epg_channel_id"]).trim(),
+            source = SRC_XTREAM, directUrl = "",
+            tvArchive = intOf(row["tv_archive"]),
+            archiveDays = intOf(row["tv_archive_duration"])
+        )
+    }
+
+    fun vodFromRow(row: Map<String, Any?>, catNames: Map<String, String>): VodItem? {
+        val id = longOf(row["stream_id"])
+        val name = strOf(row["name"]).trim()
+        if (id <= 0L || name.isEmpty()) return null
+        val catId = strOf(row["category_id"])
+        return VodItem(
+            id = id, name = name, icon = strOf(row["stream_icon"]).trim(),
+            categoryId = catId, categoryName = catNames[catId] ?: "",
+            ext = strOf(row["container_extension"]).trim(),
+            rating = strOf(row["rating"]).trim(),
+            year = yearOf(
+                strOf(row["release_date"]).ifEmpty { strOf(row["releaseDate"]) }
+                    .ifEmpty { strOf(row["year"]) }
+            )
+        )
+    }
+
+    fun seriesFromRow(row: Map<String, Any?>, catNames: Map<String, String>): SeriesItem? {
+        val id = longOf(row["series_id"])
+        val name = strOf(row["name"]).trim()
+        if (id <= 0L || name.isEmpty()) return null
+        val catId = strOf(row["category_id"])
+        return SeriesItem(
+            id = id, name = name, cover = strOf(row["cover"]).trim(),
+            categoryId = catId, categoryName = catNames[catId] ?: "",
+            rating = strOf(row["rating"]).trim(),
+            plot = strOf(row["plot"]).trim(),
+            year = yearOf(
+                strOf(row["releaseDate"]).ifEmpty { strOf(row["release_date"]) }
+                    .ifEmpty { strOf(row["year"]) }
+            )
+        )
+    }
+
     fun parseCategories(json: String?, kind: String, source: String = SRC_XTREAM): List<Category> {
-        val out = ArrayList<Category>()
-        for (row in asList(JsonMini.parse(json ?: return emptyList()))) {
-            val id = strOf(row["category_id"])
-            val name = strOf(row["category_name"]).trim()
-            if (name.isEmpty()) continue
-            out.add(Category(id, name, source, kind))
-        }
-        return out
+        if (json == null) return emptyList()
+        return asList(JsonMini.parse(json)).mapNotNull { categoryFromRow(it, kind, source) }
     }
 
     fun parseLive(json: String?, catNames: Map<String, String>): List<LiveChannel> {
-        val out = ArrayList<LiveChannel>()
-        for (row in asList(JsonMini.parse(json ?: return emptyList()))) {
-            val id = longOf(row["stream_id"])
-            val name = strOf(row["name"]).trim()
-            if (id <= 0L || name.isEmpty()) continue
-            val catId = strOf(row["category_id"])
-            out.add(
-                LiveChannel(
-                    id = id, name = name, icon = strOf(row["stream_icon"]).trim(),
-                    categoryId = catId, categoryName = catNames[catId] ?: "",
-                    epgId = strOf(row["epg_channel_id"]).trim(),
-                    source = SRC_XTREAM, directUrl = "",
-                    tvArchive = intOf(row["tv_archive"]),
-                    archiveDays = intOf(row["tv_archive_duration"])
-                )
-            )
-        }
-        return out
+        if (json == null) return emptyList()
+        return asList(JsonMini.parse(json)).mapNotNull { liveFromRow(it, catNames) }
     }
 
     fun parseVods(json: String?, catNames: Map<String, String>): List<VodItem> {
-        val out = ArrayList<VodItem>()
-        for (row in asList(JsonMini.parse(json ?: return emptyList()))) {
-            val id = longOf(row["stream_id"])
-            val name = strOf(row["name"]).trim()
-            if (id <= 0L || name.isEmpty()) continue
-            val catId = strOf(row["category_id"])
-            out.add(
-                VodItem(
-                    id = id, name = name, icon = strOf(row["stream_icon"]).trim(),
-                    categoryId = catId, categoryName = catNames[catId] ?: "",
-                    ext = strOf(row["container_extension"]).trim(),
-                    rating = strOf(row["rating"]).trim(),
-                    year = yearOf(
-                        strOf(row["release_date"]).ifEmpty { strOf(row["releaseDate"]) }
-                            .ifEmpty { strOf(row["year"]) }
-                    )
-                )
-            )
-        }
-        return out
+        if (json == null) return emptyList()
+        return asList(JsonMini.parse(json)).mapNotNull { vodFromRow(it, catNames) }
     }
 
     fun parseSeries(json: String?, catNames: Map<String, String>): List<SeriesItem> {
-        val out = ArrayList<SeriesItem>()
-        for (row in asList(JsonMini.parse(json ?: return emptyList()))) {
-            val id = longOf(row["series_id"])
-            val name = strOf(row["name"]).trim()
-            if (id <= 0L || name.isEmpty()) continue
-            val catId = strOf(row["category_id"])
-            out.add(
-                SeriesItem(
-                    id = id, name = name, cover = strOf(row["cover"]).trim(),
-                    categoryId = catId, categoryName = catNames[catId] ?: "",
-                    rating = strOf(row["rating"]).trim(),
-                    plot = strOf(row["plot"]).trim(),
-                    year = yearOf(
-                        strOf(row["releaseDate"]).ifEmpty { strOf(row["release_date"]) }
-                            .ifEmpty { strOf(row["year"]) }
-                    )
-                )
-            )
-        }
-        return out
+        if (json == null) return emptyList()
+        return asList(JsonMini.parse(json)).mapNotNull { seriesFromRow(it, catNames) }
     }
 
     /**
@@ -378,51 +383,19 @@ object IptvLogic {
      */
     fun parseM3u(text: String?): Pair<List<Category>, List<LiveChannel>> {
         if (text.isNullOrBlank()) return Pair(emptyList(), emptyList())
-        val cats = ArrayList<Category>()
-        val seenCats = HashSet<String>()
+        // v2.4: one code path — the line-fed stream parser below —
+        // so the whole-document parse and the streaming ingest can
+        // never disagree about what a playlist means.
+        val stream = IptvM3uStream()
         val channels = ArrayList<LiveChannel>()
-        var pendingName = ""
-        var pendingIcon = ""
-        var pendingEpg = ""
-        var pendingGroup: String? = null
-        fun flush(url: String) {
-            val group = pendingGroup ?: ""
-            if (group !in seenCats) {
-                seenCats.add(group)
-                cats.add(Category(group, group.ifEmpty { "Playlist" }, SRC_M3U, KIND_LIVE))
-            }
-            val name = pendingName.ifEmpty { url.substringAfterLast('/').ifEmpty { "Channel" } }
-            channels.add(
-                LiveChannel(
-                    id = (url.hashCode().toLong() and 0x7FFFFFFFL).coerceAtLeast(1L),
-                    name = name, icon = pendingIcon,
-                    categoryId = group,
-                    categoryName = group.ifEmpty { "Playlist" },
-                    epgId = pendingEpg, source = SRC_M3U, directUrl = url,
-                    tvArchive = 0, archiveDays = 0
-                )
-            )
-            pendingName = ""; pendingIcon = ""; pendingEpg = ""; pendingGroup = null
-        }
         for (rawLine in text.lineSequence()) {
-            val line = rawLine.trim()
-            if (line.isEmpty()) continue
-            if (line.startsWith("#EXTINF")) {
-                pendingName = extinfName(line)
-                pendingIcon = extinfAttr(line, "tvg-logo")
-                pendingEpg = extinfAttr(line, "tvg-id")
-                pendingGroup = extinfAttr(line, "group-title")
-            } else if (line.startsWith("#")) {
-                continue // other directives (#EXTM3U, #EXTVLCOPT…) carry no channel
-            } else {
-                flush(line)
-            }
+            stream.feed(rawLine)?.let { channels.add(it) }
         }
-        return Pair(cats, channels)
+        return Pair(stream.categories, channels)
     }
 
     /** Attribute value from an #EXTINF line: `key="value"` (quote-aware enough for playlists). */
-    private fun extinfAttr(line: String, attr: String): String {
+    fun extinfAttr(line: String, attr: String): String {
         val needle = "$attr=\""
         val start = line.indexOf(needle)
         if (start < 0) return ""
@@ -432,7 +405,7 @@ object IptvLogic {
     }
 
     /** Display name: the text after the first comma that is OUTSIDE quotes. */
-    private fun extinfName(line: String): String {
+    fun extinfName(line: String): String {
         var inQuotes = false
         for (i in line.indices) {
             val c = line[i]
@@ -760,6 +733,91 @@ object IptvLogic {
             emptyList()
         }
 
+    /**
+     * The v2.4 home composition — the slice-fed sibling of
+     * [homeRows]. The disk store never materializes a whole
+     * catalogue, so the home asks the store for exactly what it
+     * renders: [liveRows] = (category, first-ROW_CARD_CAP channels)
+     * pairs for the first [LIVE_ROW_CAP] visible non-empty
+     * categories, [flatLive] = the first channels overall (used
+     * only when no category rows exist — the no-categories
+     * fallback), [vods] / [series] = their first pages. Favorites,
+     * Continue, locks and the EPG NOW treatment behave exactly as
+     * in [homeRows]; the old "More live" spill-over row has no
+     * slice-fed equivalent and is dropped (the browser is one tap
+     * away and complete).
+     */
+    fun homeRowsSliced(
+        favorites: List<FavEntry>,
+        resume: List<ResumeEntry>,
+        hiddenCatKeys: Set<String>,
+        liveRows: List<Pair<Category, List<LiveChannel>>>,
+        flatLive: List<LiveChannel>,
+        vods: List<VodItem>,
+        series: List<SeriesItem>,
+        epg: Map<String, List<IptvEpg.Programme>> = emptyMap(),
+        nowMs: Long = 0L
+    ): List<HomeRow> {
+        val rows = ArrayList<HomeRow>()
+
+        val favCards = favorites.filter { it.catKey !in hiddenCatKeys }.take(ROW_CARD_CAP).map { e ->
+            Card(e.kind, e.key, e.id, e.name, e.icon, "", "", -1f, e.catKey, e.source, e.ext, e.directUrl)
+        }
+        if (favCards.isNotEmpty()) rows.add(HomeRow(RowKind.FAVORITES, "Favorites", favCards))
+
+        val live = ArrayList<HomeRow>()
+        for ((cat, channels) in liveRows) {
+            if (cat.key in hiddenCatKeys) continue
+            val visible = channels.filter { it.catKey !in hiddenCatKeys }
+            if (visible.isEmpty()) continue
+            live.add(
+                HomeRow(RowKind.LIVE, cat.name, visible.take(ROW_CARD_CAP).map { ch ->
+                    liveCard(ch, epg, nowMs)
+                })
+            )
+            if (live.size >= LIVE_ROW_CAP) break
+        }
+        if (live.isEmpty()) {
+            val visible = flatLive.filter { it.catKey !in hiddenCatKeys }
+            if (visible.isNotEmpty()) {
+                live.add(
+                    HomeRow(RowKind.LIVE, "Live TV", visible.take(ROW_CARD_CAP).map { ch ->
+                        liveCard(ch, epg, nowMs)
+                    })
+                )
+            }
+        }
+        rows.addAll(live)
+
+        val contCards = continueList(resume).filter { it.catKey !in hiddenCatKeys }.map { e ->
+            Card(
+                e.kind, e.key, e.id, e.title, e.icon, e.meta, "", e.progress,
+                e.catKey, e.key.substringBefore(':'), e.ext, e.directUrl
+            )
+        }
+        if (contCards.isNotEmpty()) rows.add(HomeRow(RowKind.CONTINUE, "Continue watching", contCards))
+
+        val movieCards = vods.filter { it.catKey !in hiddenCatKeys }.take(ROW_CARD_CAP).map { v ->
+            Card(
+                KIND_VOD, v.key, v.id.toString(), v.name, v.icon,
+                if (v.rating.isNotEmpty()) "★ " + v.rating else "", "", -1f,
+                v.catKey, SRC_XTREAM, v.ext, ""
+            )
+        }
+        if (movieCards.isNotEmpty()) rows.add(HomeRow(RowKind.MOVIES, "Movies", movieCards))
+
+        val seriesCards = series.filter { it.catKey !in hiddenCatKeys }.take(ROW_CARD_CAP).map { s ->
+            Card(
+                KIND_SERIES, s.key, s.id.toString(), s.name, s.cover,
+                if (s.rating.isNotEmpty()) "★ " + s.rating else "", "", -1f,
+                s.catKey, SRC_XTREAM, "", ""
+            )
+        }
+        if (seriesCards.isNotEmpty()) rows.add(HomeRow(RowKind.SERIES, "Series", seriesCards))
+
+        return rows
+    }
+
     // ------------------------------------------------------------ view caps (v2.3.2)
 
     /**
@@ -808,5 +866,62 @@ object IptvLogic {
             KIND_LIVE, ch.key, ch.id.toString(), ch.name, ch.icon,
             ch.categoryName, nowTitle, progress, ch.catKey, ch.source, "", ch.directUrl
         )
+    }
+}
+
+/**
+ * The line-fed M3U parser (v2.4) — the streaming twin of
+ * [IptvLogic.parseM3u] (which is implemented on top of it). Feed
+ * raw lines; each URL line that completes an entry returns its
+ * channel. Groups become [IptvLogic.SRC_M3U] live categories in
+ * first-seen order, collected in [categories] (a group registers
+ * when its first channel completes, exactly as the document
+ * parser always behaved).
+ */
+class IptvM3uStream {
+
+    val categories = ArrayList<IptvLogic.Category>()
+    private val seenCats = HashSet<String>()
+    private var pendingName = ""
+    private var pendingIcon = ""
+    private var pendingEpg = ""
+    private var pendingGroup: String? = null
+
+    /** Feed one raw playlist line; a completed channel or null. */
+    fun feed(rawLine: String): IptvLogic.LiveChannel? {
+        val line = rawLine.trim()
+        if (line.isEmpty()) return null
+        if (line.startsWith("#EXTINF")) {
+            pendingName = IptvLogic.extinfName(line)
+            pendingIcon = IptvLogic.extinfAttr(line, "tvg-logo")
+            pendingEpg = IptvLogic.extinfAttr(line, "tvg-id")
+            pendingGroup = IptvLogic.extinfAttr(line, "group-title")
+            return null
+        }
+        if (line.startsWith("#")) return null // other directives carry no channel
+        val group = pendingGroup ?: ""
+        if (group !in seenCats) {
+            seenCats.add(group)
+            categories.add(
+                IptvLogic.Category(
+                    group, group.ifEmpty { "Playlist" },
+                    IptvLogic.SRC_M3U, IptvLogic.KIND_LIVE
+                )
+            )
+        }
+        val url = line
+        val name = pendingName.ifEmpty {
+            url.substringAfterLast('/').ifEmpty { "Channel" }
+        }
+        val channel = IptvLogic.LiveChannel(
+            id = (url.hashCode().toLong() and 0x7FFFFFFFL).coerceAtLeast(1L),
+            name = name, icon = pendingIcon,
+            categoryId = group,
+            categoryName = group.ifEmpty { "Playlist" },
+            epgId = pendingEpg, source = IptvLogic.SRC_M3U, directUrl = url,
+            tvArchive = 0, archiveDays = 0
+        )
+        pendingName = ""; pendingIcon = ""; pendingEpg = ""; pendingGroup = null
+        return channel
     }
 }

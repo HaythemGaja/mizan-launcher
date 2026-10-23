@@ -55,23 +55,25 @@ object IptvStatus {
         favorites: Int,
         epgChannels: Int,
         timeText: String,
-        errorClass: String = ""
+        errorClass: String = "",
+        storeSizeText: String = ""
     ): String = when (kind) {
         Kind.NONE -> "not checked yet"
         Kind.NOT_CONFIGURED -> "not configured (Settings › IPTV)"
         Kind.AUTH -> "login failed — check server, username and password in Settings › IPTV" +
-            countsSuffix(live, vod, series, favorites, epgChannels, timeText)
+            countsSuffix(live, vod, series, favorites, epgChannels, timeText, storeSizeText)
         Kind.EMPTY -> "connected, but the catalogues are empty" +
-            countsSuffix(live, vod, series, favorites, epgChannels, timeText)
+            countsSuffix(live, vod, series, favorites, epgChannels, timeText, storeSizeText)
         Kind.ERROR -> "not answering" +
             (if (errorClass.isNotEmpty()) " ($errorClass)" else "") +
             " — check the server address and your network" +
-            countsSuffix(live, vod, series, favorites, epgChannels, timeText)
-        Kind.OK -> "OK" + countsSuffix(live, vod, series, favorites, epgChannels, timeText)
+            countsSuffix(live, vod, series, favorites, epgChannels, timeText, storeSizeText)
+        Kind.OK -> "OK" + countsSuffix(live, vod, series, favorites, epgChannels, timeText, storeSizeText)
     }
 
     private fun countsSuffix(
-        live: Int, vod: Int, series: Int, favorites: Int, epgChannels: Int, timeText: String
+        live: Int, vod: Int, series: Int, favorites: Int, epgChannels: Int,
+        timeText: String, storeSizeText: String = ""
     ): String {
         val sb = StringBuilder()
         sb.append(" · live ").append(live)
@@ -79,6 +81,9 @@ object IptvStatus {
             .append(" · series ").append(series)
             .append(" · fav ").append(favorites)
         if (epgChannels > 0) sb.append(" · epg ").append(epgChannels)
+        // v2.4: the on-disk store size (counts come from the store
+        // index now, and the size is the honest scale of the data).
+        if (storeSizeText.isNotEmpty()) sb.append(" · ").append(storeSizeText)
         if (timeText.isNotEmpty()) sb.append(" · ").append(timeText)
         return sb.toString()
     }

@@ -25,17 +25,24 @@ import java.util.Locale
 import kotlin.concurrent.thread
 
 /**
- * The IPTV programme guide (v2.2, spec §20.7) — one row per live
- * channel (locked categories hidden, same rule as everywhere):
- * channel name, the NOW programme with its time range and a
- * through-progress bar, and the NEXT programme. OK tunes the
- * channel in PlayerActivity (the guide's list is the zap queue).
+ * The IPTV programme guide (v2.2, spec §20.7; v2.4 data flow,
+ * spec §24) — one row per live channel (locked categories
+ * hidden, same rule as everywhere): channel name, the NOW
+ * programme with its time range and a through-progress bar, and
+ * the NEXT programme. OK tunes the channel in PlayerActivity
+ * (the guide's loaded slice is the zap queue).
  *
- * Data: the cached XMLTV index (Xtream xmltv.php and/or the M3U
- * source's XMLTV URL — see data/IptvClient). For an Xtream channel
- * the XMLTV lacks, focusing its row fetches get_short_epg once per
- * session as the fallback. No EPG data anywhere → the guide simply
- * lists channels with names only; fail-open like the rest of IPTV.
+ * v2.4: channels arrive as store SLICES (worker-thread scans of
+ * live.jsonl, hidden categories excluded, one window at a time
+ * with Load more) — never a materialized catalogue. The EPG index
+ * is built locally from the store's EPG file. Refresh happens
+ * only from the header button; opening this screen fetches
+ * nothing.
+ *
+ * For an Xtream channel the XMLTV lacks, focusing its row
+ * fetches get_short_epg once per session as the fallback. No EPG
+ * data anywhere → the guide simply lists channels with names
+ * only; fail-open like the rest of IPTV.
  */
 class IptvGuideActivity : Activity() {
 
@@ -50,6 +57,16 @@ class IptvGuideActivity : Activity() {
     @Volatile
     private var shortFetching = false
 
+    // v2.4 slice state: the loaded channel window + its total,
+    // keyed by (store generation, hidden set) so a refresh or an
+    // unlock retires it; a generation counter retires stale
+    // slice callbacks the same way the browser's does.
+    private var guideItems: List<IptvLogic.LiveChannel> = emptyList()
+    private var guideTotal = 0
+    private var guideKey = ""
+    private var guideGen = 0
+    private var guideLoading = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
@@ -62,7 +79,7 @@ class IptvGuideActivity : Activity() {
         contentBox = box
         setContentView(scroll)
         rebuild()
-        IptvClient.refreshAsync(this) { if (!isFinishing) rebuild() }
+        // Local EPG index from the store file (disk, not network).
         IptvClient.epgIndex(this) { if (!isFinishing) rebuild() }
     }
 
@@ -101,6 +118,35 @@ class IptvGuideActivity : Activity() {
         }
     }
 
+    private fun hiddenCatKeys(snap: IptvClient.Snapshot): Set<String> =
+        IptvLocks.hiddenKeys(
+            snap.liveCats,
+            IptvLocks.decodeKeys(prefs.iptvLockedCats),
+            IptvLocks.decodeStamps(prefs.iptvCatUnlockStamps),
+            prefs.unlockGraceMinutes,
+            System.currentTimeMillis(),
+            IptvClient.sessionStartMs,
+            prefs.arrowPin.isNotEmpty()
+        )
+
+    private fun requestGuideSlice(append: Boolean, hidden: Set<String>) {
+        if (guideLoading) return
+        guideLoading = true
+        val gen = ++guideGen
+        val offset = if (append) guideItems.size else 0
+        IptvClient.sliceAsync(
+            this, IptvLogic.KIND_LIVE, excludeCats = hidden,
+            offset = offset, limit = IptvLogic.GRID_CAP
+        ) { page ->
+            if (isFinishing) return@sliceAsync
+            if (gen != guideGen) return@sliceAsync
+            guideLoading = false
+            guideTotal = page.total
+            guideItems = if (append) guideItems + page.live else page.live
+            rebuild()
+        }
+    }
+
     private fun rebuildInner() {
         val box = contentBox ?: return
         val focusedBefore = focusedKey
@@ -121,21 +167,37 @@ class IptvGuideActivity : Activity() {
         header.addView(refreshBtn)
         box.addView(header)
 
-        val cats = IptvClient.cached(this)
-        val hidden = IptvLocks.hiddenKeys(
-            cats.liveCats,
-            IptvLocks.decodeKeys(prefs.iptvLockedCats),
-            IptvLocks.decodeStamps(prefs.iptvCatUnlockStamps),
-            prefs.unlockGraceMinutes,
-            System.currentTimeMillis(),
-            IptvClient.sessionStartMs,
-            prefs.arrowPin.isNotEmpty()
-        )
-        val channels = cats.live.filter { it.catKey !in hidden }
-        if (channels.isEmpty()) {
+        val snap = IptvClient.snapshot(this)
+        val progress = IptvClient.ingestProgressText()
+        if (progress.isNotEmpty()) {
+            noteLine(box, progress)
+        } else if (snap.fetchedAt > 0L) {
+            val timeText = SimpleDateFormat("h:mm a", Locale.US)
+                .format(Date(snap.fetchedAt))
+            noteLine(box, "Updated $timeText")
+        }
+
+        val hidden = hiddenCatKeys(snap)
+        // Retire the loaded window when the store generation or
+        // the hidden set moves, then (re)load its first slice.
+        val key = IptvClient.storeStamp(this).toString() + "|" + hidden.hashCode()
+        if (key != guideKey) {
+            guideKey = key
+            guideItems = emptyList()
+            guideTotal = 0
+            guideGen++
+            guideLoading = false
+            requestGuideSlice(append = false, hidden = hidden)
+        }
+
+        if (guideItems.isEmpty()) {
             val line = TextView(this)
-            line.text = com.mizan.launcher.core.IptvStatus.emptyLine(IptvClient.status(this))
-                ?: "No live channels yet."
+            line.text = if (guideLoading) {
+                "Loading channels…"
+            } else {
+                com.mizan.launcher.core.IptvStatus.emptyLine(IptvClient.status(this))
+                    ?: "No live channels yet."
+            }
             line.setTextColor(0xFFB3B3B3.toInt())
             line.textSize = 17f
             val lp = LinearLayout.LayoutParams(-1, -2)
@@ -145,20 +207,12 @@ class IptvGuideActivity : Activity() {
             return
         }
 
-        // v2.3.2: one row per channel for EVERY channel was the
-        // same unbounded build as the browser grids — a real panel
-        // carries thousands of live channels. Render one page; the
-        // zap queue follows the visible page.
-        val page = IptvLogic.gridPage(channels)
-        if (page.truncated) {
-            val note = TextView(this)
-            note.text = "Showing the first ${page.items.size} of ${channels.size} channels"
-            note.setTextColor(0xFFB3B3B3.toInt())
-            note.textSize = 15f
-            val nlp = LinearLayout.LayoutParams(-1, -2)
-            nlp.setMargins(0, Ui.dp(this, 10), 0, Ui.dp(this, 2))
-            note.layoutParams = nlp
-            box.addView(note)
+        // The final render still passes through the view cap
+        // (core/IptvLogic.gridPage) as a hard bound, whatever the
+        // loaded window grew to via Load more.
+        val page = IptvLogic.gridPage(guideItems, MAX_RENDERED)
+        if (guideTotal > page.items.size) {
+            noteLine(box, "Showing ${page.items.size} of $guideTotal channels")
         }
         val index = IptvClient.epgIndex(this)
         val now = System.currentTimeMillis()
@@ -172,8 +226,28 @@ class IptvGuideActivity : Activity() {
             if (firstRow == null) firstRow = row
             box.addView(row)
         }
+        if (guideItems.size < guideTotal && guideItems.size < MAX_RENDERED) {
+            val more = headerButton("Load more (${guideTotal - guideItems.size} more)") {
+                requestGuideSlice(append = true, hidden = hiddenCatKeys(IptvClient.snapshot(this)))
+            }
+            val mlp = LinearLayout.LayoutParams(-2, -2)
+            mlp.setMargins(0, Ui.dp(this, 10), 0, Ui.dp(this, 6))
+            more.layoutParams = mlp
+            box.addView(more)
+        }
         val target = focusedBefore?.let { findByTag(box, it) } ?: firstRow
         target?.post { target.requestFocus() }
+    }
+
+    private fun noteLine(box: LinearLayout, text: String) {
+        val note = TextView(this)
+        note.text = text
+        note.setTextColor(0xFFB3B3B3.toInt())
+        note.textSize = 15f
+        val nlp = LinearLayout.LayoutParams(-1, -2)
+        nlp.setMargins(0, Ui.dp(this, 10), 0, Ui.dp(this, 2))
+        note.layoutParams = nlp
+        box.addView(note)
     }
 
     private fun channelRow(
@@ -325,5 +399,10 @@ class IptvGuideActivity : Activity() {
             }
         }
         return null
+    }
+
+    companion object {
+        /** Hard ceiling on rendered guide rows (Load-more stops here). */
+        private const val MAX_RENDERED = 1000
     }
 }

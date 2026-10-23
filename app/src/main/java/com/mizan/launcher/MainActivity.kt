@@ -125,11 +125,23 @@ class MainActivity : Activity() {
     private var tHeroCandidates: List<TrackerLogic.HeroItem> = emptyList()
 
     // v2.3 Watch working set (Watch style only), computed alongside
-    // the tracker set in buildRoot: the IPTV catalogues (for match
-    // targets) and the tracker↔IPTV match table (data/WatchPlay,
-    // keyed "type|tmdbId"). Empty in every other style.
-    private var wCats: IptvLogic.Catalogues = IptvLogic.Catalogues()
+    // the tracker set in buildRoot: the tracker↔IPTV match table
+    // (data/WatchPlay, keyed "type|tmdbId"). v2.4: matches run
+    // over the disk store's tuples — there is no materialized
+    // catalogue to keep here any more. Empty in every other style.
     private var wMatches: Map<String, WatchMatch.Match> = emptyMap()
+
+    // v2.4 IPTV home working set: the composed rows plus the slice
+    // items behind them (card-click lookups), loaded on a worker
+    // thread from the disk store, keyed by the store generation
+    // they were read from (IptvClient.storeStamp).
+    private var iptvHomeStamp: Long = Long.MIN_VALUE
+    private var iptvHomeLoading = false
+    private var iptvHomeRows: List<IptvLogic.HomeRow> = emptyList()
+    private var iptvHomeLive: List<IptvLogic.LiveChannel> = emptyList()
+    private var iptvHomeVods: List<IptvLogic.VodItem> = emptyList()
+    private var iptvHomeSeries: List<IptvLogic.SeriesItem> = emptyList()
+    private var iptvHomeCats: List<IptvLogic.Category> = emptyList()
 
     // Hero rotation (core/HeroRotator owns the rules; the Handler
     // lives here — activity-scoped, no service).
@@ -610,7 +622,14 @@ class MainActivity : Activity() {
      * rebuilds once with the resolved hero/cards.
      */
     private fun prepareWatchData() {
-        wCats = IptvClient.cached(this)
+        // v2.4: matches() returns the best table available NOW
+        // (the prefs cache while the store tuples load in the
+        // background); when the tuples land and the table is
+        // recomputed, onMatchesChanged rebuilds once with fresh
+        // badges — no catalogue is ever materialized here.
+        WatchPlay.onMatchesChanged = {
+            runOnUiThread { if (isWatchStyle()) rebuild() }
+        }
         wMatches = WatchPlay.matches(this)
         val upNext = tUpNext
         val matches = wMatches
@@ -631,28 +650,35 @@ class MainActivity : Activity() {
      */
     private fun playUpNextItem(item: TrackerLogic.UpNextItem, inSnapshot: Boolean) {
         val match = watchMatch("tv", item.tmdbId)
-        val series = match?.let { WatchPlay.seriesFor(this, it) }
-        if (match == null || series == null) {
+        if (match == null) {
             openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
             return
         }
-        WatchPlay.playEpisode(
-            this, series, item.tmdbId, item.season, item.episode,
-            item.title, item.poster, withToken = inSnapshot
-        ) {
-            Toast.makeText(
-                this, "That episode isn't on your IPTV — showing details instead",
-                Toast.LENGTH_LONG
-            ).show()
-            openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+        // v2.4: the series entry is resolved from the disk store
+        // on a worker thread; any miss fails open to details.
+        WatchPlay.resolveSeries(this, match) { series ->
+            if (isFinishing || isDestroyed) return@resolveSeries
+            if (series == null) {
+                openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+                return@resolveSeries
+            }
+            WatchPlay.playEpisode(
+                this, series, item.tmdbId, item.season, item.episode,
+                item.title, item.poster, withToken = inSnapshot
+            ) {
+                Toast.makeText(
+                    this, "That episode isn't on your IPTV — showing details instead",
+                    Toast.LENGTH_LONG
+                ).show()
+                openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+            }
         }
     }
 
     /** Play a matched movie from the Watch home (Movie Night / hero / For You). */
     private fun playMovieItem(movie: TrackerLogic.MovieItem) {
         val match = watchMatch("movie", movie.tmdbId)
-        val vod = match?.let { WatchPlay.vodFor(this, it) }
-        if (match == null || vod == null) {
+        if (match == null) {
             openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
             return
         }
@@ -661,7 +687,15 @@ class MainActivity : Activity() {
         } else {
             null
         }
-        WatchPlay.playMovie(this, vod, token)
+        // v2.4: store resolution on a worker thread, as above.
+        WatchPlay.resolveVod(this, match) { vod ->
+            if (isFinishing || isDestroyed) return@resolveVod
+            if (vod == null) {
+                openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
+                return@resolveVod
+            }
+            WatchPlay.playMovie(this, vod, token)
+        }
     }
 
     /**
@@ -688,7 +722,7 @@ class MainActivity : Activity() {
         val hero = TrackerLogic.selectHero(tHeroCandidates, prefs.trackerHeroIndex)
         heroBackdropShown = ""
         if (hero != null && hero.backdrop.isNotBlank()) {
-            TmdbImages.load(TmdbImages.url("w1280", hero.backdrop), front)
+            TmdbImages.load(TmdbImages.url("w1280", hero.backdrop), front, TmdbImages.HERO_MAX_DIM)
             heroBackdropShown = hero.backdrop
         }
 
@@ -765,50 +799,50 @@ class MainActivity : Activity() {
 
     private fun buildIptvHome(content: LinearLayout, barHost: LinearLayout) {
         barHost.addView(buildTopBar())
-        IptvClient.refreshAsync(this) { if (isIptvStyle()) rebuild() }
+        // v2.4: NO catalogue fetch on build (refresh is on request
+        // only now). The EPG index still loads LOCALLY from the
+        // store file in the background — that's disk, not network.
         IptvClient.epgIndex(this) { if (isIptvStyle()) rebuild() }
 
         content.addView(buildIptvEntryRow())
 
-        // v2.3.2: the whole data section — cached catalogues, the
-        // lock set, the sync EPG index, the row composition — runs
-        // behind this guard. It used to be four bare calls on real
-        // panel data of unknown size/shape; any escape killed the
-        // build (and with it the default home's only content view).
-        // On failure the render falls through to the safe shell:
-        // the top bar + entry row above, the info line below, then
-        // the favorites/apps sections — the cache is left exactly
-        // as it is; only the RENDER degrades.
-        var cats = IptvLogic.Catalogues()
-        var rows: List<IptvLogic.HomeRow> = emptyList()
-        var dataFailed = false
-        try {
-            cats = IptvClient.cached(this)
-            val hidden = iptvHiddenCatKeys(cats)
-            rows = IptvLogic.homeRows(
-                cats, prefs.iptvFavoriteList(), prefs.iptvResumeList(), hidden,
-                IptvClient.epgIndex(this), System.currentTimeMillis()
-            )
-        } catch (e: Throwable) {
-            Prefs.noteError(this, "iptvhome", e)
-            dataFailed = true
-            cats = IptvLogic.Catalogues()
-            rows = emptyList()
+        // v2.4: the rows are composed from store SLICES on a
+        // worker thread (ensureIptvHomeData) and kept in fields,
+        // keyed by the store generation. Until the slices for the
+        // current generation land, the home shows the shell +
+        // a status line — never a synchronous catalogue load.
+        // v2.3.2's guard discipline stands: a render failure falls
+        // back to the safe shell (bar + entry row + app rows).
+        val stamp = IptvClient.storeStamp(this)
+        val fetchedAt = IptvClient.fetchedAt(this)
+        if (fetchedAt > 0L) {
+            val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
+                .format(java.util.Date(fetchedAt))
+            content.addView(trackerInfoLine("IPTV · Updated $timeText"))
         }
-        if (rows.isEmpty()) {
-            val lineText = if (dataFailed) {
-                "IPTV hit a snag loading its catalogues — your apps are right below."
-            } else {
-                IptvStatus.emptyLine(IptvClient.status(this))
-                    ?: "Nothing to show here yet — IPTV rows appear when your catalogues load."
+        if (iptvHomeStamp != stamp) {
+            ensureIptvHomeData(stamp)
+            val lineText = when {
+                IptvClient.isIngesting() -> IptvClient.ingestProgressText()
+                else -> IptvStatus.emptyLine(IptvClient.status(this))
+                    ?: "Loading your channels…"
             }
             content.addView(trackerInfoLine(lineText))
-        }
-        for (row in rows) {
-            try {
-                content.addView(buildIptvRow(row, cats))
-            } catch (e: Exception) {
-                Prefs.noteError(this, "row:iptv:${row.kind}", e)
+        } else {
+            if (IptvClient.isIngesting()) {
+                content.addView(trackerInfoLine(IptvClient.ingestProgressText()))
+            }
+            if (iptvHomeRows.isEmpty()) {
+                val lineText = IptvStatus.emptyLine(IptvClient.status(this))
+                    ?: "Nothing to show here yet — IPTV rows appear when your catalogues load."
+                content.addView(trackerInfoLine(lineText))
+            }
+            for (row in iptvHomeRows) {
+                try {
+                    content.addView(buildIptvRow(row))
+                } catch (e: Exception) {
+                    Prefs.noteError(this, "row:iptv:${row.kind}", e)
+                }
             }
         }
         if (layout.isRowVisible("favorites")) {
@@ -827,10 +861,84 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Load the IPTV home's slices for store generation [stamp] on
+     * a worker thread: the first visible live categories' first
+     * pages (from the index's counts), the movies/series first
+     * pages, then the pure composition (core/IptvLogic.
+     * homeRowsSliced). Lands in fields + one rebuild. Any failure
+     * composes empty rows — the home's safe shell — and records.
+     */
+    private fun ensureIptvHomeData(stamp: Long) {
+        if (iptvHomeLoading) return
+        iptvHomeLoading = true
+        val appCtx = applicationContext
+        kotlin.concurrent.thread(name = "mizan-iptv-home") {
+            var rows: List<IptvLogic.HomeRow> = emptyList()
+            var live: List<IptvLogic.LiveChannel> = emptyList()
+            var vods: List<IptvLogic.VodItem> = emptyList()
+            var series: List<IptvLogic.SeriesItem> = emptyList()
+            var cats: List<IptvLogic.Category> = emptyList()
+            try {
+                val snap = IptvClient.snapshot(appCtx)
+                cats = snap.allCats()
+                val hidden = iptvHiddenCatKeys(cats)
+                val liveRowsData = ArrayList<Pair<IptvLogic.Category, List<IptvLogic.LiveChannel>>>()
+                val gathered = ArrayList<IptvLogic.LiveChannel>()
+                for (cat in snap.liveCats) {
+                    if (liveRowsData.size >= IptvLogic.LIVE_ROW_CAP) break
+                    if (cat.key in hidden) continue
+                    if ((snap.index?.countForCat(cat.key) ?: 0) <= 0) continue
+                    val page = IptvClient.sliceBlocking(
+                        appCtx, IptvLogic.KIND_LIVE, catKey = cat.key,
+                        limit = IptvLogic.ROW_CARD_CAP
+                    )
+                    if (page.live.isNotEmpty()) {
+                        liveRowsData.add(cat to page.live)
+                        gathered.addAll(page.live)
+                    }
+                }
+                var flat: List<IptvLogic.LiveChannel> = emptyList()
+                if (liveRowsData.isEmpty()) {
+                    flat = IptvClient.sliceBlocking(
+                        appCtx, IptvLogic.KIND_LIVE, excludeCats = hidden,
+                        limit = IptvLogic.ROW_CARD_CAP
+                    ).live
+                    gathered.addAll(flat)
+                }
+                vods = IptvClient.sliceBlocking(
+                    appCtx, IptvLogic.KIND_VOD, limit = IptvLogic.ROW_CARD_CAP
+                ).vods
+                series = IptvClient.sliceBlocking(
+                    appCtx, IptvLogic.KIND_SERIES, limit = IptvLogic.ROW_CARD_CAP
+                ).series
+                val activityPrefs = prefs
+                rows = IptvLogic.homeRowsSliced(
+                    activityPrefs.iptvFavoriteList(), activityPrefs.iptvResumeList(),
+                    hidden, liveRowsData, flat, vods, series,
+                    IptvClient.epgIndex(appCtx), System.currentTimeMillis()
+                )
+                live = gathered
+            } catch (e: Throwable) {
+                Prefs.noteError(appCtx, "iptvhome", e)
+            }
+            runOnUiThread {
+                iptvHomeLoading = false
+                iptvHomeStamp = stamp
+                iptvHomeRows = rows
+                iptvHomeLive = live
+                iptvHomeVods = vods
+                iptvHomeSeries = series
+                iptvHomeCats = cats
+                if (isIptvStyle() && !isFinishing && !isDestroyed) rebuild()
+            }
+        }
+    }
+
     /** The category-lock hidden set over every IPTV category (both sources). */
-    private fun iptvHiddenCatKeys(cats: IptvLogic.Catalogues): Set<String> =
+    private fun iptvHiddenCatKeys(allCats: List<IptvLogic.Category>): Set<String> =
         IptvLocks.hiddenKeys(
-            cats.liveCats + cats.vodCats + cats.seriesCats,
+            allCats,
             IptvLocks.decodeKeys(prefs.iptvLockedCats),
             IptvLocks.decodeStamps(prefs.iptvCatUnlockStamps),
             prefs.unlockGraceMinutes,
@@ -877,7 +985,7 @@ class MainActivity : Activity() {
     }
 
     /** One composed IPTV row: section header + a horizontal card scroller. */
-    private fun buildIptvRow(row: IptvLogic.HomeRow, cats: IptvLogic.Catalogues): View {
+    private fun buildIptvRow(row: IptvLogic.HomeRow): View {
         val box = section(row.title)
         val rowLayout = LinearLayout(this)
         rowLayout.orientation = LinearLayout.HORIZONTAL
@@ -892,8 +1000,8 @@ class MainActivity : Activity() {
                 else if (card.kind == IptvLogic.KIND_SERIES) "📚" else "📺",
                 wide = card.kind == IptvLogic.KIND_LIVE,
                 tag = card.key, progress = card.progress,
-                onClick = { iptvCardClicked(card, row, cats) },
-                onLong = { iptvCardMenu(card, row, cats) }
+                onClick = { iptvCardClicked(card, row) },
+                onLong = { iptvCardMenu(card, row) }
             )
             if (firstTile == null) firstTile = (view as LinearLayout).getChildAt(0)
             rowLayout.addView(view)
@@ -936,15 +1044,15 @@ class MainActivity : Activity() {
 
     private fun iptvCardClicked(
         card: IptvLogic.Card,
-        row: IptvLogic.HomeRow,
-        cats: IptvLogic.Catalogues
+        row: IptvLogic.HomeRow
     ) {
         when (card.kind) {
             IptvLogic.KIND_LIVE -> {
-                val ch = cats.live.firstOrNull { it.key == card.key }
+                // v2.4: lookups run over the home's slice items.
+                val ch = iptvHomeLive.firstOrNull { it.key == card.key }
                 if (ch != null) {
                     val siblings = row.cards.mapNotNull { c ->
-                        cats.live.firstOrNull { it.key == c.key }
+                        iptvHomeLive.firstOrNull { it.key == c.key }
                     }
                     iptvPlayLive(if (siblings.isEmpty()) listOf(ch) else siblings, ch)
                 } else {
@@ -962,16 +1070,15 @@ class MainActivity : Activity() {
 
     private fun iptvCardMenu(
         card: IptvLogic.Card,
-        row: IptvLogic.HomeRow,
-        cats: IptvLogic.Catalogues
+        row: IptvLogic.HomeRow
     ) {
         val labels = mutableListOf<String>()
         val actions = mutableListOf<() -> Unit>()
         val isSeries = card.kind == IptvLogic.KIND_SERIES
         labels.add(if (isSeries) "Open" else "▶ Play")
-        actions.add { iptvCardClicked(card, row, cats) }
+        actions.add { iptvCardClicked(card, row) }
         if (card.kind == IptvLogic.KIND_LIVE) {
-            val ch = cats.live.firstOrNull { it.key == card.key }
+            val ch = iptvHomeLive.firstOrNull { it.key == card.key }
             val shift = ch?.let { iptvCatchUpItem(it) }
             if (shift != null) {
                 labels.add("⏮ Watch from start")
@@ -981,7 +1088,7 @@ class MainActivity : Activity() {
                 }
             }
         }
-        val favEntry = iptvFavEntryFor(card, cats)
+        val favEntry = iptvFavEntryFor(card)
         if (favEntry != null) {
             val isFav = IptvLogic.isFavorite(prefs.iptvFavoriteList(), favEntry.key)
             labels.add(if (isFav) "★ Remove from favorites" else "☆ Add to favorites")
@@ -1013,18 +1120,17 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /** The favorite entry a card toggles (catalogue object when present, else the stored favorite). */
+    /** The favorite entry a card toggles (slice object when present, else the stored favorite). */
     private fun iptvFavEntryFor(
-        card: IptvLogic.Card,
-        cats: IptvLogic.Catalogues
+        card: IptvLogic.Card
     ): IptvLogic.FavEntry? = when (card.kind) {
-        IptvLogic.KIND_LIVE -> cats.live.firstOrNull { it.key == card.key }
+        IptvLogic.KIND_LIVE -> iptvHomeLive.firstOrNull { it.key == card.key }
             ?.let { IptvLogic.favOf(it) }
             ?: prefs.iptvFavoriteList().firstOrNull { it.key == card.key }
-        IptvLogic.KIND_VOD -> cats.vods.firstOrNull { it.key == card.key }
+        IptvLogic.KIND_VOD -> iptvHomeVods.firstOrNull { it.key == card.key }
             ?.let { IptvLogic.favOf(it) }
             ?: prefs.iptvFavoriteList().firstOrNull { it.key == card.key }
-        IptvLogic.KIND_SERIES -> cats.series.firstOrNull { it.key == card.key }
+        IptvLogic.KIND_SERIES -> iptvHomeSeries.firstOrNull { it.key == card.key }
             ?.let { IptvLogic.favOf(it) }
             ?: prefs.iptvFavoriteList().firstOrNull { it.key == card.key }
         else -> null
@@ -1911,13 +2017,15 @@ class MainActivity : Activity() {
         // rebuilds the view once — the new fetchedAt stops any loop.
         TrackerClient.refreshAsync(this) { if (isTrackerFamily()) rebuild() }
         if (isWatchStyle()) {
-            // Watch (v2.3): the IPTV catalogues ride along — a late
-            // catalogue rebuilds with fresh badges and match state.
+            // Watch (v2.3): the IPTV matches ride along — fresh
+            // badges land via data/WatchPlay.onMatchesChanged (set
+            // in prepareWatchData). v2.4: NO catalogue fetch here —
+            // data loads on request only (Settings › IPTV / the
+            // browser's Refresh); the store on disk is what shows.
             // Hint row (§21.5): no IPTV source at all → the Watch
             // home renders EXACTLY as Tracker, plus ONE dismissible
             // hint. A configured-but-empty/failed catalogue gets NO
             // hint — the `iptv:` diagnostics line covers it.
-            IptvClient.refreshAsync(this) { if (isWatchStyle()) rebuild() }
             if (!IptvClient.anyConfigured(this) && !prefs.watchHintDismissed) {
                 content.addView(buildWatchHintRow())
             }
@@ -2191,8 +2299,11 @@ class MainActivity : Activity() {
             } else {
                 null
             }
+            // v2.4: gated on the match alone — the store entry is
+            // resolved on the worker thread at tap time, and a
+            // miss falls back to Details inside playMovieItem.
             val fyPlayable = fyMovie != null &&
-                watchMatch("movie", hero.tmdbId)?.let { WatchPlay.vodFor(this, it) } != null
+                watchMatch("movie", hero.tmdbId) != null
             if (fyPlayable && fyMovie != null) {
                 buttons.addView(
                     heroButton("▶ Play", "play", primary = true) { playMovieItem(fyMovie) }
@@ -2238,8 +2349,7 @@ class MainActivity : Activity() {
             if (isWatchStyle() && coords != null) {
                 if (hero.type == "movie") {
                     val m = watchMatch("movie", hero.tmdbId)
-                    val vod = m?.let { WatchPlay.vodFor(this, it) }
-                    if (m != null && vod != null) {
+                    if (m != null) {
                         val movieItem = tMovies.firstOrNull { it.tmdbId == hero.tmdbId }
                             ?: TrackerLogic.MovieItem(
                                 hero.tmdbId, hero.title, hero.dateIso,
@@ -2250,30 +2360,42 @@ class MainActivity : Activity() {
                     }
                 } else {
                     val m = watchMatch("tv", hero.tmdbId)
-                    val series = m?.let { WatchPlay.seriesFor(this, it) }
-                    val info = series?.let { IptvClient.cachedSeriesInfo(this, it.id) }
+                    // v2.4: the label decision needs only the
+                    // series-info cache (keyed by the match's IPTV
+                    // id); the series ENTRY is resolved from the
+                    // store at tap time.
+                    val info = m?.let { IptvClient.cachedSeriesInfo(this, it.iptvId) }
                     val ep = info?.let {
                         WatchMatch.resolveEpisode(it, coords.first, coords.second)
                     }
-                    if (m != null && series != null && ep != null) {
+                    if (m != null && ep != null) {
                         val inSnap = tSnap.upNext.any {
                             it.tmdbId == hero.tmdbId &&
                                 it.season == coords.first && it.episode == coords.second
                         }
                         playLabel = WatchMatch.heroPlayLabel("tv", coords.first, coords.second)
                         playAction = {
-                            WatchPlay.playEpisode(
-                                this, series, hero.tmdbId, coords.first, coords.second,
-                                hero.title, hero.poster, withToken = inSnap
-                            ) {
-                                Toast.makeText(
-                                    this,
-                                    "That episode isn't on your IPTV — showing details instead",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                                openTitleDetails(
-                                    hero.tmdbId, hero.type, hero.title, hero.poster
-                                )
+                            WatchPlay.resolveSeries(this, m) { series ->
+                                if (isFinishing || isDestroyed) return@resolveSeries
+                                if (series == null) {
+                                    openTitleDetails(
+                                        hero.tmdbId, hero.type, hero.title, hero.poster
+                                    )
+                                    return@resolveSeries
+                                }
+                                WatchPlay.playEpisode(
+                                    this, series, hero.tmdbId, coords.first, coords.second,
+                                    hero.title, hero.poster, withToken = inSnap
+                                ) {
+                                    Toast.makeText(
+                                        this,
+                                        "That episode isn't on your IPTV — showing details instead",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    openTitleDetails(
+                                        hero.tmdbId, hero.type, hero.title, hero.poster
+                                    )
+                                }
                             }
                         }
                     }
@@ -2428,7 +2550,7 @@ class MainActivity : Activity() {
             } else if (hero.backdrop != heroBackdropShown) {
                 val url = TmdbImages.url("w1280", hero.backdrop)
                 back.alpha = 0f
-                TmdbImages.load(url, back) {
+                TmdbImages.load(url, back, TmdbImages.HERO_MAX_DIM) {
                     back.animate().alpha(1f).setDuration(600).start()
                     front.animate().alpha(0f).setDuration(600).start()
                     heroLayerFront = back

@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 01:44 UTC
+Date: 2026-10-23 02:28 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -110,6 +110,20 @@ http:// by default), and SettingsActivity carries no
 hardcoded 'Sreeb v<digit>' label — the version is read from
 PackageManager at runtime (the photo showed two different
 stale labels at once). All v2.3 checks carry over.
+
+Note (v2.4): the IPTV data layer is rebuilt disk-first
+(spec S24) — catalogues live in .jsonl files + a small index
+under filesDir/iptv, ingest streams endpoints element-by-
+element and swaps atomically (all-or-nothing), reads are
+worker-thread slices, and refresh is on request only (save
+account / Refresh buttons). New section 41: streaming JSON
++ XMLTV equivalence with the document parsers, the M3U
+stream parser, store line/index codecs, exact slice windows
+over a 5,000-entry fixture, find/tuples, the swap rule, the
+guide retention window, oversized-segment resync, sliced
+home composition, and source checks (legacy prefs purge, no
+auto-fetch on home builds, downsampled image decode + byte-
+bounded bitmap cache). All v2.3.2 checks carry over.
 
 Note (v2.3.2): hotfix from on-device evidence (spec S23):
 with the cleartext fix the real panel finally loaded, and
@@ -693,8 +707,42 @@ PASS  iptv232: the browser rebuild is guarded and records as iptvbrowser
 PASS  iptv232: the browser pages its grids through gridPage
 PASS  iptv232: the guide rebuild is guarded, records as iptvguide, and pages its rows
 PASS  iptv232: the home build records iptvhome and renders rows through homeRowCards
+PASS  iptvstore: streamArray delivers every object element (5 objects; the stray scalar is consumed + skipped)
+PASS  iptvstore: streamed rows equal the whole-document parse
+PASS  iptvstore: streamArray rejects a non-array document (ingest keeps the old store)
+PASS  iptvstore: M3U stream parse equals the document parse (cats + channels)
+PASS  iptvstore: live line round-trips codec-hostile fields
+PASS  iptvstore: M3U live line round-trips (direct URL survives)
+PASS  iptvstore: vod line round-trips incl. year
+PASS  iptvstore: series line round-trips
+PASS  iptvstore: series plots are capped at PLOT_CAP in the store line
+PASS  iptvstore: epg line round-trips
+PASS  iptvstore: garbage lines decode to null, never throw
+PASS  iptvstore: index round-trips (stamps, counts, byte sizes, hostile cat names)
+PASS  iptvstore: index serves categories + per-category counts by kind
+PASS  iptvstore: sizeText renders B / KB / MB honestly
+PASS  iptvstore: slice window [0,200) of 5,000 is exact, total from the index
+PASS  iptvstore: slice window at the tail is exact (ids 4801..5000)
+PASS  iptvstore: category slice counts its own total (2,000 of 4,000)
+PASS  iptvstore: excluded-category slice skips hidden cats, index-adjusted total
+PASS  iptvstore: query slice counts matches across the whole file (499 + 4990..4999 = 11)
+PASS  iptvstore: find locates one item in a 3,000-line file; a miss is null
+PASS  iptvstore: tuples carry only (id, title, year) for matching
+PASS  iptvstore: swap only when every attempted catalogue endpoint succeeded
+PASS  iptvstore: XMLTV stream delivers the same programmes as the document parse
+PASS  iptvstore: guide window keeps now/next, drops the long past and the far future
+PASS  iptvstore: an oversized programme segment is dropped, the stream resyncs
+PASS  iptvstore: sliced home composes favorites ? live ? movies ? series
+PASS  iptvstore: sliced home falls back to a flat Live row without categories
+PASS  iptvstore: the client purges the legacy prefs documents on first v2.4 run
+PASS  iptvstore: no whole-catalogue snapshot survives in the client (no cached(), no raw snapshot)
+PASS  iptvstore: the client streams ingest endpoints and slices reads
+PASS  iptvstore: no auto-fetch remains on home builds (refresh is on request only)
+PASS  iptvstore: the IPTV home composes from slices (homeRowsSliced + sliceBlocking)
+PASS  iptvstore: the browser reads slices and never fetches on open/resume
+PASS  iptvstore: image decode is downsampled and the bitmap cache is byte-bounded
 PASS  hotfix: manifest permits cleartext HTTP (Xtream panels / M3U / XMLTV are http://)
 PASS  hotfix: no hardcoded 'Sreeb v<digit>' label remains in SettingsActivity
 PASS  hotfix: the version label is read from PackageManager at runtime
-RESULT: 570 passed, 0 failed, 570 total
+RESULT: 604 passed, 0 failed, 604 total
 ```

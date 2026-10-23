@@ -44,6 +44,9 @@ import com.mizan.launcher.core.IptvLogic
 import com.mizan.launcher.core.IptvEpg
 import com.mizan.launcher.core.IptvLocks
 import com.mizan.launcher.core.IptvStatus
+import com.mizan.launcher.core.IptvStore
+import com.mizan.launcher.core.IptvStream
+import com.mizan.launcher.core.IptvM3uStream
 import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
@@ -2866,6 +2869,253 @@ fun main() {
         check("iptv232: the home build records iptvhome and renders rows through homeRowCards",
             mainSrc.contains("noteError(this, \"iptvhome\"") &&
                 mainSrc.contains("IptvLogic.homeRowCards(row)"))
+    }
+
+    // ---------- (41) v2.4: disk store, streaming ingest parsers, slices, swap rule ----------
+    run {
+        val L = IptvLogic
+        val S = IptvStore
+
+        // --- streaming JSON: element-for-element equivalence with
+        // the whole-document parsers (same row mappers).
+        val liveJson = """[
+          {"stream_id": 101, "name": "News One", "stream_icon": "http://x/n.png", "category_id": "1", "epg_channel_id": "news.tv", "tv_archive": 1, "tv_archive_duration": 3},
+          {"stream_id": "102", "name": "Sport | Two %", "stream_icon": "", "category_id": 1, "epg_channel_id": "", "tv_archive": 0},
+          {"stream_id": 0, "name": "Dead", "category_id": "1"},
+          {"stream_id": 103, "name": "", "category_id": "1"},
+          "a stray scalar",
+          {"stream_id": 104, "name": "Films\nTonight", "category_id": "9", "epg_channel_id": "films.tv"}
+        ]"""
+        val catNames = mapOf("1" to "General", "9" to "Movies")
+        val streamed = ArrayList<IptvLogic.LiveChannel>()
+        val delivered = IptvStream.streamArray(java.io.StringReader(liveJson)) { row ->
+            L.liveFromRow(row, catNames)?.let { streamed.add(it) }
+        }
+        check("iptvstore: streamArray delivers every object element (5 objects; the stray scalar is consumed + skipped)",
+            delivered == 5, "delivered=$delivered")
+        check("iptvstore: streamed rows equal the whole-document parse",
+            streamed == L.parseLive(liveJson, catNames),
+            "streamed=$streamed whole=${L.parseLive(liveJson, catNames)}")
+        val streamThrows = try {
+            IptvStream.streamArray(java.io.StringReader("{\"not\":\"an array\"}")) { }
+            false
+        } catch (e: Exception) {
+            true
+        }
+        check("iptvstore: streamArray rejects a non-array document (ingest keeps the old store)",
+            streamThrows)
+
+        // --- M3U: the line-fed stream parser == the document parser.
+        val m3u = "#EXTM3U\n" +
+            "#EXTINF:-1 tvg-id=\"a.tv\" tvg-logo=\"http://x/a.png\" group-title=\"News\",Alpha\n" +
+            "http://s/a.m3u8\n" +
+            "#EXTINF:-1 group-title=\"News\",Beta\n" +
+            "http://s/b.m3u8\n" +
+            "#EXTINF:-1,No Group\n" +
+            "http://s/c.m3u8\n"
+        val m3uStream = IptvM3uStream()
+        val m3uChans = ArrayList<IptvLogic.LiveChannel>()
+        for (line in m3u.lineSequence()) m3uStream.feed(line)?.let { m3uChans.add(it) }
+        val m3uWhole = L.parseM3u(m3u)
+        check("iptvstore: M3U stream parse equals the document parse (cats + channels)",
+            m3uStream.categories == m3uWhole.first && m3uChans == m3uWhole.second,
+            "stream=${m3uStream.categories}/$m3uChans whole=$m3uWhole")
+
+        // --- line codecs round-trip (incl. codec-hostile text).
+        val live1 = IptvLogic.LiveChannel(
+            42L, "A | B % C\nD", "http://x/i.png", "7", "Cat | One",
+            "epg.tv", L.SRC_XTREAM, "", 1, 2
+        )
+        check("iptvstore: live line round-trips codec-hostile fields",
+            S.decodeLive(S.encodeLive(live1)) == live1)
+        val liveM = IptvLogic.LiveChannel(
+            7L, "M3U Chan", "", "News", "News", "m.tv",
+            L.SRC_M3U, "http://s/x.m3u8?u=1&p=2", 0, 0
+        )
+        check("iptvstore: M3U live line round-trips (direct URL survives)",
+            S.decodeLive(S.encodeLive(liveM)) == liveM)
+        val vod1 = IptvLogic.VodItem(9L, "Movie | One", "http://x/p.jpg", "3", "Films", "mkv", "8.5", 2021)
+        check("iptvstore: vod line round-trips incl. year",
+            S.decodeVod(S.encodeVod(vod1)) == vod1)
+        val series1 = IptvLogic.SeriesItem(11L, "Show", "http://x/c.jpg", "4", "Drama", "9.1", "Plot | with % signs", 1999)
+        check("iptvstore: series line round-trips",
+            S.decodeSeries(S.encodeSeries(series1)) == series1)
+        val longPlot = IptvLogic.SeriesItem(12L, "Long", "", "4", "Drama", "", "x".repeat(5000), 2020)
+        check("iptvstore: series plots are capped at PLOT_CAP in the store line",
+            (S.decodeSeries(S.encodeSeries(longPlot))?.plot?.length ?: -1) == S.PLOT_CAP)
+        val prog1 = IptvEpg.Programme("ch.tv", 1_700_000_000_000L, 1_700_000_900_000L, "Title | %")
+        check("iptvstore: epg line round-trips",
+            S.decodeEpg(S.encodeEpg(prog1)) == prog1)
+        check("iptvstore: garbage lines decode to null, never throw",
+            S.decodeLive("not a line") == null && S.decodeVod("||") == null &&
+                S.decodeSeries("") == null && S.decodeEpg("a|b|c") == null)
+
+        // --- index codec round-trip + counts + size text.
+        val idx = IptvStore.Index(
+            fetchedAt = 1_700_000_000_000L, fingerprint = -12345,
+            liveCount = 5000, vodCount = 3000, seriesCount = 2000,
+            liveBytes = 2_000_000L, vodBytes = 3_000_000L, seriesBytes = 1_500_000L,
+            epgChannels = 42, epgAt = 1_700_000_100_000L,
+            cats = listOf(
+                IptvStore.CatCount("1", "General | %", "xtream", L.KIND_LIVE, 5000),
+                IptvStore.CatCount("2", "Films", "xtream", L.KIND_VOD, 3000),
+                IptvStore.CatCount("News", "News", "m3u", L.KIND_LIVE, 25)
+            )
+        )
+        val idxBack = S.decodeIndex(S.encodeIndex(idx))
+        check("iptvstore: index round-trips (stamps, counts, byte sizes, hostile cat names)",
+            idxBack == idx, "back=$idxBack")
+        check("iptvstore: index serves categories + per-category counts by kind",
+            idxBack?.categories(L.KIND_LIVE)?.size == 2 &&
+                idxBack?.countForCat("xtream:live:1") == 5000 &&
+                idxBack?.countOf(L.KIND_VOD) == 3000 &&
+                idxBack?.hasData == true)
+        check("iptvstore: sizeText renders B / KB / MB honestly",
+            S.sizeText(0L) == "store 0 B" && S.sizeText(512L) == "store 512 B" &&
+                S.sizeText(2048L) == "store 2 KB" &&
+                S.sizeText(6_500_000L).startsWith("store 6.2 MB"),
+            S.sizeText(6_500_000L))
+
+        // --- slices over a 5,000-entry single-category file.
+        val bigLines = (1..5_000).map { i ->
+            S.encodeLive(
+                IptvLogic.LiveChannel(i.toLong(), "Channel $i", "", "1", "General", "", L.SRC_XTREAM, "", 0, 0)
+            )
+        }
+        val page1 = S.sliceLive(bigLines.asSequence(), "xtream:live:1", null, emptySet(), 0, 200, 5_000)
+        check("iptvstore: slice window [0,200) of 5,000 is exact, total from the index",
+            page1.items.size == 200 && page1.items.first().id == 1L &&
+                page1.items.last().id == 200L && page1.total == 5_000)
+        val pageTail = S.sliceLive(bigLines.asSequence(), "xtream:live:1", null, emptySet(), 4_800, 200, 5_000)
+        check("iptvstore: slice window at the tail is exact (ids 4801..5000)",
+            pageTail.items.size == 200 && pageTail.items.first().id == 4801L &&
+                pageTail.items.last().id == 5000L && pageTail.total == 5_000)
+        val mixedLines = (1..4_000).map { i ->
+            val cat = if (i % 2 == 0) "2" else "1"
+            S.encodeLive(
+                IptvLogic.LiveChannel(i.toLong(), "Channel $i", "", cat, "C$cat", "", L.SRC_XTREAM, "", 0, 0)
+            )
+        }
+        val catSlice = S.sliceLive(mixedLines.asSequence(), "xtream:live:2", null, emptySet(), 0, 10, -1)
+        check("iptvstore: category slice counts its own total (2,000 of 4,000)",
+            catSlice.total == 2_000 && catSlice.items.size == 10 &&
+                catSlice.items.all { it.categoryId == "2" })
+        val exclSlice = S.sliceLive(
+            mixedLines.asSequence(), null, null, setOf("xtream:live:1"), 0, 10, 2_000
+        )
+        check("iptvstore: excluded-category slice skips hidden cats, index-adjusted total",
+            exclSlice.total == 2_000 && exclSlice.items.all { it.categoryId == "2" })
+        val querySlice = S.sliceLive(bigLines.asSequence(), null, "channel 499", emptySet(), 0, 200, -1)
+        check("iptvstore: query slice counts matches across the whole file (499 + 4990..4999 = 11)",
+            querySlice.total == 11 && querySlice.items.size == 11,
+            "total=${querySlice.total}")
+        val vodLines = (1..3_000).map { i ->
+            S.encodeVod(IptvLogic.VodItem(i.toLong(), "Movie $i", "", "1", "Films", "mkv", "", 2000))
+        }
+        val found = S.findVod(vodLines.asSequence(), 2_999L)
+        check("iptvstore: find locates one item in a 3,000-line file; a miss is null",
+            found?.name == "Movie 2999" && S.findVod(vodLines.asSequence(), 9_999L) == null)
+        val seriesLines = (1..120).map { i ->
+            S.encodeSeries(IptvLogic.SeriesItem(i.toLong(), "Show $i", "", "1", "Drama", "", "", 1950 + i))
+        }
+        val tuples = S.seriesTuples(seriesLines.asSequence())
+        check("iptvstore: tuples carry only (id, title, year) for matching",
+            tuples.size == 120 && tuples[41] == IptvStore.Tuple(42L, "Show 42", 1992))
+
+        // --- swap decision (the ingest's all-or-nothing rule).
+        check("iptvstore: swap only when every attempted catalogue endpoint succeeded",
+            S.shouldSwapCatalogue(
+                listOf(IptvStore.EndpointResult(true, true), IptvStore.EndpointResult(true, true))
+            ) &&
+                !S.shouldSwapCatalogue(
+                    listOf(IptvStore.EndpointResult(true, true), IptvStore.EndpointResult(true, false))
+                ) &&
+                !S.shouldSwapCatalogue(listOf(IptvStore.EndpointResult(false, false))) &&
+                S.shouldSwapCatalogue(
+                    listOf(IptvStore.EndpointResult(true, true), IptvStore.EndpointResult(false, false))
+                ))
+
+        // --- XMLTV streaming: equivalence + window + oversized segment resync.
+        val nowMs = IptvEpg.parseXmltvTime("20261022120000 +0000")
+        val xmltv = "<?xml version=\"1.0\"?><tv>" +
+            "<programme start=\"20261022110000 +0000\" stop=\"20261022120000 +0000\" channel=\"a.tv\"><title>Before</title></programme>" +
+            "<programme start=\"20261022120000 +0000\" stop=\"20261022130000 +0000\" channel=\"a.tv\"><title>Now &amp; Next</title></programme>" +
+            "<programme start=\"20261022130000 +0000\" stop=\"20261022140000 +0000\" channel=\"b.tv\"><title><![CDATA[Other]]></title></programme>" +
+            "</tv>"
+        val streamedProgs = ArrayList<IptvEpg.Programme>()
+        val deliveredCount = IptvEpg.streamXmltv(java.io.StringReader(xmltv)) { streamedProgs.add(it) }
+        val wholeProgs = IptvEpg.parseXmltv(xmltv).values.flatten().sortedBy { it.startMs }
+        check("iptvstore: XMLTV stream delivers the same programmes as the document parse",
+            deliveredCount == 3 && streamedProgs.sortedBy { it.startMs } == wholeProgs,
+            "streamed=$streamedProgs whole=$wholeProgs")
+        check("iptvstore: guide window keeps now/next, drops the long past and the far future",
+            IptvEpg.inGuideWindow(IptvEpg.Programme("a", nowMs - 1_800_000L, nowMs + 1_800_000L, "n"), nowMs) &&
+                !IptvEpg.inGuideWindow(IptvEpg.Programme("a", nowMs - 7_200_000L, nowMs - 3_600_000L, "old"), nowMs) &&
+                !IptvEpg.inGuideWindow(
+                    IptvEpg.Programme("a", nowMs + 24L * 3_600_000L, nowMs + 25L * 3_600_000L, "far"), nowMs
+                ))
+        val giantTitle = "x".repeat(300_000)
+        val xmltvGiant = "<tv>" +
+            "<programme start=\"20261022120000 +0000\" stop=\"20261022130000 +0000\" channel=\"a.tv\"><title>$giantTitle</title></programme>" +
+            "<programme start=\"20261022130000 +0000\" stop=\"20261022140000 +0000\" channel=\"a.tv\"><title>After</title></programme>" +
+            "</tv>"
+        val afterGiant = ArrayList<IptvEpg.Programme>()
+        IptvEpg.streamXmltv(java.io.StringReader(xmltvGiant)) { afterGiant.add(it) }
+        check("iptvstore: an oversized programme segment is dropped, the stream resyncs",
+            afterGiant.size == 1 && afterGiant[0].title == "After",
+            "got=${afterGiant.size}")
+
+        // --- sliced home composition.
+        val favs = listOf(L.favOf(vod1))
+        val catA = IptvLogic.Category("1", "General", "xtream", L.KIND_LIVE)
+        val chanA = IptvLogic.LiveChannel(1L, "Chan A", "", "1", "General", "", L.SRC_XTREAM, "", 0, 0)
+        val slicedRows = L.homeRowsSliced(
+            favs, emptyList(), emptySet(),
+            listOf(catA to listOf(chanA)), emptyList(),
+            listOf(vod1), listOf(series1)
+        )
+        check("iptvstore: sliced home composes favorites → live → movies → series",
+            slicedRows.map { it.kind } == listOf(
+                IptvLogic.RowKind.FAVORITES, IptvLogic.RowKind.LIVE,
+                IptvLogic.RowKind.MOVIES, IptvLogic.RowKind.SERIES
+            ), "rows=${slicedRows.map { it.kind }}")
+        val flatRows = L.homeRowsSliced(
+            emptyList(), emptyList(), emptySet(),
+            emptyList(), listOf(chanA), emptyList(), emptyList()
+        )
+        check("iptvstore: sliced home falls back to a flat Live row without categories",
+            flatRows.size == 1 && flatRows[0].kind == IptvLogic.RowKind.LIVE &&
+                flatRows[0].title == "Live TV")
+
+        // --- source checks: the data layer really is disk-first now.
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
+        check("iptvstore: the client purges the legacy prefs documents on first v2.4 run",
+            clientSrc.contains("iptv_store_v2") && clientSrc.contains("\"iptv_cache_live\"") &&
+                clientSrc.contains("LEGACY_KEYS"))
+        check("iptvstore: no whole-catalogue snapshot survives in the client (no cached(), no raw snapshot)",
+            clientSrc.isNotEmpty() && !clientSrc.contains("fun cached(") &&
+                !clientSrc.contains("snapshotRaw"))
+        check("iptvstore: the client streams ingest endpoints and slices reads",
+            clientSrc.contains("IptvStream.streamArray") &&
+                clientSrc.contains("fun sliceBlocking") &&
+                clientSrc.contains("IptvStore.shouldSwapCatalogue"))
+        val mainSrc2 = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("iptvstore: no auto-fetch remains on home builds (refresh is on request only)",
+            mainSrc2.isNotEmpty() && !mainSrc2.contains("IptvClient.refreshAsync"))
+        check("iptvstore: the IPTV home composes from slices (homeRowsSliced + sliceBlocking)",
+            mainSrc2.contains("homeRowsSliced") && mainSrc2.contains("sliceBlocking"))
+        val browserSrc2 = src("app/src/main/java/com/mizan/launcher/ui/IptvActivity.kt")
+        check("iptvstore: the browser reads slices and never fetches on open/resume",
+            browserSrc2.contains("IptvClient.sliceAsync") &&
+                !browserSrc2.contains("IptvClient.cached"))
+        val imagesSrc = src("app/src/main/java/com/mizan/launcher/data/TmdbImages.kt")
+        check("iptvstore: image decode is downsampled and the bitmap cache is byte-bounded",
+            imagesSrc.contains("inSampleSize") && imagesSrc.contains("MAX_CACHE_BYTES"))
     }
 
     // ---------- (39) v2.3.1 hotfix: source checks (manifest cleartext + the one true version label) ----------

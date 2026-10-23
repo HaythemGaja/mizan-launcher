@@ -66,17 +66,58 @@ object WatchPlay {
     // ------------------------------------------------------------ matches
 
     /**
-     * The current match table, keyed "type|tmdbId". Recomputed only
-     * when the fingerprint moves (catalogue refresh, tracker
-     * snapshot change); otherwise decoded from the prefs cache.
+     * v2.4: fired (on the main thread) when a background tuple load
+     * recomputes the match table — the Watch home sets this to
+     * rebuild itself with fresh badges. Single slot: the home is
+     * the only live consumer.
+     */
+    @Volatile
+    var onMatchesChanged: (() -> Unit)? = null
+
+    /** The prefs-cached match table, decoded (no store access). */
+    fun cachedMatches(ctx: Context): Map<String, WatchMatch.Match> {
+        val p = prefs(ctx)
+        val decoded = WatchMatch.decodeMatches(
+            try { p.getString(K_MATCH_CACHE, null) } catch (e: Exception) { null }
+        )
+        return decoded.associateBy { "${it.type}|${it.tmdbId}" }
+    }
+
+    /**
+     * The current match table, keyed "type|tmdbId". v2.4: matching
+     * runs over the store's lightweight TUPLES (id, title, year —
+     * scanned from the .jsonl files on a worker thread by
+     * IptvClient), never over materialized catalogues. When the
+     * tuples are not loaded yet this returns the prefs-cached
+     * table and kicks the load; the recomputation then fires
+     * [onMatchesChanged]. Recomputed only when the fingerprint
+     * moves (store refresh, tracker snapshot change); otherwise
+     * decoded from the prefs cache.
      */
     fun matches(ctx: Context): Map<String, WatchMatch.Match> {
+        val tuples = IptvClient.tuplesIfLoaded(ctx)
+        if (tuples == null) {
+            IptvClient.tuplesAsync(ctx) { series, vods ->
+                computeMatches(ctx, series, vods)
+                try { onMatchesChanged?.invoke() } catch (e: Exception) {
+                    // The home's rebuild guard handles dead activities.
+                }
+            }
+            return cachedMatches(ctx)
+        }
+        return computeMatches(ctx, tuples.first, tuples.second)
+    }
+
+    private fun computeMatches(
+        ctx: Context,
+        seriesTuples: List<com.mizan.launcher.core.IptvStore.Tuple>,
+        vodTuples: List<com.mizan.launcher.core.IptvStore.Tuple>
+    ): Map<String, WatchMatch.Match> {
         val snap = TrackerClient.cached(ctx)
-        val cats = IptvClient.cached(ctx)
         val titles = trackerTitles(snap)
         val keyHash = titles.map { "${it.type}:${it.tmdbId}" }.sorted().joinToString(",").hashCode()
         val fp = WatchMatch.fingerprint(
-            cats.series.size, cats.vods.size,
+            seriesTuples.size, vodTuples.size,
             IptvClient.fetchedAt(ctx), snap.updated, keyHash
         )
         val p = prefs(ctx)
@@ -93,11 +134,11 @@ object WatchPlay {
         }
         val shows = WatchMatch.matchAll(
             titles.filter { it.type == "tv" },
-            cats.series.map { WatchMatch.Candidate(it.id, it.name, it.year) }
+            seriesTuples.map { WatchMatch.Candidate(it.id, it.name, it.year) }
         )
         val movies = WatchMatch.matchAll(
             titles.filter { it.type == "movie" },
-            cats.vods.map { WatchMatch.Candidate(it.id, it.name, it.year) }
+            vodTuples.map { WatchMatch.Candidate(it.id, it.name, it.year) }
         )
         val all = shows.values + movies.values
         try {
@@ -131,13 +172,36 @@ object WatchPlay {
         )
     }
 
-    /** The VOD entry a movie match points at (null when the catalogue moved on). */
-    fun vodFor(ctx: Context, match: WatchMatch.Match): IptvLogic.VodItem? =
-        IptvClient.cached(ctx).vods.firstOrNull { it.id == match.iptvId }
+    /**
+     * The VOD entry a movie match points at, resolved by scanning
+     * the store file on a worker thread (v2.4: no materialized
+     * catalogue exists to look it up in). The callback fires on
+     * the main thread; null = the catalogue moved on.
+     */
+    fun resolveVod(ctx: Context, match: WatchMatch.Match, onResult: (IptvLogic.VodItem?) -> Unit) {
+        val appCtx = ctx.applicationContext
+        thread(name = "mizan-watch-resolve") {
+            val vod = IptvClient.findVodBlocking(appCtx, match.iptvId)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try { onResult(vod) } catch (e: Exception) {
+                    // A dead caller's update must never kill the poster.
+                }
+            }
+        }
+    }
 
-    /** The series entry a show match points at (null when the catalogue moved on). */
-    fun seriesFor(ctx: Context, match: WatchMatch.Match): IptvLogic.SeriesItem? =
-        IptvClient.cached(ctx).series.firstOrNull { it.id == match.iptvId }
+    /** The series entry a show match points at — [resolveVod]'s twin. */
+    fun resolveSeries(ctx: Context, match: WatchMatch.Match, onResult: (IptvLogic.SeriesItem?) -> Unit) {
+        val appCtx = ctx.applicationContext
+        thread(name = "mizan-watch-resolve") {
+            val series = IptvClient.findSeriesBlocking(appCtx, match.iptvId)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try { onResult(series) } catch (e: Exception) {
+                    // A dead caller's update must never kill the poster.
+                }
+            }
+        }
+    }
 
     // ------------------------------------------------------------ warm-up
 
