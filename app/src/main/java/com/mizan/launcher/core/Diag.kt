@@ -155,3 +155,32 @@ object DiagStartup {
         return "startup: first frame $first · full $full"
     }
 }
+
+/**
+ * Error-message scrubbing (v2.9, spec §29) — asks E.19/H.29:
+ * credentials and credential-bearing URLs must never reach
+ * diagnostics or logs. The diagnostics "Last error" line persists
+ * an exception's class + message (data/Prefs.noteError), and
+ * network exception messages CAN embed the request URL — an
+ * Xtream stream/API URL carries the account's user + password in
+ * its path, and a TMDB URL carries the api_key. IPTV call sites
+ * already sanitize to the class name, but the sink now scrubs
+ * EVERY message as the structural guarantee: any URL is replaced
+ * wholesale, any key=/password=/pass= value is redacted, and the
+ * result is length-capped. Pure + sim-pinned.
+ */
+object DiagScrub {
+
+    private val URL_RE = Regex("""[a-zA-Z][a-zA-Z0-9+.-]*://\S+""")
+    private val SECRET_PARAM_RE =
+        Regex("""(?i)(api_key|apikey|password|passwd|pass|token)=[^\s&]+""")
+
+    /** The scrubbed, capped form of an exception message (null/blank → ""). */
+    fun message(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        var out = URL_RE.replace(raw) { "‹url›" }
+        out = SECRET_PARAM_RE.replace(out) { m -> m.value.substringBefore('=') + "=‹redacted›" }
+        out = out.replace(Regex("""\s+"""), " ").trim()
+        return if (out.length > 160) out.substring(0, 160) else out
+    }
+}

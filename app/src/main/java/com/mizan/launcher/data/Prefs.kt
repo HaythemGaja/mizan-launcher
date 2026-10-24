@@ -584,9 +584,15 @@ class Prefs(ctx: Context) {
         /** Record a fail-open error for the diagnostics screen instead of crashing. */
         fun noteError(ctx: Context, where: String, e: Throwable) {
             try {
+                // v2.9: the message is scrubbed at the sink
+                // (core/DiagScrub) — a network exception's message
+                // can embed the request URL, and Xtream/TMDB URLs
+                // carry credentials/keys. No call site can leak
+                // one into diagnostics or logs through here.
+                val msg = com.mizan.launcher.core.DiagScrub.message(e.message)
                 ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
                     .edit()
-                    .putString("last_error", "$where: ${e.javaClass.simpleName}: ${e.message ?: ""}")
+                    .putString("last_error", "$where: ${e.javaClass.simpleName}: $msg")
                     .apply()
             } catch (ignored: Throwable) {
                 // Diagnostics itself must never crash the launcher.

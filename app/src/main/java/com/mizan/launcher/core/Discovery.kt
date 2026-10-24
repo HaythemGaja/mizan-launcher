@@ -567,4 +567,33 @@ object Discovery {
      */
     fun diagText(source: String, soon: Int, trend: Int, foryou: Int): String =
         "source $source · soon $soon · trend $trend · foryou $foryou"
+
+    /**
+     * The honest source word for the `discovery:` line (v2.9,
+     * ask H.30). Before v2.9 the word was derived from whether a
+     * launcher TMDB key was SET — so it claimed "launcher" even
+     * when every fetch had failed and the rows on screen were
+     * the tracker's snapshots. Now it is derived from what the
+     * last worker pass ACTUALLY supplied:
+     *
+     * - "launcher" — the launcher supplied the discovery rows
+     *   (its computed For You is live, or it holds
+     *   launcher-computed Soon/Trending sets) and the tracker's
+     *   For You mirror is not what is rendered.
+     * - "launcher+tracker" — launcher sets are live AND the
+     *   rendered For You is the tracker's mirror (no launcher
+     *   compute behind it).
+     * - "tracker" — nothing launcher-computed is live; the
+     *   tracker snapshots are the source.
+     */
+    fun diagSource(
+        forYouComputed: Boolean,
+        forYouFromTracker: Boolean,
+        launcherSetsLive: Boolean
+    ): String = when {
+        forYouComputed -> "launcher"
+        launcherSetsLive && forYouFromTracker -> "launcher+tracker"
+        launcherSetsLive -> "launcher"
+        else -> "tracker"
+    }
 }

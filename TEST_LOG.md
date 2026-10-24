@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 22:09 UTC
+Date: 2026-10-23 23:59 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -805,7 +805,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 2.8 / code 21 (bumped by v2.8)
+PASS  v25src: the app version is 2.9 / code 22 (bumped by v2.9)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -912,14 +912,14 @@ PASS  tabs: Library opens the library; Apps jumps focus to All Apps
 PASS  tabs: IPTV = Home ? Live ? Movies ? Series ? Guide ? Apps
 PASS  tabs: IPTV actions map Live/Movies/Series/Guide/Apps
 PASS  tabs: the TV style has no tab bar; tracker+watch share one; iptv gets its own
-PASS  hero: a resolvable title's primary is Play
-PASS  hero: an unresolvable title's primary is Details ? never the tracker
+PASS  hero: a matched title's primary is Play (v2.9 rule)
+PASS  hero: an unmatched title's primary is Details ? never the tracker
 PASS  startup: both timings recorded
 PASS  startup: nothing recorded renders dashes, never a fake 0
 PASS  startup: a zero first frame is honest; a missing full stays a dash
-PASS  v28src: both media homes build the pill tab bar from the pure model
+PASS  v28src: both media homes build the pill bar from the pure model
 PASS  v28src: the landscape rail + circular All Apps builders exist and are used
-PASS  v28src: the hero primary routes through the pinned decision; Open Tracker is never primary
+PASS  v28src: the hero primary routes through the pinned decision; Open Tracker is never a hero button
 PASS  v28src: cold start is staged (warm worker + deferred prepares + shell lines)
 PASS  v28src: Details has no primary Open in Tracker ? it lives in the More overflow
 PASS  v28src: IPTV cards carry the LIVE pill + in-frame progress + focus border
@@ -927,5 +927,45 @@ PASS  v28src: settings nav fixes are in (no selectable dead stop, index memory, 
 PASS  v28src: the window background is the brand splash, not a black void
 PASS  v28src: DiagLog records the startup milestones
 PASS  v28src: the one-time order migration is wired into the sections read
-RESULT: 755 passed, 0 failed, 755 total
+== (47) v2.9: audit fixes ? play routing, artwork fit, unified bar, scrub, discovery source ==
+PASS  route: a matched card's OK press plays
+PASS  route: an unmatched card's OK press opens Details (never the tracker)
+PASS  route: a matched movie hero leads with ? Play
+PASS  route: a matched show hero leads with ? Play S3 E7
+PASS  route: an unmatched hero leads with Details ? Play is never offered
+PASS  resolve: idle + press starts finding
+PASS  resolve: a second press while finding is ignored (no double resolve)
+PASS  resolve: finding + found hands off to the player
+PASS  resolve: finding + not found fails (the caller falls back to Details)
+PASS  resolve: failed + press retries the find
+PASS  resolve: the button reads Finding stream? only while finding
+PASS  art: landscape art in a landscape frame crops to fill
+PASS  art: a portrait poster in a landscape frame renders COMPLETE, never cropped
+PASS  art: a poster in its own 2:3 frame fills it
+PASS  art: the details header crops a real backdrop but fits a poster complete
+PASS  bar: the TV style has no unified bar (it keeps its own top bar)
+PASS  bar: tracker = 3 tabs, then info + glyphs + the config's tiles as pills
+PASS  bar: the watch style shares the tracker's bar shape (6 IPTV tabs on iptv)
+PASS  bar: showBar off hides the whole status group but never the tabs
+PASS  bar: clock+date+weather all off drops the info pill; glyphs follow their toggles
+PASS  bar: the guest pill appears only for a guest profile outside safe mode
+PASS  bar: safe mode drops weather/guest but keeps clock+date info
+PASS  scrub: a credential URL in an error becomes ?url?
+PASS  scrub: an api_key parameter value is redacted
+PASS  scrub: a plain message passes through untouched
+PASS  scrub: null and blank become empty; long text is capped
+PASS  discovery: launcher-computed For You reads launcher
+PASS  discovery: tracker For You + live launcher sets reads launcher+tracker
+PASS  discovery: tracker-only reads tracker
+PASS  discovery: nothing supplied still reads tracker (the fallback word)
+PASS  v29src: the warm-up is display-driven (no session cap survives)
+PASS  v29src: WatchPlay resolves on demand and warms what is displayed
+PASS  v29src: openTracker survives ONLY as its definition + the three hold-OK menu entries
+PASS  v29src: the unified bar replaced the stacked bars in both media homes
+PASS  v29src: the forecast opens from the bar's info cluster in every style
+PASS  v29src: landscape cards take the fit decision from core/Artwork
+PASS  v29src: the settings app pickers no longer scan on the main thread
+PASS  v29src: persisted error lines pass through the scrub
+PASS  v29src: the details header fits a poster complete (no banner crop)
+RESULT: 794 passed, 0 failed, 794 total
 ```

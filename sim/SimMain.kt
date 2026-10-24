@@ -54,6 +54,9 @@ import com.mizan.launcher.core.DiagLogs
 import com.mizan.launcher.core.DiagStartup
 import com.mizan.launcher.core.DiagWatchdog
 import com.mizan.launcher.core.HomeTabs
+import com.mizan.launcher.core.Artwork
+import com.mizan.launcher.core.DiagScrub
+import com.mizan.launcher.core.UnifiedBar
 import com.mizan.launcher.core.PlayerLogic
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
@@ -3191,6 +3194,9 @@ fun main() {
     // ---------- (46) v2.8: Google-TV tabs, section-order migration, hero primary, startup line ----------
     section46()
 
+    // ---------- (47) v2.9: audit fixes — play routing, artwork fit, unified bar, scrub, discovery source ----------
+    section47()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3889,10 +3895,10 @@ fun section42() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        // Re-pinned in v2.8 (intentional version bump 2.7/20 → 2.8/21).
-        check("v25src: the app version is 2.8 / code 21 (bumped by v2.8)",
-            gradleSrc.contains("versionName = \"2.8\"") &&
-                gradleSrc.contains("versionCode = 21"))
+        // Re-pinned in v2.9 (intentional version bump 2.8/21 → 2.9/22).
+        check("v25src: the app version is 2.9 / code 22 (bumped by v2.9)",
+            gradleSrc.contains("versionName = \"2.9\"") &&
+                gradleSrc.contains("versionCode = 22"))
     }
 }
 
@@ -3975,10 +3981,18 @@ fun section46() {
                 HomeTabs.forStyle("iptv") == iTabs)
 
         // --- the hero primary decision (Open in Tracker demotion) ---
-        check("hero: a resolvable title's primary is Play",
-            TrackerLogic.heroPrimaryAction(true) == "play")
-        check("hero: an unresolvable title's primary is Details — never the tracker",
-            TrackerLogic.heroPrimaryAction(false) == "details")
+        // Re-pinned in v2.9: the decision moved to
+        // core/WatchMatch.heroPrimary and keys on the MATCH, not
+        // on "play resolvable" — the v2.8 rule (TrackerLogic
+        // .heroPrimaryAction, retired) is what left a matched but
+        // unwarmed hero with no Play button (ask F.25). The full
+        // routing machine is pinned in §47.
+        check("hero: a matched title's primary is Play (v2.9 rule)",
+            WatchMatch.heroPrimary(true, "movie", 0, 0).action ==
+                WatchMatch.PressAction.PLAY)
+        check("hero: an unmatched title's primary is Details — never the tracker",
+            WatchMatch.heroPrimary(false, "movie", 0, 0).action ==
+                WatchMatch.PressAction.DETAILS)
 
         // --- the startup line shaping (fake clock values) ---
         check("startup: both timings recorded",
@@ -3995,17 +4009,24 @@ fun section46() {
             ""
         }
         val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
-        check("v28src: both media homes build the pill tab bar from the pure model",
-            mainSrc.contains("buildTabBar()") &&
-                mainSrc.contains("HomeTabs.forStyle(homeStyleKey())"))
+        // Re-pinned in v2.9: buildTabBar() is gone — the tab bar
+        // merged into the unified bar (ask C.13); the model call
+        // is UnifiedBar.items over the same HomeTabs model.
+        check("v28src: both media homes build the pill bar from the pure model",
+            mainSrc.contains("buildUnifiedBar(overHero") &&
+                mainSrc.contains("UnifiedBar.items(homeStyleKey()"))
         check("v28src: the landscape rail + circular All Apps builders exist and are used",
             mainSrc.contains("fun landscapeCard(") &&
                 mainSrc.contains("fun buildAppsSectionCircular()") &&
                 mainSrc.contains("fun appCircleTile("))
-        check("v28src: the hero primary routes through the pinned decision; Open Tracker is never primary",
-            mainSrc.contains("TrackerLogic.heroPrimaryAction(playAction != null)") &&
-                !mainSrc.contains("heroButton(\"▶ Open Tracker\"") &&
-                mainSrc.contains("heroButton(\"Open Tracker\", \"open\", primary = false)"))
+        // Re-pinned in v2.9: the hero primary routes through
+        // WatchMatch.heroPrimary + playHeroPrimary, and there is
+        // NO Open Tracker hero button at all anymore (ask F.25 —
+        // v2.8 kept it as a secondary; the audit removed it).
+        check("v28src: the hero primary routes through the pinned decision; Open Tracker is never a hero button",
+            mainSrc.contains("WatchMatch.heroPrimary(") &&
+                mainSrc.contains("playHeroPrimary(hero, heroCoords") &&
+                !mainSrc.contains("heroButton(\"Open Tracker\""))
         check("v28src: cold start is staged (warm worker + deferred prepares + shell lines)",
             mainSrc.contains("mizan-coldwarm") &&
                 mainSrc.contains("if (trackerStyle && !coldStart) prepareTrackerData()") &&
@@ -4040,4 +4061,169 @@ fun section46() {
             prefsSrc.contains("tracker_sections_migrated_28") &&
                 prefsSrc.contains("TrackerSections.migrateOrder"))
     }
+}
+
+/** v2.9 checks — the full-audit fixes: play routing, artwork fit, unified bar, error scrub, discovery source. */
+fun section47() {
+    println("== (47) v2.9: audit fixes — play routing, artwork fit, unified bar, scrub, discovery source ==")
+
+    // --- play routing (asks F.25 / D.15): the MATCH decides ----
+    check("route: a matched card's OK press plays",
+        WatchMatch.pressAction(true) == WatchMatch.PressAction.PLAY)
+    check("route: an unmatched card's OK press opens Details (never the tracker)",
+        WatchMatch.pressAction(false) == WatchMatch.PressAction.DETAILS)
+    val heroMovie = WatchMatch.heroPrimary(true, "movie", 0, 0)
+    check("route: a matched movie hero leads with ▶ Play",
+        heroMovie.action == WatchMatch.PressAction.PLAY && heroMovie.label == "▶ Play")
+    val heroShow = WatchMatch.heroPrimary(true, "tv", 3, 7)
+    check("route: a matched show hero leads with ▶ Play S3 E7",
+        heroShow.action == WatchMatch.PressAction.PLAY && heroShow.label == "▶ Play S3 E7")
+    val heroUnmatched = WatchMatch.heroPrimary(false, "tv", 3, 7)
+    check("route: an unmatched hero leads with Details — Play is never offered",
+        heroUnmatched.action == WatchMatch.PressAction.DETAILS &&
+            heroUnmatched.label == "ⓘ Details")
+
+    // --- the resolve-then-play state machine -------------------
+    check("resolve: idle + press starts finding",
+        WatchMatch.resolvePhase(WatchMatch.ResolvePhase.IDLE, WatchMatch.ResolveEvent.PRESS) ==
+            WatchMatch.ResolvePhase.FINDING)
+    check("resolve: a second press while finding is ignored (no double resolve)",
+        WatchMatch.resolvePhase(WatchMatch.ResolvePhase.FINDING, WatchMatch.ResolveEvent.PRESS) ==
+            WatchMatch.ResolvePhase.FINDING)
+    check("resolve: finding + found hands off to the player",
+        WatchMatch.resolvePhase(WatchMatch.ResolvePhase.FINDING, WatchMatch.ResolveEvent.FOUND) ==
+            WatchMatch.ResolvePhase.PLAYING)
+    check("resolve: finding + not found fails (the caller falls back to Details)",
+        WatchMatch.resolvePhase(WatchMatch.ResolvePhase.FINDING, WatchMatch.ResolveEvent.NOT_FOUND) ==
+            WatchMatch.ResolvePhase.FAILED)
+    check("resolve: failed + press retries the find",
+        WatchMatch.resolvePhase(WatchMatch.ResolvePhase.FAILED, WatchMatch.ResolveEvent.PRESS) ==
+            WatchMatch.ResolvePhase.FINDING)
+    check("resolve: the button reads Finding stream… only while finding",
+        WatchMatch.resolveLabel(WatchMatch.ResolvePhase.FINDING, "▶ Play S3 E7") == "Finding stream…" &&
+            WatchMatch.resolveLabel(WatchMatch.ResolvePhase.IDLE, "▶ Play S3 E7") == "▶ Play S3 E7" &&
+            WatchMatch.resolveLabel(WatchMatch.ResolvePhase.FAILED, "▶ Play S3 E7") == "▶ Play S3 E7")
+
+    // --- artwork fit (ask C.14) --------------------------------
+    check("art: landscape art in a landscape frame crops to fill",
+        Artwork.landscapeFit(true) == Artwork.Fit.CROP_FILL)
+    check("art: a portrait poster in a landscape frame renders COMPLETE, never cropped",
+        Artwork.landscapeFit(false) == Artwork.Fit.FIT_COMPLETE)
+    check("art: a poster in its own 2:3 frame fills it",
+        Artwork.posterFit() == Artwork.Fit.CROP_FILL)
+    check("art: the details header crops a real backdrop but fits a poster complete",
+        Artwork.headerFit(true) == Artwork.Fit.CROP_FILL &&
+            Artwork.headerFit(false) == Artwork.Fit.FIT_COMPLETE)
+
+    // --- the unified bar model (ask C.13) ----------------------
+    val defCfg = StatusBarConfig()
+    check("bar: the TV style has no unified bar (it keeps its own top bar)",
+        UnifiedBar.items("tv", defCfg, guest = false, safeMode = false).isEmpty())
+    check("bar: tracker = 3 tabs, then info + glyphs + the config's tiles as pills",
+        UnifiedBar.items("tracker", defCfg, guest = false, safeMode = false) == listOf(
+            UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB,
+            UnifiedBar.Item.INFO, UnifiedBar.Item.GLYPHS,
+            UnifiedBar.Item.TILE_ALL_APPS, UnifiedBar.Item.TILE_SEARCH,
+            UnifiedBar.Item.TILE_PROFILE, UnifiedBar.Item.TILE_SETTINGS
+        ))
+    check("bar: the watch style shares the tracker's bar shape (6 IPTV tabs on iptv)",
+        UnifiedBar.items("watch", defCfg, guest = false, safeMode = false).count {
+            it == UnifiedBar.Item.TAB
+        } == 3 &&
+            UnifiedBar.items("iptv", defCfg, guest = false, safeMode = false).count {
+                it == UnifiedBar.Item.TAB
+            } == 6)
+    check("bar: showBar off hides the whole status group but never the tabs",
+        UnifiedBar.items("tracker", defCfg.copy(showBar = false), guest = false, safeMode = false) ==
+            listOf(UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB))
+    check("bar: clock+date+weather all off drops the info pill; glyphs follow their toggles",
+        UnifiedBar.items(
+            "tracker",
+            defCfg.copy(showClock = false, showDate = false, showWeather = false),
+            guest = false, safeMode = false
+        ).let { !it.contains(UnifiedBar.Item.INFO) && it.contains(UnifiedBar.Item.GLYPHS) } &&
+            UnifiedBar.items(
+                "tracker",
+                defCfg.copy(showNetwork = false, showBluetooth = false),
+                guest = false, safeMode = false
+            ).let { !it.contains(UnifiedBar.Item.GLYPHS) && it.contains(UnifiedBar.Item.INFO) })
+    check("bar: the guest pill appears only for a guest profile outside safe mode",
+        UnifiedBar.items("tracker", defCfg, guest = true, safeMode = false)
+            .contains(UnifiedBar.Item.GUEST) &&
+            !UnifiedBar.items("tracker", defCfg, guest = true, safeMode = true)
+                .contains(UnifiedBar.Item.GUEST))
+    check("bar: safe mode drops weather/guest but keeps clock+date info",
+        UnifiedBar.items("tracker", defCfg, guest = false, safeMode = true)
+            .contains(UnifiedBar.Item.INFO))
+
+    // --- the diagnostics scrub (asks E.19 / H.29) --------------
+    check("scrub: a credential URL in an error becomes ‹url›",
+        DiagScrub.message("failed http://user:pass@panel.tv:8080/get.php?username=u&password=p") ==
+            "failed ‹url›")
+    check("scrub: an api_key parameter value is redacted",
+        DiagScrub.message("GET failed api_key=abcdef123456&x=1") ==
+            "GET failed api_key=‹redacted›&x=1")
+    check("scrub: a plain message passes through untouched",
+        DiagScrub.message("timeout after 10000ms") == "timeout after 10000ms")
+    check("scrub: null and blank become empty; long text is capped",
+        DiagScrub.message(null) == "" && DiagScrub.message("   ") == "" &&
+            DiagScrub.message("x".repeat(500)).length == 160)
+
+    // --- the discovery source word (ask H.30) ------------------
+    check("discovery: launcher-computed For You reads launcher",
+        Discovery.diagSource(
+            forYouComputed = true, forYouFromTracker = false, launcherSetsLive = true
+        ) == "launcher")
+    check("discovery: tracker For You + live launcher sets reads launcher+tracker",
+        Discovery.diagSource(
+            forYouComputed = false, forYouFromTracker = true, launcherSetsLive = true
+        ) == "launcher+tracker")
+    check("discovery: tracker-only reads tracker",
+        Discovery.diagSource(
+            forYouComputed = false, forYouFromTracker = true, launcherSetsLive = false
+        ) == "tracker")
+    check("discovery: nothing supplied still reads tracker (the fallback word)",
+        Discovery.diagSource(
+            forYouComputed = false, forYouFromTracker = false, launcherSetsLive = false
+        ) == "tracker")
+
+    // --- source checks: the v2.9 wiring is really in the app ---
+    fun src(path: String): String = try {
+        java.io.File(path).readText()
+    } catch (e: Exception) {
+        ""
+    }
+    val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+    check("v29src: the warm-up is display-driven (no session cap survives)",
+        mainSrc.contains("WatchPlay.warmUpDisplayed") &&
+            !mainSrc.contains("WARM_CAP"))
+    val watchPlaySrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+    check("v29src: WatchPlay resolves on demand and warms what is displayed",
+        watchPlaySrc.contains("fun warmUpDisplayed") &&
+            watchPlaySrc.contains("fun resolveSeries"))
+    check("v29src: openTracker survives ONLY as its definition + the three hold-OK menu entries",
+        mainSrc.split("openTracker()").size - 1 == 4)
+    check("v29src: the unified bar replaced the stacked bars in both media homes",
+        mainSrc.contains("barHost.addView(buildUnifiedBar(overHero = false))") &&
+            mainSrc.contains("barHost.addView(buildUnifiedBar(overHero = hero != null))") &&
+            !mainSrc.contains("buildTabBar()"))
+    check("v29src: the forecast opens from the bar's info cluster in every style",
+        mainSrc.contains("fun openForecast()") &&
+            mainSrc.contains("left.setOnClickListener { openForecast() }") &&
+            mainSrc.contains("shell.setOnClickListener { openForecast() }"))
+    check("v29src: landscape cards take the fit decision from core/Artwork",
+        mainSrc.contains("Artwork.landscapeFit(imageLandscape)") &&
+            mainSrc.contains("imageLandscape = item.backdrop.isNotBlank()") &&
+            mainSrc.contains("imageLandscape = false"))
+    val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+    check("v29src: the settings app pickers no longer scan on the main thread",
+        settingsSrc.contains("fun withApps(") &&
+            settingsSrc.contains("MainActivity.AppCache.get(this)") &&
+            !settingsSrc.contains("val apps = AppLoader.loadApps(packageManager, packageName)"))
+    val prefsSrc = src("app/src/main/java/com/mizan/launcher/data/Prefs.kt")
+    check("v29src: persisted error lines pass through the scrub",
+        prefsSrc.contains("DiagScrub.message(e.message)"))
+    val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
+    check("v29src: the details header fits a poster complete (no banner crop)",
+        detailsSrc.contains("Artwork.headerFit(hasBackdrop)"))
 }

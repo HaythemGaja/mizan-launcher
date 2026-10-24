@@ -363,7 +363,21 @@ object DiscoveryData {
         if (dirtyStamps) saveStamps(appCtx, stamps)
 
         // --- diagnostics bookkeeping (counts only; read-cheap) ---
-        val source = if (launcherKey.isNotBlank()) "launcher" else "tracker"
+        // v2.9 (ask H.30): the source word reflects what this pass
+        // ACTUALLY supplied — the rendered For You is the
+        // launcher's compute (forYouComputed) or the tracker's
+        // mirror, and the Soon/Trending sets are launcher-shaped
+        // only when they hold anything. (Pre-v2.9 the word came
+        // from whether a launcher key was SET, so it claimed
+        // "launcher" even when every fetch had failed and the
+        // tracker snapshots were all that rendered.)
+        val source = Discovery.diagSource(
+            forYouComputed = next.forYouComputed,
+            forYouFromTracker = !next.forYouComputed && snap.forYou.isNotEmpty(),
+            launcherSetsLive = next.forYouComputed ||
+                next.comingSoon.isNotEmpty() ||
+                next.trendingTv.isNotEmpty() || next.trendingMovies.isNotEmpty()
+        )
         val trendCount = next.trendingTv.size + next.trendingMovies.size
         val forYouCount = if (next.forYouComputed) {
             next.forYou.size

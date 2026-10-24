@@ -45,6 +45,7 @@ import com.mizan.launcher.core.QuickSettings
 import com.mizan.launcher.core.RecentsStore
 import com.mizan.launcher.core.Discovery
 import com.mizan.launcher.core.HomeTabs
+import com.mizan.launcher.core.UnifiedBar
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.TrackerSections
 import com.mizan.launcher.core.WatchMatch
@@ -184,6 +185,8 @@ class MainActivity : Activity() {
     private var heroButtonViews: MutableList<View> = mutableListOf()
     /** Role tag ("open"/"mark"/"next") of the hero button holding focus. */
     private var heroFocusRole: String? = null
+    /** v2.9: the hero ▶ Play on-demand resolution phase (core/WatchMatch machine). */
+    private var heroResolvePhase: WatchMatch.ResolvePhase = WatchMatch.ResolvePhase.IDLE
     private val heroTick = object : Runnable {
         override fun run() {
             if (!heroTicking) return
@@ -808,9 +811,24 @@ class MainActivity : Activity() {
             runOnUiThread { if (isWatchStyle()) rebuild() }
         }
         wMatches = WatchPlay.matches(this)
-        val upNext = tUpNext
-        val matches = wMatches
-        WatchPlay.warmUp(this, upNext, matches) {
+        // v2.9 (ask F.25): the warm-up set is WHAT IS DISPLAYED —
+        // the hero pool first (in pool order), then the Up Next
+        // row, then Continue Watching's shows — every matched
+        // series among them, no quota. (Pre-v2.9 the warm-up
+        // stopped at 6 Up Next shows per session, and the hero
+        // only offered Play for already-warmed shows: a matched
+        // hero past the cap rendered with no Play button at all.)
+        val displayed = ArrayList<Long>()
+        fun displayShow(tmdbId: Long) {
+            val m = wMatches["tv|$tmdbId"] ?: return
+            if (m.iptvId !in displayed) displayed.add(m.iptvId)
+        }
+        for (hero in tHeroCandidates) {
+            if (hero.type == "tv") displayShow(hero.tmdbId)
+        }
+        for (item in tUpNext) displayShow(item.tmdbId)
+        for (item in tCont) displayShow(item.tmdbId)
+        WatchPlay.warmUpDisplayed(this, displayed) {
             // The warm-up reports from its own thread; rebuilds are UI work.
             runOnUiThread { if (isWatchStyle()) rebuild() }
         }
@@ -874,6 +892,93 @@ class MainActivity : Activity() {
                 return@resolveVod
             }
             WatchPlay.playMovie(this, vod, token)
+        }
+    }
+
+    /**
+     * The hero's ▶ Play press (v2.9, ask F.25): resolve on demand,
+     * then play. Movies hand off to playMovieItem (its VOD store
+     * scan is local and fast). Shows run the resolve flow —
+     * core/WatchMatch's phase machine owns the states: the button
+     * shows "Finding stream…" and refuses a second press while
+     * the series entry + series info resolve (the info fetch is
+     * the one real wait, and WatchPlay.playEpisode performs it on
+     * demand when the cache is cold). Any failure restores the
+     * button and fails open to the title's details with a toast —
+     * never a dead end, never the tracker app.
+     */
+    private fun playHeroPrimary(
+        hero: TrackerLogic.HeroItem,
+        coords: Pair<Int, Int>,
+        button: TextView,
+        primaryLabel: String
+    ) {
+        if (heroResolvePhase == WatchMatch.ResolvePhase.FINDING) return
+        if (hero.type == "movie") {
+            val movieItem = tMovies.firstOrNull { it.tmdbId == hero.tmdbId }
+                ?: TrackerLogic.MovieItem(
+                    hero.tmdbId, hero.title, hero.dateIso, false, hero.poster, false
+                )
+            playMovieItem(movieItem)
+            return
+        }
+        val m = watchMatch("tv", hero.tmdbId)
+        if (m == null) {
+            openTitleDetails(hero.tmdbId, hero.type, hero.title, hero.poster)
+            return
+        }
+        heroResolvePhase = WatchMatch.resolvePhase(
+            heroResolvePhase, WatchMatch.ResolveEvent.PRESS
+        )
+        button.text = WatchMatch.resolveLabel(heroResolvePhase, primaryLabel)
+        button.isEnabled = false
+        fun restore() {
+            heroResolvePhase = WatchMatch.ResolvePhase.IDLE
+            if (!isFinishing && !isDestroyed && button.isAttachedToWindow) {
+                button.text = primaryLabel
+                button.isEnabled = true
+            }
+        }
+        fun fail() {
+            heroResolvePhase = WatchMatch.resolvePhase(
+                heroResolvePhase, WatchMatch.ResolveEvent.NOT_FOUND
+            )
+            val attached = button.isAttachedToWindow
+            restore()
+            // A detached button means a rebuild already replaced
+            // the hero (its fresh buttons offer Play again; the
+            // resolution is now cached) — only the still-showing
+            // hero takes the details fallback.
+            if (attached && !isFinishing && !isDestroyed) {
+                Toast.makeText(
+                    this,
+                    "That episode isn't on your IPTV — showing details instead",
+                    Toast.LENGTH_LONG
+                ).show()
+                openTitleDetails(hero.tmdbId, hero.type, hero.title, hero.poster)
+            }
+        }
+        val inSnap = tSnap.upNext.any {
+            it.tmdbId == hero.tmdbId &&
+                it.season == coords.first && it.episode == coords.second
+        }
+        WatchPlay.resolveSeries(this, m) { series ->
+            if (isFinishing || isDestroyed) return@resolveSeries
+            if (series == null) {
+                fail()
+                return@resolveSeries
+            }
+            heroResolvePhase = WatchMatch.resolvePhase(
+                heroResolvePhase, WatchMatch.ResolveEvent.FOUND
+            )
+            WatchPlay.playEpisode(
+                this, series, hero.tmdbId, coords.first, coords.second,
+                hero.title, hero.poster, withToken = inSnap
+            ) { fail() }
+            // The press is handed off (the player owns the screen
+            // now, or playEpisode's own fail path ran): the hero's
+            // next render starts from IDLE.
+            heroResolvePhase = WatchMatch.ResolvePhase.IDLE
         }
     }
 
@@ -977,9 +1082,10 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------
 
     private fun buildIptvHome(content: LinearLayout, barHost: LinearLayout) {
-        barHost.addView(buildTopBar())
-        // v2.8: the Google-TV pill tab bar under the status bar.
-        barHost.addView(buildTabBar())
+        // v2.9 (ask C.13): ONE unified pill bar — tabs + status
+        // items in a single row/design (was status bar + separate
+        // tab bar in v2.8).
+        barHost.addView(buildUnifiedBar(overHero = false))
         // v2.4: NO catalogue fetch on build (refresh is on request
         // only now). The EPG index still loads LOCALLY from the
         // store file in the background — that's disk, not network.
@@ -1474,8 +1580,9 @@ class MainActivity : Activity() {
      * the same reason (it has no background of its own).
      */
     // ---------------------------------------------------------------
-    // v2.8 Google-TV pill tab bar (spec §28) — under the status bar
-    // in the Tracker/Watch and IPTV homes, modelled on the stock
+    // v2.8 Google-TV pill tab bar (spec §28) — merged INTO the
+    // unified bar in v2.9 (below); the pills themselves and their
+    // model (core/HomeTabs) are unchanged. Modelled on the stock
     // Google TV home in Haythem's reference photos. The model is
     // pure (core/HomeTabs): only "Home" is a page (this one, shown
     // selected); every other pill is an action — the Library, the
@@ -1487,17 +1594,224 @@ class MainActivity : Activity() {
     // firstTile stays the hero/first card, as before.
     // ---------------------------------------------------------------
 
-    private fun buildTabBar(): View {
+    // ---------------------------------------------------------------
+    // v2.9 (ask C.13): the UNIFIED bar. The v2.8 homes stacked the
+    // v2.1 status bar over a separate pill tab bar — two designs,
+    // two rows (his 2026-10-23 photo). The media styles now build
+    // ONE row of pills in one design: the tab pills, then the
+    // status group as pills — the info pill (the shared
+    // clock/date/weather cluster; OK opens the forecast, ask
+    // C.11), the Guest pill, the glyph pill, and the action pills
+    // (All Apps / Search / Wi-Fi / Profile / Settings with the
+    // same click + hold-OK behaviour as the old tiles). The item
+    // list is the pure core/UnifiedBar.items — the status-bar
+    // config gates the status group exactly as before (showBar
+    // off hides the group, never the tabs); the per-element
+    // toggles and the sticky option keep working. Honest
+    // adaptation: the status-bar ZONE background (theme/black)
+    // no longer paints a band in these styles — every pill
+    // carries its own fill, as in the Google TV reference. The
+    // TV style has no tabs and keeps buildTopBar unchanged.
+    // ---------------------------------------------------------------
+
+    /** The pill fill shared by every element of the unified bar. */
+    private fun pillBackground(focused: Boolean): GradientDrawable {
+        val d = GradientDrawable()
+        d.cornerRadius = Ui.dp(this, 100).toFloat()
+        d.setColor(com.mizan.launcher.core.Design.NETFLIX_BUTTON2_FILL)
+        if (focused) d.setStroke(Ui.dp(this, 3), 0xFFFFFFFF.toInt())
+        return d
+    }
+
+    private fun buildUnifiedBar(overHero: Boolean): View {
+        val cfg = if (prefs.safeMode) {
+            com.mizan.launcher.core.StatusBarConfig()
+        } else {
+            layout.statusBar
+        }
+        val scale = cfg.textScale()
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        val lp = LinearLayout.LayoutParams(-2, -2)
-        lp.setMargins(Ui.dp(this, 28), Ui.dp(this, 2), Ui.dp(this, 28), Ui.dp(this, 6))
-        row.layoutParams = lp
-        for (tab in HomeTabs.forStyle(homeStyleKey())) {
-            row.addView(tabPill(tab))
+        val rlp = LinearLayout.LayoutParams(-1, -2)
+        rlp.setMargins(Ui.dp(this, 28), Ui.dp(this, 12), Ui.dp(this, 28), Ui.dp(this, 4))
+        row.layoutParams = rlp
+        val items = UnifiedBar.items(homeStyleKey(), cfg, guestActive(), prefs.safeMode)
+        val tabs = HomeTabs.forStyle(homeStyleKey())
+        var tabIndex = 0
+        var spacerAdded = false
+        for (item in items) {
+            if (item != UnifiedBar.Item.TAB && !spacerAdded) {
+                row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+                spacerAdded = true
+            }
+            when (item) {
+                UnifiedBar.Item.TAB -> row.addView(tabPill(tabs[tabIndex++]))
+                UnifiedBar.Item.INFO ->
+                    row.addView(unifiedInfoPill(cfg, scale, overHero))
+                UnifiedBar.Item.GUEST -> row.addView(unifiedGuestPill())
+                UnifiedBar.Item.GLYPHS ->
+                    buildGlyphCluster(cfg, scale, overHero)?.let { glyphs ->
+                        val shell = LinearLayout(this)
+                        shell.orientation = LinearLayout.HORIZONTAL
+                        shell.gravity = Gravity.CENTER_VERTICAL
+                        shell.background = pillBackground(false)
+                        shell.setPadding(
+                            Ui.dp(this, 10), Ui.dp(this, 6), Ui.dp(this, 10), Ui.dp(this, 6)
+                        )
+                        val slp = LinearLayout.LayoutParams(-2, -2)
+                        slp.setMargins(0, 0, Ui.dp(this, 8), 0)
+                        shell.layoutParams = slp
+                        shell.addView(glyphs)
+                        row.addView(shell)
+                    }
+                UnifiedBar.Item.TILE_ALL_APPS -> row.addView(
+                    unifiedActionPill("▦ All Apps") {
+                        try {
+                            startActivity(
+                                Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java)
+                            )
+                        } catch (e: Exception) {
+                            Prefs.noteError(this, "allAppsTile", e)
+                        }
+                    }
+                )
+                UnifiedBar.Item.TILE_SEARCH -> row.addView(
+                    unifiedActionPill("Search") {
+                        try {
+                            startActivity(Intent(this, SearchActivity::class.java))
+                        } catch (e: Exception) {
+                            Prefs.noteError(this, "searchTile", e)
+                        }
+                    }
+                )
+                UnifiedBar.Item.TILE_WIFI ->
+                    unifiedWifiPill()?.let { row.addView(it) }
+                UnifiedBar.Item.TILE_PROFILE -> {
+                    val pill = unifiedActionPill(
+                        "👤 " + prefs.profileDisplayName(prefs.currentProfile)
+                    ) { showProfileSwitchMenu() }
+                    pill.setOnLongClickListener { showProfileSwitchMenu(); true }
+                    row.addView(pill)
+                }
+                UnifiedBar.Item.TILE_SETTINGS -> {
+                    val pill = unifiedActionPill("⚙  Settings") { openSettings() }
+                    pill.setOnLongClickListener { showQuickSettings(); true }
+                    row.addView(pill)
+                }
+            }
         }
-        return row
+        wrap.addView(row)
+        buildHomeHint()?.let { wrap.addView(it) }
+        updateClock()
+        return wrap
+    }
+
+    /**
+     * The unified info pill: the shared info cluster (clock ·
+     * date · weather) inside the pill shell. Focusable — OK opens
+     * the full forecast (ask C.11). Carries the tag-"weather"
+     * wrapper refreshWeather finds.
+     */
+    private fun unifiedInfoPill(
+        cfg: com.mizan.launcher.core.StatusBarConfig,
+        scale: Float,
+        overHero: Boolean
+    ): View {
+        val shell = LinearLayout(this)
+        shell.orientation = LinearLayout.HORIZONTAL
+        shell.gravity = Gravity.CENTER_VERTICAL
+        shell.setPadding(Ui.dp(this, 16), Ui.dp(this, 6), Ui.dp(this, 16), Ui.dp(this, 6))
+        shell.isFocusable = true
+        shell.isClickable = true
+        shell.background = pillBackground(false)
+        shell.setOnFocusChangeListener { _, focused ->
+            shell.background = pillBackground(focused)
+            shell.scaleX = if (focused) 1.04f else 1f
+            shell.scaleY = if (focused) 1.04f else 1f
+        }
+        shell.setOnClickListener { openForecast() }
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.setMargins(0, 0, Ui.dp(this, 8), 0)
+        shell.layoutParams = lp
+        shell.addView(buildInfoCluster(cfg, scale, overHero, Gravity.CENTER_VERTICAL))
+        return shell
+    }
+
+    /** The unified Guest pill (name only; non-focusable, as the old bar's pill was). */
+    private fun unifiedGuestPill(): TextView {
+        val tv = TextView(this)
+        tv.text = prefs.profileName(prefs.currentProfile).ifBlank { "Guest" }
+        tv.setTextColor(0xFFFFFFFF.toInt())
+        tv.textSize = 15f
+        tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
+        tv.gravity = Gravity.CENTER
+        tv.setPadding(Ui.dp(this, 16), Ui.dp(this, 6), Ui.dp(this, 16), Ui.dp(this, 6))
+        tv.background = pillBackground(false)
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.setMargins(0, 0, Ui.dp(this, 8), 0)
+        tv.layoutParams = lp
+        return tv
+    }
+
+    /** One unified action pill — tabPill's design, tile semantics. */
+    private fun unifiedActionPill(label: String, onClick: () -> Unit): TextView {
+        val tv = TextView(this)
+        tv.text = label
+        tv.setTextColor(0xFFFFFFFF.toInt())
+        tv.textSize = 15f
+        tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
+        tv.gravity = Gravity.CENTER
+        tv.setPadding(Ui.dp(this, 18), Ui.dp(this, 6), Ui.dp(this, 18), Ui.dp(this, 6))
+        tv.isFocusable = true
+        tv.isClickable = true
+        tv.background = pillBackground(false)
+        tv.setOnFocusChangeListener { _, focused ->
+            tv.background = pillBackground(focused)
+            tv.scaleX = if (focused) 1.06f else 1f
+            tv.scaleY = if (focused) 1.06f else 1f
+            tv.elevation = if (focused) Ui.dp(this, 8).toFloat() else 0f
+        }
+        tv.setOnClickListener { onClick() }
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.setMargins(0, 0, Ui.dp(this, 8), 0)
+        tv.layoutParams = lp
+        return tv
+    }
+
+    /**
+     * The unified Wi-Fi action pill — null when the Wi-Fi settings
+     * screen doesn't resolve on this box (same rule as barTileWifi).
+     */
+    private fun unifiedWifiPill(): TextView? {
+        return try {
+            val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
+            if (intent.resolveActivity(packageManager) == null) {
+                null
+            } else {
+                unifiedActionPill("Wi-Fi") {
+                    try {
+                        startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (e: Exception) {
+                        Prefs.noteError(this, "quickTile:Wi-Fi", e)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Open the full forecast (ask C.11). Fail-open. */
+    private fun openForecast() {
+        try {
+            startActivity(Intent(this, ForecastActivity::class.java))
+        } catch (e: Exception) {
+            Prefs.noteError(this, "openForecast", e)
+            Toast.makeText(this, "Couldn't open the forecast", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun tabPill(tab: HomeTabs.Tab): TextView {
@@ -1618,6 +1932,119 @@ class MainActivity : Activity() {
         return v
     }
 
+    /**
+     * The bar's info cluster (v2.1): clock · date · weather on ONE
+     * baseline, plain text, dot separators. Sets the [clockView] /
+     * [dateView] fields; the weather segment lives in a
+     * tag-"weather" wrapper so refreshWeather can hide it whole
+     * (separator included) when there is no weather, and its text
+     * view keeps the tag "weather_text" for findWeatherView.
+     * Extracted in v2.9 so the unified bar's info pill builds the
+     * exact same cluster.
+     */
+    private fun buildInfoCluster(
+        cfg: com.mizan.launcher.core.StatusBarConfig,
+        scale: Float,
+        overHero: Boolean,
+        gravity: Int
+    ): LinearLayout {
+        val left = LinearLayout(this)
+        left.orientation = LinearLayout.HORIZONTAL
+        left.gravity = gravity
+        clockView = null
+        dateView = null
+        var infoItems = 0
+        fun infoSep(target: LinearLayout) {
+            val sep = TextView(this)
+            sep.text = "·"
+            sep.setTextColor(subColour)
+            sep.textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
+            val slp2 = LinearLayout.LayoutParams(-2, -2)
+            slp2.setMargins(Ui.dp(this, 10), 0, Ui.dp(this, 10), 0)
+            sep.layoutParams = slp2
+            target.addView(sep)
+        }
+        if (cfg.showClock) {
+            clockView = TextView(this).apply {
+                setTextColor(textColour)
+                textSize = com.mizan.launcher.core.Design.BAR_CLOCK_SP * scale
+                typeface = android.graphics.Typeface.create(
+                    "sans-serif-medium", android.graphics.Typeface.NORMAL
+                )
+            }
+            left.addView(clockView)
+            infoItems++
+        }
+        if (cfg.showDate) {
+            if (infoItems > 0) infoSep(left)
+            dateView = TextView(this).apply {
+                setTextColor(subColour)
+                textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
+            }
+            left.addView(dateView)
+            infoItems++
+        }
+        if (!prefs.safeMode && cfg.showWeather) {
+            val weatherWrap = LinearLayout(this)
+            weatherWrap.orientation = LinearLayout.HORIZONTAL
+            weatherWrap.gravity = Gravity.BOTTOM
+            weatherWrap.tag = "weather"
+            weatherWrap.visibility = View.GONE
+            if (infoItems > 0) infoSep(weatherWrap)
+            val weather = TextView(this)
+            weather.tag = "weather_text"
+            weather.setTextColor(subColour)
+            weather.textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
+            if (overHero) weather.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
+            weatherWrap.addView(weather)
+            left.addView(weatherWrap)
+            infoItems++
+        }
+        return left
+    }
+
+    /**
+     * The bar's status GLYPHS (v2.1): Wi-Fi + Bluetooth,
+     * non-focusable, no word labels, dimmed when off — as one
+     * cluster. Sets [networkView]. Extracted in v2.9 so the
+     * unified bar's glyph pill shares it. Null when neither
+     * glyph renders.
+     */
+    private fun buildGlyphCluster(
+        cfg: com.mizan.launcher.core.StatusBarConfig,
+        scale: Float,
+        overHero: Boolean
+    ): LinearLayout? {
+        val cluster = LinearLayout(this)
+        cluster.orientation = LinearLayout.HORIZONTAL
+        cluster.gravity = Gravity.CENTER_VERTICAL
+        var any = false
+        networkView = null
+        if (cfg.showNetwork) {
+            val glyph = TextView(this)
+            glyph.setTextColor(textColour)
+            glyph.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
+            glyph.setPadding(Ui.dp(this, 6), 0, Ui.dp(this, 6), 0)
+            networkView = glyph
+            cluster.addView(glyph)
+            any = true
+        }
+        if (!prefs.safeMode && cfg.showBluetooth) {
+            bluetoothGlyph()?.let { (glyphText, glyphAlpha) ->
+                val bt = TextView(this)
+                bt.text = glyphText
+                bt.alpha = glyphAlpha
+                bt.setTextColor(textColour)
+                bt.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
+                bt.setPadding(Ui.dp(this, 6), 0, Ui.dp(this, 6), 0)
+                if (overHero) bt.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
+                cluster.addView(bt)
+                any = true
+            }
+        }
+        return if (any) cluster else null
+    }
+
     private fun buildTopBar(overHero: Boolean = false): View {
         val cfg = if (prefs.safeMode) {
             com.mizan.launcher.core.StatusBarConfig()
@@ -1678,63 +2105,31 @@ class MainActivity : Activity() {
                 )
             }
 
-            // LEFT (v2.1): the info cluster — clock · date · weather
-            // on ONE baseline, plain text, dot separators. The
-            // weather segment lives in a tag-"weather" wrapper so
-            // refreshWeather can hide it whole (separator included)
-            // when there is no weather; its text view keeps the tag
-            // "weather_text" for findWeatherView.
-            val left = LinearLayout(this)
-            left.orientation = LinearLayout.HORIZONTAL
-            left.gravity = Gravity.BOTTOM
-            clockView = null
-            dateView = null
-            var infoItems = 0
-            fun infoSep(target: LinearLayout) {
-                val sep = TextView(this)
-                sep.text = "·"
-                sep.setTextColor(subColour)
-                sep.textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
-                val slp2 = LinearLayout.LayoutParams(-2, -2)
-                slp2.setMargins(Ui.dp(this, 10), 0, Ui.dp(this, 10), 0)
-                sep.layoutParams = slp2
-                target.addView(sep)
-            }
-            if (cfg.showClock) {
-                clockView = TextView(this).apply {
-                    setTextColor(textColour)
-                    textSize = com.mizan.launcher.core.Design.BAR_CLOCK_SP * scale
-                    typeface = android.graphics.Typeface.create(
-                        "sans-serif-medium", android.graphics.Typeface.NORMAL
-                    )
+            // LEFT (v2.1): the info cluster — built by the shared
+            // buildInfoCluster (v2.9 extraction; the unified bar's
+            // info pill uses the same builder).
+            val left = buildInfoCluster(cfg, scale, overHero, Gravity.BOTTOM)
+            // v2.9 (ask C.11): the forecast is reachable from the
+            // bar in EVERY style — OK on the info cluster opens
+            // ui/ForecastActivity. Settings' weather text has
+            // promised exactly this press since v1.4; the v2.1
+            // plain-text cluster could never take it. One focus
+            // stop, only when the cluster shows anything at all.
+            if (left.childCount > 0) {
+                left.isFocusable = true
+                left.isClickable = true
+                left.setOnClickListener { openForecast() }
+                left.setOnFocusChangeListener { _, focused ->
+                    left.background = if (focused) {
+                        GradientDrawable().apply {
+                            cornerRadius = Ui.dp(this@MainActivity, 100).toFloat()
+                            setStroke(Ui.dp(this@MainActivity, 2), 0xFFFFFFFF.toInt())
+                            setColor(0x22FFFFFF)
+                        }
+                    } else {
+                        null
+                    }
                 }
-                left.addView(clockView)
-                infoItems++
-            }
-            if (cfg.showDate) {
-                if (infoItems > 0) infoSep(left)
-                dateView = TextView(this).apply {
-                    setTextColor(subColour)
-                    textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
-                }
-                left.addView(dateView)
-                infoItems++
-            }
-            if (!prefs.safeMode && cfg.showWeather) {
-                val weatherWrap = LinearLayout(this)
-                weatherWrap.orientation = LinearLayout.HORIZONTAL
-                weatherWrap.gravity = Gravity.BOTTOM
-                weatherWrap.tag = "weather"
-                weatherWrap.visibility = View.GONE
-                if (infoItems > 0) infoSep(weatherWrap)
-                val weather = TextView(this)
-                weather.tag = "weather_text"
-                weather.setTextColor(subColour)
-                weather.textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
-                if (overHero) weather.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
-                weatherWrap.addView(weather)
-                left.addView(weatherWrap)
-                infoItems++
             }
             hero.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
             // RIGHT (v2.1): the status GLYPHS first (Guest pill,
@@ -1751,27 +2146,9 @@ class MainActivity : Activity() {
             if (!prefs.safeMode && guestActive()) {
                 right.addView(guestPill())
             }
-            networkView = null
-            if (cfg.showNetwork) {
-                val glyph = TextView(this)
-                glyph.setTextColor(textColour)
-                glyph.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
-                glyph.setPadding(Ui.dp(this, 6), 0, Ui.dp(this, 6), 0)
-                networkView = glyph
-                right.addView(glyph)
-            }
-            if (!prefs.safeMode && cfg.showBluetooth) {
-                bluetoothGlyph()?.let { (glyphText, glyphAlpha) ->
-                    val bt = TextView(this)
-                    bt.text = glyphText
-                    bt.alpha = glyphAlpha
-                    bt.setTextColor(textColour)
-                    bt.textSize = com.mizan.launcher.core.Design.BAR_GLYPH_SP * scale
-                    bt.setPadding(Ui.dp(this, 6), 0, Ui.dp(this, 6), 0)
-                    if (overHero) bt.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
-                    right.addView(bt)
-                }
-            }
+            // v2.9 extraction: the glyph cluster is shared with
+            // the unified bar's glyph pill (buildGlyphCluster).
+            buildGlyphCluster(cfg, scale, overHero)?.let { right.addView(it) }
 
             val panel = LinearLayout(this)
             panel.orientation = LinearLayout.HORIZONTAL
@@ -2170,7 +2547,9 @@ class MainActivity : Activity() {
     private fun channelTile(channel: LiveTvLogic.Channel): View {
         val tile = glyphTile("📺", channel.name, wide = true)
         val iv = ImageView(this)
-        iv.scaleType = ImageView.ScaleType.CENTER_CROP
+        // v2.9 (ask C.14): a channel logo renders COMPLETE —
+        // centre-crop could cut the logo's edges.
+        iv.scaleType = ImageView.ScaleType.FIT_CENTER
         // Index 1: above the centred glyph, below the focus name label.
         tile.addView(iv, 1, FrameLayout.LayoutParams(-1, -1))
         LiveTv.loadLogo(this, channel, iv)
@@ -2233,7 +2612,10 @@ class MainActivity : Activity() {
         if (item.artwork != null) {
             val iv = ImageView(this)
             iv.setImageBitmap(item.artwork)
-            iv.scaleType = ImageView.ScaleType.CENTER_CROP
+            // v2.9 (ask C.14): session artwork (usually square
+            // album art) renders COMPLETE over the tile's themed
+            // fill — centre-crop in the wide tile cut it.
+            iv.scaleType = ImageView.ScaleType.FIT_CENTER
             tile.addView(iv, FrameLayout.LayoutParams(-1, -1))
         } else {
             val glyph = TextView(this)
@@ -2574,10 +2956,10 @@ class MainActivity : Activity() {
         val hero = TrackerLogic.selectHero(tHeroCandidates, prefs.trackerHeroIndex)
         // v1.9: the status bar goes to the sticky header when sticky
         // is on (barHost == content otherwise). v2.0: in this view the
-        // bar renders transparent over the hero backdrop.
-        barHost.addView(buildTopBar(overHero = hero != null))
-        // v2.8: the Google-TV pill tab bar under the status bar.
-        barHost.addView(buildTabBar())
+        // bar renders transparent over the hero backdrop. v2.9
+        // (ask C.13): the status bar and the tab bar are ONE
+        // unified pill bar now (buildUnifiedBar).
+        barHost.addView(buildUnifiedBar(overHero = hero != null))
 
         // Refresh on resume (throttled inside); a changed snapshot
         // rebuilds the view once — the new fetchedAt stops any loop.
@@ -2924,84 +3306,33 @@ class MainActivity : Activity() {
                 else -> tSnap.upNext.firstOrNull { it.tmdbId == hero.tmdbId }
                     ?.let { it.season to it.episode }
             }
-            // v2.3 Watch: the hero's primary becomes ▶ Play when the
-            // title is matched AND resolved — a movie resolves from
-            // its VOD entry; a show additionally needs its episode
-            // present in the cached series info (the warm-up in
-            // prepareWatchData fetches it ahead of time; a
-            // not-yet-cached show keeps today's buttons and gains
-            // Play on the rebuild the warm-up triggers).
-            var playLabel: String? = null
-            var playAction: (() -> Unit)? = null
-            if (isWatchStyle() && coords != null) {
-                if (hero.type == "movie") {
-                    val m = watchMatch("movie", hero.tmdbId)
-                    if (m != null) {
-                        val movieItem = tMovies.firstOrNull { it.tmdbId == hero.tmdbId }
-                            ?: TrackerLogic.MovieItem(
-                                hero.tmdbId, hero.title, hero.dateIso,
-                                false, hero.poster, false
-                            )
-                        playLabel = WatchMatch.heroPlayLabel("movie", 0, 0)
-                        playAction = { playMovieItem(movieItem) }
-                    }
-                } else {
-                    val m = watchMatch("tv", hero.tmdbId)
-                    // v2.4: the label decision needs only the
-                    // series-info cache (keyed by the match's IPTV
-                    // id); the series ENTRY is resolved from the
-                    // store at tap time.
-                    val info = m?.let { IptvClient.cachedSeriesInfo(this, it.iptvId) }
-                    val ep = info?.let {
-                        WatchMatch.resolveEpisode(it, coords.first, coords.second)
-                    }
-                    if (m != null && ep != null) {
-                        val inSnap = tSnap.upNext.any {
-                            it.tmdbId == hero.tmdbId &&
-                                it.season == coords.first && it.episode == coords.second
-                        }
-                        playLabel = WatchMatch.heroPlayLabel("tv", coords.first, coords.second)
-                        playAction = {
-                            WatchPlay.resolveSeries(this, m) { series ->
-                                if (isFinishing || isDestroyed) return@resolveSeries
-                                if (series == null) {
-                                    openTitleDetails(
-                                        hero.tmdbId, hero.type, hero.title, hero.poster
-                                    )
-                                    return@resolveSeries
-                                }
-                                WatchPlay.playEpisode(
-                                    this, series, hero.tmdbId, coords.first, coords.second,
-                                    hero.title, hero.poster, withToken = inSnap
-                                ) {
-                                    Toast.makeText(
-                                        this,
-                                        "That episode isn't on your IPTV — showing details instead",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                    openTitleDetails(
-                                        hero.tmdbId, hero.type, hero.title, hero.poster
-                                    )
-                                }
-                            }
-                        }
-                    }
+            // v2.9 (ask F.25): the hero primary is decided by the
+            // MATCH alone — core/WatchMatch.heroPrimary — never by
+            // whether a resolution is already cached. (v2.3–v2.8
+            // gated ▶ Play on the episode being present in the
+            // series-info cache at build time; the warm-up that
+            // filled that cache stopped at 6 Up Next shows, so a
+            // matched hero past the cap — Haythem's photo,
+            // 2026-10-23 — rendered Details as its primary and NO
+            // Play button at all.) A matched hero leads with
+            // ▶ Play and resolves ON DEMAND at press time
+            // (playHeroPrimary, with the visible "Finding stream…"
+            // state); an unmatched hero leads with Details.
+            val heroCoords = coords ?: (0 to 0)
+            val heroMatched = isWatchStyle() && coords != null &&
+                watchMatch(hero.type, hero.tmdbId) != null
+            val heroPrimary = WatchMatch.heroPrimary(
+                heroMatched, hero.type, heroCoords.first, heroCoords.second
+            )
+            if (heroPrimary.action == WatchMatch.PressAction.PLAY) {
+                lateinit var playBtn: TextView
+                playBtn = heroButton(heroPrimary.label, "play", primary = true) {
+                    playHeroPrimary(hero, heroCoords, playBtn, heroPrimary.label)
                 }
-            }
-            // v2.8: the primary is Play when the title resolves to
-            // an in-launcher playback, else the in-launcher Details
-            // — core/TrackerLogic.heroPrimaryAction pins the rule
-            // and the sim holds it. The tracker app is demoted to a
-            // secondary button below: Sreeb's surfaces are Sreeb's.
-            if (TrackerLogic.heroPrimaryAction(playAction != null) == "play") {
-                buttons.addView(
-                    heroButton(playLabel ?: "▶ Play", "play", primary = true) {
-                        playAction?.invoke()
-                    }
-                )
+                buttons.addView(playBtn)
             } else {
                 buttons.addView(
-                    heroButton("ⓘ Details", "details", primary = true) {
+                    heroButton(heroPrimary.label, "details", primary = true) {
                         openTitleDetails(hero.tmdbId, hero.type, hero.title, hero.poster)
                     }
                 )
@@ -3013,9 +3344,10 @@ class MainActivity : Activity() {
                     }
                 )
             }
-            buttons.addView(
-                heroButton("Open Tracker", "open", primary = false) { openTracker() }
-            )
+            // v2.9: NO "Open Tracker" hero button at all (ask
+            // F.25 — never a hero action; the tracker app remains
+            // reachable from the hold-OK card menus and its own
+            // launcher icon; Sreeb's hero carries Sreeb's actions).
             // v2.1: the My Library entry — the whole tracked library
             // (details, episode checklists, add/remove) now lives in
             // the launcher; the tracker app is only for its Settings.
@@ -3367,8 +3699,11 @@ class MainActivity : Activity() {
 
     /**
      * A landscape 16:9 card (v2.8, the Google-TV language of the
-     * reference photos' "Top free picks" rail): the backdrop/still
-     * fills the frame edge-to-edge, an optional pill chip rides
+     * reference photos' "Top free picks" rail): landscape art
+     * (backdrop/still) fills the frame edge-to-edge; a portrait
+     * poster — [imageLandscape] false — renders COMPLETE over a
+     * blurred fill of itself instead (v2.9, ask C.14; the scale
+     * decision is core/Artwork.landscapeFit). An optional pill chip rides
      * inside the frame's lower-left (a date, "S1 E2", "% watched"),
      * an optional progress bar runs along the frame's bottom edge,
      * and title + meta read below — portraitCard's contract in
@@ -3378,6 +3713,7 @@ class MainActivity : Activity() {
     private fun landscapeCard(
         imagePath: String,
         imageSize: String,
+        imageLandscape: Boolean,
         title: String,
         meta: String,
         chip: String? = null,
@@ -3405,11 +3741,34 @@ class MainActivity : Activity() {
         frame.background = Ui.tileBackground(accent, false, 16, this)
         if (firstTile == null) firstTile = frame
         if (imagePath.isNotBlank()) {
-            val iv = ImageView(this)
-            iv.scaleType = ImageView.ScaleType.CENTER_CROP
-            Ui.roundClip(iv, 16, this)
-            frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
-            TmdbImages.load(TmdbImages.url(imageSize, imagePath), iv)
+            val imgUrl = TmdbImages.url(imageSize, imagePath)
+            if (com.mizan.launcher.core.Artwork.landscapeFit(imageLandscape) ==
+                com.mizan.launcher.core.Artwork.Fit.FIT_COMPLETE
+            ) {
+                // v2.9 (ask C.14): only a PORTRAIT poster exists
+                // for this title — it renders COMPLETE, never
+                // centre-cropped into 16:9 (his 2026-10-23 photo:
+                // posters cut off in the landscape cards). The
+                // fill is the same image decoded tiny (maxDim 64)
+                // and upscaled edge-to-edge — a blurred version of
+                // itself; the poster rides on top, fit whole.
+                val fill = ImageView(this)
+                fill.scaleType = ImageView.ScaleType.CENTER_CROP
+                Ui.roundClip(fill, 16, this)
+                frame.addView(fill, FrameLayout.LayoutParams(-1, -1))
+                TmdbImages.load(imgUrl, fill, maxDim = 64)
+                val fg = ImageView(this)
+                fg.scaleType = ImageView.ScaleType.FIT_CENTER
+                Ui.roundClip(fg, 16, this)
+                frame.addView(fg, FrameLayout.LayoutParams(-1, -1))
+                TmdbImages.load(imgUrl, fg)
+            } else {
+                val iv = ImageView(this)
+                iv.scaleType = ImageView.ScaleType.CENTER_CROP
+                Ui.roundClip(iv, 16, this)
+                frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
+                TmdbImages.load(imgUrl, iv)
+            }
         } else {
             val g = TextView(this)
             g.text = glyph
@@ -3512,14 +3871,16 @@ class MainActivity : Activity() {
         for (item in items) {
             val countdown = TrackerLogic.countdownLabel(item.dateIso, today)
             // v2.3 Watch: a matched card wears the ▶ IPTV badge and
-            // OK plays the episode in place (failing open to details);
-            // the Tracker style and unmatched cards are untouched.
+            // OK plays the episode in place (failing open to details).
+            // v2.9: an unmatched card opens the in-launcher Details
+            // (it used to open the tracker app) — ask F.25.
             val wMatch = watchMatch("tv", item.tmdbId)
             // v2.8: Up Next rides the landscape rail (backdrop,
             // "Sx Ey" pill chip) — the Google-TV card language.
             val card = landscapeCard(
                 imagePath = item.backdrop.ifBlank { item.poster },
                 imageSize = if (item.backdrop.isNotBlank()) "w780" else "w342",
+                imageLandscape = item.backdrop.isNotBlank(),
                 title = item.title,
                 meta = countdown.ifBlank { item.sub },
                 chip = if (item.season > 0 && item.episode > 0) {
@@ -3529,8 +3890,11 @@ class MainActivity : Activity() {
                 },
                 glyph = "📺",
                 onClick = {
+                    // v2.9 (ask F.25): matched plays; unmatched
+                    // opens the in-launcher Details — a card press
+                    // never lands in the tracker app.
                     if (wMatch != null) playUpNextItem(item, inSnapshot = true)
-                    else openTracker()
+                    else openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
                 },
                 onLong = {
                     openTrackerCardMenu(
@@ -3592,6 +3956,7 @@ class MainActivity : Activity() {
                 val view = landscapeCard(
                     imagePath = trackerItem.backdrop.ifBlank { trackerItem.poster },
                     imageSize = if (trackerItem.backdrop.isNotBlank()) "w780" else "w342",
+                    imageLandscape = trackerItem.backdrop.isNotBlank(),
                     title = trackerItem.title,
                     meta = trackerItem.sub,
                     chip = if (progress >= 0f) {
@@ -3602,13 +3967,15 @@ class MainActivity : Activity() {
                     progress = progress,
                     glyph = "📺",
                     onClick = {
+                        // v2.9 (ask F.25): the last branch opened
+                        // the tracker app in the Tracker style —
+                        // now Details, like everywhere else.
                         when {
                             upNextTwin != null -> playUpNextItem(upNextTwin, inSnapshot = true)
-                            isWatchStyle() -> openTitleDetails(
+                            else -> openTitleDetails(
                                 trackerItem.tmdbId, trackerItem.type,
                                 trackerItem.title, trackerItem.poster
                             )
-                            else -> openTracker()
                         }
                     },
                     onLong = {
@@ -3650,7 +4017,10 @@ class MainActivity : Activity() {
                 meta = parts.joinToString(" · "),
                 glyph = "🎬",
                 onClick = {
-                    if (wMatch != null) playMovieItem(movie) else openTracker()
+                    // v2.9 (ask F.25): matched plays; unmatched
+                    // opens the in-launcher Details.
+                    if (wMatch != null) playMovieItem(movie)
+                    else openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
                 },
                 onLong = {
                     openTrackerCardMenu(
@@ -3681,9 +4051,11 @@ class MainActivity : Activity() {
         val box = section("For You")
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
         for (pick in picks) {
-            // v2.3 Watch: a matched pick also wears the badge; OK
-            // still opens details (v2.1 behaviour) and hold-OK gains
-            // "▶ Play" — see openForYouMenu.
+            // v2.3 Watch: a matched pick also wears the badge.
+            // v2.9 (ask F.25): OK used to open the TRACKER APP for
+            // every pick — now a matched movie pick PLAYS, and
+            // every other pick opens its in-launcher Details (a
+            // show pick carries no episode coordinates to play).
             val wMatch = watchMatch(pick.type, pick.id)
             val card = portraitCard(
                 posterPath = pick.poster,
@@ -3692,7 +4064,17 @@ class MainActivity : Activity() {
                 line2 = pick.reason,
                 line3 = pick.whyGenres.joinToString(" · ").ifBlank { null },
                 glyph = if (pick.type == "movie") "🎬" else "📺",
-                onClick = { openTracker() },
+                onClick = {
+                    if (wMatch != null && pick.type == "movie") {
+                        playMovieItem(
+                            TrackerLogic.MovieItem(
+                                pick.id, pick.title, "", false, pick.poster, false
+                            )
+                        )
+                    } else {
+                        openTitleDetails(pick.id, pick.type, pick.title, pick.poster)
+                    }
+                },
                 onLong = { openForYouMenu(pick) },
                 badge = WatchMatch.cardBadge(wMatch != null)
             )
@@ -3718,12 +4100,15 @@ class MainActivity : Activity() {
             val chip = Discovery.soonChip(item.dateIso, today)
             val meta = listOf(chip, item.sub).filter { it.isNotBlank() }
                 .joinToString(" · ")
-            // v2.8: Coming Soon rides the landscape rail — the
-            // poster fills the 16:9 frame (SoonItem carries no
-            // backdrop) and the air/release date is the pill chip.
+            // v2.8: Coming Soon rides the landscape rail and the
+            // air/release date is the pill chip. v2.9 (ask C.14):
+            // SoonItem carries NO backdrop — the poster is
+            // portrait, so it renders COMPLETE over its blurred
+            // fill (imageLandscape = false), never cropped.
             val card = landscapeCard(
                 imagePath = item.poster,
                 imageSize = "w500",
+                imageLandscape = false,
                 title = item.title,
                 meta = meta,
                 chip = Discovery.monthDay(item.dateIso).ifBlank { null },
@@ -3774,7 +4159,25 @@ class MainActivity : Activity() {
                 line2 = if (inLibrary) "In library" else null,
                 glyph = if (item.type == "movie") "🎬" else "📺",
                 onClick = {
-                    openTitleDetails(item.id, item.type, item.title, item.poster)
+                    // v2.9 (ask F.25): a trending title that is
+                    // also tracked + matched plays like its row
+                    // twins (movie via its VOD entry; a show via
+                    // its Up Next twin); everything else opens
+                    // Details, as before.
+                    val twin = if (wMatch != null && item.type == "tv") {
+                        tSnap.upNext.firstOrNull { it.tmdbId == item.id }
+                    } else {
+                        null
+                    }
+                    when {
+                        wMatch != null && item.type == "movie" -> playMovieItem(
+                            TrackerLogic.MovieItem(
+                                item.id, item.title, "", false, item.poster, false
+                            )
+                        )
+                        twin != null -> playUpNextItem(twin, inSnapshot = true)
+                        else -> openTitleDetails(item.id, item.type, item.title, item.poster)
+                    }
                 },
                 onLong = { openTrendingMenu(item, inLibrary) },
                 badge = WatchMatch.cardBadge(wMatch != null)

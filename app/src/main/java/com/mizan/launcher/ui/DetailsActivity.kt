@@ -456,15 +456,33 @@ class DetailsActivity : Activity() {
             val frame = FrameLayout(this)
             val fh = (resources.displayMetrics.heightPixels * 0.38f).toInt()
             frame.layoutParams = LinearLayout.LayoutParams(-1, fh)
-            val iv = ImageView(this)
-            iv.scaleType = ImageView.ScaleType.CENTER_CROP
-            Ui.roundClip(iv, Design.RADIUS_PANEL, this)
-            frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
-            TmdbImages.load(
-                TmdbImages.url(if (d != null && d.backdrop.isNotBlank()) "w780" else "w500",
-                    backdropPath),
-                iv
-            )
+            val hasBackdrop = d != null && d.backdrop.isNotBlank()
+            val headerUrl = TmdbImages.url(if (hasBackdrop) "w780" else "w500", backdropPath)
+            if (com.mizan.launcher.core.Artwork.headerFit(hasBackdrop) ==
+                com.mizan.launcher.core.Artwork.Fit.FIT_COMPLETE
+            ) {
+                // v2.9 (ask C.14): no backdrop — the header would
+                // centre-crop the 2:3 poster into a wide banner
+                // and cut it. Same treatment as the home's
+                // landscape cards: the poster complete over a
+                // blurred fill of itself (the tiny decode).
+                val fill = ImageView(this)
+                fill.scaleType = ImageView.ScaleType.CENTER_CROP
+                Ui.roundClip(fill, Design.RADIUS_PANEL, this)
+                frame.addView(fill, FrameLayout.LayoutParams(-1, -1))
+                TmdbImages.load(headerUrl, fill, maxDim = 64)
+                val fg = ImageView(this)
+                fg.scaleType = ImageView.ScaleType.FIT_CENTER
+                Ui.roundClip(fg, Design.RADIUS_PANEL, this)
+                frame.addView(fg, FrameLayout.LayoutParams(-1, -1))
+                TmdbImages.load(headerUrl, fg)
+            } else {
+                val iv = ImageView(this)
+                iv.scaleType = ImageView.ScaleType.CENTER_CROP
+                Ui.roundClip(iv, Design.RADIUS_PANEL, this)
+                frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
+                TmdbImages.load(headerUrl, iv)
+            }
             box.addView(frame)
         }
 

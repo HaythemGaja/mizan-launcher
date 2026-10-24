@@ -58,6 +58,7 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/IptvLocks.kt \
   app/src/main/java/com/mizan/launcher/core/IptvStatus.kt \
   app/src/main/java/com/mizan/launcher/core/WatchMatch.kt \
+  app/src/main/java/com/mizan/launcher/core/Artwork.kt \
   app/src/main/java/com/mizan/launcher/core/Discovery.kt \
   app/src/main/java/com/mizan/launcher/core/Diag.kt \
   app/src/main/java/com/mizan/launcher/core/PlayerLogic.kt \

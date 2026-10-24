@@ -22,6 +22,7 @@ import com.mizan.launcher.core.SettingsNavMachine
 import com.mizan.launcher.core.Themes
 import com.mizan.launcher.core.WeatherUnits
 import com.mizan.launcher.data.AccentUtil
+import com.mizan.launcher.data.AppEntry
 import com.mizan.launcher.data.AppLoader
 import com.mizan.launcher.data.Prefs
 import org.json.JSONArray
@@ -802,7 +803,7 @@ class SettingsActivity : Activity() {
                 })
                 content.addView(row("Weather location", "${prefs.weatherLat}, ${prefs.weatherLon} (Bloomington, IN default)") { weatherLocation() })
                 content.addView(info("Weather comes from Open-Meteo (no account or key). The weather background (Wallpaper → Weather) follows the same data."))
-                content.addView(info("Forecast: press OK on the weather widget on the home screen to open the full forecast — the next 24 hours and the 7-day outlook, in these units."))
+                content.addView(info("Forecast: press OK on the clock / date / weather in the home bar to open the full forecast — the next 24 hours and the 7-day outlook, in these units."))
     }
 
     /**
@@ -1941,17 +1942,49 @@ class SettingsActivity : Activity() {
         val tmp = layout.rowOrder[i]; layout.rowOrder[i] = layout.rowOrder[j]; layout.rowOrder[j] = tmp
     }
 
+    /**
+     * v2.9 (asks A.2 / I.33): the app pickers used to enumerate
+     * the full catalogue with AppLoader.loadApps ON THE MAIN
+     * THREAD — a full PackageManager scan, the jank the §28 audit
+     * flagged. Now they seed from MainActivity.AppCache
+     * (stale-while-revalidate: returns instantly, refreshes in
+     * the background); only a truly cold cache pays ONE
+     * background scan, and the dialog shows on the main thread.
+     */
+    private fun withApps(onReady: (List<AppEntry>) -> Unit) {
+        val cached = MainActivity.AppCache.get(this)
+        if (cached.isNotEmpty()) {
+            onReady(cached)
+            return
+        }
+        toast("Loading apps…")
+        Thread {
+            val apps = try {
+                AppLoader.loadApps(packageManager, packageName)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) onReady(apps)
+            }
+        }.apply {
+            name = "mizan-settings-apps"
+            isDaemon = true
+        }.start()
+    }
+
     private fun hiddenApps() {
         if (layout.hidden.isEmpty()) { toast("No hidden apps"); return }
-        val apps = AppLoader.loadApps(packageManager, packageName)
-        val byPkg = apps.associateBy { it.pkg }
-        val pkgs = layout.hidden.toList()
-        val labels = pkgs.map { byPkg[it]?.label ?: it }
-        AlertDialog.Builder(this).setTitle("Hidden apps — tap to unhide")
-            .setItems(labels.toTypedArray()) { _, which ->
-                layout.hidden.remove(pkgs[which]); saveLayout(); rebuild()
-            }
-            .setNegativeButton("Close", null).show()
+        withApps { apps ->
+            val byPkg = apps.associateBy { it.pkg }
+            val pkgs = layout.hidden.toList()
+            val labels = pkgs.map { byPkg[it]?.label ?: it }
+            AlertDialog.Builder(this).setTitle("Hidden apps — tap to unhide")
+                .setItems(labels.toTypedArray()) { _, which ->
+                    layout.hidden.remove(pkgs[which]); saveLayout(); rebuild()
+                }
+                .setNegativeButton("Close", null).show()
+        }
     }
 
     /**
@@ -2157,25 +2190,28 @@ class SettingsActivity : Activity() {
         // v1.6: AppLoader enumerates the FULL launchable catalogue
         // (core/AppCatalogue merge) — hidden apps, foldered apps and
         // system apps are all here, not just the home-visible set.
-        val apps = AppLoader.loadApps(packageManager, packageName)
-        val labels = apps.map { app ->
-            (if (prefs.lockedApps.contains(app.pkg)) "🔒 " else "") + app.label
-        }
-        AlertDialog.Builder(this).setTitle("Tap an app to lock / unlock it")
-            .setMessage(
-                "Every launchable app on this TV is listed — hidden apps, apps inside " +
-                    "folders, and system apps (like the TV's own Settings) included. " +
-                    "Sreeb itself is the only app not listed. Locking gates " +
-                    "launches made through Sreeb; the remote's hardware app buttons bypass it."
-            )
-            .setItems(labels.toTypedArray()) { _, which ->
-                val set = prefs.lockedApps.toMutableSet()
-                val pkg = apps[which].pkg
-                if (!set.remove(pkg)) set.add(pkg)
-                prefs.lockedApps = set
-                rebuild()
+        // v2.9: the enumeration runs via withApps (off the main
+        // thread / AppCache) — see its doc.
+        withApps { apps ->
+            val labels = apps.map { app ->
+                (if (prefs.lockedApps.contains(app.pkg)) "🔒 " else "") + app.label
             }
-            .setNegativeButton("Close", null).show()
+            AlertDialog.Builder(this).setTitle("Tap an app to lock / unlock it")
+                .setMessage(
+                    "Every launchable app on this TV is listed — hidden apps, apps inside " +
+                        "folders, and system apps (like the TV's own Settings) included. " +
+                        "Sreeb itself is the only app not listed. Locking gates " +
+                        "launches made through Sreeb; the remote's hardware app buttons bypass it."
+                )
+                .setItems(labels.toTypedArray()) { _, which ->
+                    val set = prefs.lockedApps.toMutableSet()
+                    val pkg = apps[which].pkg
+                    if (!set.remove(pkg)) set.add(pkg)
+                    prefs.lockedApps = set
+                    rebuild()
+                }
+                .setNegativeButton("Close", null).show()
+        }
     }
 
     // ------------------------------------------------------------ Reddit

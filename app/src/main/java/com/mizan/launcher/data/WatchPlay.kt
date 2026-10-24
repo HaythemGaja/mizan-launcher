@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Context
 import android.widget.Toast
 import com.mizan.launcher.core.IptvLogic
-import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.ui.PlayerActivity
 import java.util.Collections
@@ -27,9 +26,6 @@ object WatchPlay {
 
     private const val K_MATCH_CACHE = "watch_match_cache"
     private const val K_MATCH_FP = "watch_match_fp"
-
-    /** Proactive series-info warm-up cap per session (politeness to the panel). */
-    private const val WARM_CAP = 6
 
     /** Series ids whose info fetch was already attempted this process (hit or miss). */
     private val warmedSeries: MutableSet<Long> =
@@ -250,26 +246,36 @@ object WatchPlay {
 
     /**
      * Proactively fetch series info (through the cache) for the
-     * matched shows in [upNext] that lack it — capped per session —
-     * so their Play buttons resolve without a tap-time wait.
-     * [onDone] fires on the caller's thread once, only when at least
-     * one fetch SUCCEEDED (a rebuild would change something).
+     * matched series that are ON SCREEN — the hero pool first,
+     * then the visible rows, in display order ([seriesIds] is
+     * already in that order, duplicates tolerated).
+     *
+     * v2.9 (ask F.25): resolution is driven by what is displayed,
+     * NOT by a warm-up quota. The pre-v2.9 warm-up stopped at 6
+     * series per session and only looked at Up Next, so a matched
+     * hero show past the cap never resolved — and because the
+     * hero only offered Play for already-resolved shows, it
+     * rendered with no Play button at all. There is no cap now:
+     * every displayed matched series is warmed, sequentially on
+     * one worker thread (one panel request at a time IS the
+     * politeness), each at most once per process (warmedSeries),
+     * and cache hits are skipped. [onDone] fires on the caller's
+     * thread once, only when at least one fetch SUCCEEDED (a
+     * rebuild would change something).
      */
-    fun warmUp(
+    fun warmUpDisplayed(
         ctx: Context,
-        upNext: List<TrackerLogic.UpNextItem>,
-        matches: Map<String, WatchMatch.Match>,
+        seriesIds: List<Long>,
         onDone: () -> Unit
     ) {
         val appCtx = ctx.applicationContext
         val wanted = ArrayList<Long>()
-        for (item in upNext) {
-            val match = matches["tv|${item.tmdbId}"] ?: continue
-            if (match.iptvId in warmedSeries) continue
-            if (IptvClient.cachedSeriesInfo(appCtx, match.iptvId) != null) continue
-            warmedSeries.add(match.iptvId)
-            wanted.add(match.iptvId)
-            if (wanted.size >= WARM_CAP) break
+        for (id in seriesIds) {
+            if (id <= 0L) continue
+            if (id in warmedSeries) continue
+            if (IptvClient.cachedSeriesInfo(appCtx, id) != null) continue
+            warmedSeries.add(id)
+            if (id !in wanted) wanted.add(id)
         }
         if (wanted.isEmpty()) return
         thread(name = "mizan-watch-warm") {

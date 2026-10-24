@@ -84,3 +84,76 @@ object HomeTabs {
         else -> emptyList()
     }
 }
+
+/**
+ * The UNIFIED bar model (v2.9, spec §29) — ask C.13 (2026-10-23):
+ * "place status bar in the pill tab bar with the same design".
+ * In the Tracker/Watch and IPTV homes there is no longer a
+ * plain-text status row above a separate tab row: ONE bar whose
+ * every element is a pill of one design — the style's tab pills
+ * on the left, then the status group on the right: the info pill
+ * (clock · date · weather, one pill; OK opens the forecast), the
+ * Guest pill, the glyph pill (Wi-Fi/Bluetooth), and the action
+ * pills (All Apps / Search / Wi-Fi / Profile / Settings).
+ *
+ * The per-element gates are exactly the status bar's existing
+ * config (core/StatusBarConfig): hiding the bar hides ONLY the
+ * status group (the tabs are navigation, not status); every
+ * element toggle keeps working inside the group. This object
+ * owns the composition so the sim can pin it; the renderer maps
+ * items to pills 1:1.
+ */
+object UnifiedBar {
+
+    enum class Item {
+        TAB,
+        INFO,
+        GUEST,
+        GLYPHS,
+        TILE_ALL_APPS,
+        TILE_SEARCH,
+        TILE_WIFI,
+        TILE_PROFILE,
+        TILE_SETTINGS
+    }
+
+    /**
+     * The bar's items, left → right, for one media home style.
+     * [cfg] is the profile's status-bar config (already the safe-
+     * mode default when in safe mode); [guest] = the Guest
+     * profile is active; [safeMode] mirrors the gates the old
+     * two-row bar applied (weather/Bluetooth/Guest never render
+     * in safe mode).
+     */
+    fun items(
+        styleKey: String,
+        cfg: StatusBarConfig,
+        guest: Boolean,
+        safeMode: Boolean
+    ): List<Item> {
+        val tabs = HomeTabs.forStyle(styleKey)
+        if (tabs.isEmpty()) return emptyList()
+        val out = ArrayList<Item>()
+        repeat(tabs.size) { out.add(Item.TAB) }
+        if (!cfg.showBar) return out
+        if (cfg.showClock || cfg.showDate || (!safeMode && cfg.showWeather)) {
+            out.add(Item.INFO)
+        }
+        if (guest && !safeMode) out.add(Item.GUEST)
+        if (cfg.showNetwork || (!safeMode && cfg.showBluetooth)) {
+            out.add(Item.GLYPHS)
+        }
+        for (tile in StatusBarLogic.barTiles(cfg, safeMode)) {
+            out.add(
+                when (tile) {
+                    StatusBarLogic.BarTile.ALL_APPS -> Item.TILE_ALL_APPS
+                    StatusBarLogic.BarTile.SEARCH -> Item.TILE_SEARCH
+                    StatusBarLogic.BarTile.WIFI -> Item.TILE_WIFI
+                    StatusBarLogic.BarTile.PROFILE -> Item.TILE_PROFILE
+                    StatusBarLogic.BarTile.SETTINGS -> Item.TILE_SETTINGS
+                }
+            )
+        }
+        return out
+    }
+}

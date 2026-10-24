@@ -319,6 +319,73 @@ object WatchMatch {
     fun heroPlayLabel(type: String, season: Int, episode: Int): String =
         if (type == "movie" || season <= 0 || episode <= 0) "▶ Play" else "▶ Play S$season E$episode"
 
+    // ------------------------------------------------------------ play routing (v2.9)
+
+    /**
+     * What a press on a title does (ask F.25, v2.9): a title
+     * MATCHED to the IPTV catalogue PLAYS — the match alone is
+     * the gate, never whether a resolution happens to be cached
+     * yet (the v2.8 hero checked the series-info cache at build
+     * time, so a matched-but-unwarmed show rendered Details as
+     * its primary and no Play button existed at all). An
+     * unmatched title opens its in-launcher Details. "Open in
+     * Tracker" is not a press outcome anywhere — menus only.
+     */
+    enum class PressAction { PLAY, DETAILS }
+
+    /** The press routing for one title: matched → PLAY, unmatched → DETAILS. */
+    fun pressAction(matched: Boolean): PressAction =
+        if (matched) PressAction.PLAY else PressAction.DETAILS
+
+    /** The hero's primary button for one hero item (label + routing). */
+    data class HeroPrimary(val label: String, val action: PressAction)
+
+    /**
+     * The hero primary decision (v2.9): a matched hero leads with
+     * ▶ Play (episode-named for shows) whether or not its stream
+     * is resolved yet — the press resolves on demand (see
+     * [ResolvePhase]); an unmatched hero leads with Details.
+     */
+    fun heroPrimary(matched: Boolean, type: String, season: Int, episode: Int): HeroPrimary =
+        if (matched) {
+            HeroPrimary(heroPlayLabel(type, season, episode), PressAction.PLAY)
+        } else {
+            HeroPrimary("ⓘ Details", PressAction.DETAILS)
+        }
+
+    /**
+     * The on-demand resolution flow behind a Play press on a
+     * matched-but-unresolved title (ask F.25: "resolving the
+     * episode on demand … with a visible finding-stream state,
+     * then playing"). The activity owns the views; this machine
+     * owns the states so the sim can pin the flow:
+     *
+     *   IDLE --PRESS--> FINDING --FOUND--> PLAYING
+     *     ^               |
+     *     +---NOT_FOUND---+  (button restored, details fallback)
+     *
+     * A PRESS while FINDING is ignored (no double resolution);
+     * PLAYING is terminal for the press (the player is opening).
+     */
+    enum class ResolvePhase { IDLE, FINDING, PLAYING, FAILED }
+
+    /** Events that move the resolution flow. */
+    enum class ResolveEvent { PRESS, FOUND, NOT_FOUND }
+
+    /** The visible button label for a phase (the primary's own label returns on FAILED). */
+    fun resolveLabel(phase: ResolvePhase, primaryLabel: String): String =
+        if (phase == ResolvePhase.FINDING) "Finding stream…" else primaryLabel
+
+    /** One transition of the resolution flow; unknown pairs hold their phase. */
+    fun resolvePhase(phase: ResolvePhase, event: ResolveEvent): ResolvePhase =
+        when (phase to event) {
+            ResolvePhase.IDLE to ResolveEvent.PRESS -> ResolvePhase.FINDING
+            ResolvePhase.FAILED to ResolveEvent.PRESS -> ResolvePhase.FINDING
+            ResolvePhase.FINDING to ResolveEvent.FOUND -> ResolvePhase.PLAYING
+            ResolvePhase.FINDING to ResolveEvent.NOT_FOUND -> ResolvePhase.FAILED
+            else -> phase
+        }
+
     // ------------------------------------------------------------ diagnostics
 
     /** Watch coverage counts, for the `watch:` diagnostics line. */
