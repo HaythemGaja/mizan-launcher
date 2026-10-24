@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-24 18:17 UTC
+Date: 2026-10-24 23:25 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -649,7 +649,7 @@ PASS  mostused: hidden + non-launchable excluded, limit respected, zero counts d
 PASS  artwork: 12 presets with names + colours, indices coerced
 PASS  artwork: codec round-trips presets and escaped URLs
 PASS  artwork: garbage decodes empty; with() sets and removes
-PASS  quicksettings: six system targets, then Sort sections, then Sreeb Settings, actions distinct
+PASS  quicksettings: six system targets, then Sort sections, Refresh home data, Sreeb Settings
 PASS  quicksettings: unresolvable targets are filtered, internal + Sreeb Settings stay
 PASS  livetv: state precedence (feature, security, failure, count)
 PASS  livetv: diagnostics wording
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.1 / code 24 (bumped by v3.1)
+PASS  v25src: the app version is 3.2 / code 25 (bumped by v3.2)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1100,7 +1100,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.1 / code 24
+PASS  v31src: the version bump is 3.2 / code 25
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1112,5 +1112,22 @@ PASS  hero51: no title shares an episode with Coming Soon (ties go to Coming Soo
 PASS  hero51: date fill fills matching-coord blanks, fills coords when absent, never overwrites
 PASS  hero51src: the home builds its hero from filled schedule dates + Coming Soon exclusion
 PASS  hero51src: the discovery worker publishes last-known TMDB facts for the hero fill
-RESULT: 898 passed, 0 failed, 898 total
+PASS  refresh52: open/resume/profile-switch never auto-refresh
+PASS  refresh52: manual/retry/first-run-seed are the only allowed triggers
+PASS  refresh52: tracker seeds only when nothing is stored
+PASS  refresh52: discovery fetches only on force or a missing cache file (TTL never fetches)
+PASS  refresh52: weather fetches only from the visible-home tick while stale
+PASS  refresh52: accent recomputes only when the wallpaper changed
+PASS  stages52: compact name=ms rendering in record order
+PASS  stages52: re-record replaces the earlier same-name stage
+PASS  stages52: list caps at 32, oldest dropped
+PASS  refresh52src: onResume carries no refresh kicks any more
+PASS  refresh52src: tracker home refreshes only as first-run seeding
+PASS  refresh52src: explicit Refresh home data exists (popover target + handler)
+PASS  refresh52src: discovery worker fetches only on force-or-empty-cache
+PASS  refresh52src: home build never parses snapshots (memo-only read + worker kick)
+PASS  refresh52src: Home screen row options lost Move up/down (sort only in Sort sections)
+PASS  refresh52src: diagnostics gains last-refresh + startup-stages lines
+PASS  refresh52src: hero schedule rule untouched (missed first, today stays in Coming Soon)
+RESULT: 915 passed, 0 failed, 915 total
 ```

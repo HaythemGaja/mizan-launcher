@@ -562,6 +562,21 @@ class Prefs(ctx: Context) {
         get() = PrefsSafe.long(sp, "weather_last_fetch", 0)
         set(v) { sp.edit().putLong("weather_last_fetch", v).apply() }
 
+    /**
+     * v3.2 (ask 43): the last EXPLICIT home-data refresh, for the
+     * diagnostics `last refresh:` line — the proof no auto-refresh
+     * runs any more. 0 = never; kind is "manual" (Refresh home
+     * data) or "retry:<section key>". Written only by those two
+     * paths, never by open/resume/switch.
+     */
+    var lastRefreshAt: Long
+        get() = PrefsSafe.long(sp, "last_refresh_at", 0)
+        set(v) { sp.edit().putLong("last_refresh_at", v).apply() }
+
+    var lastRefreshKind: String
+        get() = PrefsSafe.str(sp, "last_refresh_kind", "")
+        set(v) { sp.edit().putString("last_refresh_kind", v).apply() }
+
     var cachedWeather: String
         get() = PrefsSafe.str(sp, "weather_cached", "")
         set(v) { sp.edit().putString("weather_cached", v).apply() }

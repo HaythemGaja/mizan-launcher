@@ -1789,6 +1789,22 @@ class SettingsActivity : Activity() {
                 "\nhome cache: " +
                     com.mizan.launcher.data.HomeCacheDisk.lastDiag
             )
+            // v3.2 (ask 43): the proof line — when the home data
+            // was last refreshed, and by what (manual Refresh vs
+            // a section Retry). "never" + auto-refresh off is the
+            // expected reading on a home that only renders cache.
+            val lastRefresh = if (prefs.lastRefreshAt > 0) {
+                java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault())
+                    .format(java.util.Date(prefs.lastRefreshAt)) +
+                    " (" + prefs.lastRefreshKind.ifEmpty { "manual" } + ")"
+            } else {
+                "never"
+            }
+            append("\nlast refresh: $lastRefresh · auto-refresh: off")
+            // v3.2: the fine-grained startup stages — which stage
+            // ate the first-frame time, if it is still slow.
+            val stages = com.mizan.launcher.data.DiagLog.stagesText()
+            if (stages.isNotEmpty()) append("\nstartup stages: $stages")
             val sbCfg = layout.statusBar
             append("\nQuick tiles: master ${if (sbCfg.showQuickTiles) "on" else "off"}" +
                 ", wifi ${onOff(sbCfg.showTileWifi)}, bt ${onOff(sbCfg.showTileBluetooth)}" +
@@ -2144,17 +2160,21 @@ class SettingsActivity : Activity() {
         }
     }
 
+    /**
+     * v3.2 (ask 44): row options are visibility ONLY now. The
+     * old Move row up/down lived here AND in the v3.1 "Sort
+     * sections" page (same LayoutStore rowOrder) — sorting in
+     * two places. Sorting lives ONLY in "Sort sections" now;
+     * this dialog keeps Hide/Show, which ask 44 does not move.
+     * moveRow() survives for the Sort page's use.
+     */
     private fun rowOptions(key: String) {
         val options = mutableListOf<String>()
         options.add(if (layout.isRowVisible(key)) "Hide row" else "Show row")
-        options.add("Move row up")
-        options.add("Move row down")
         AlertDialog.Builder(this).setTitle(rowLabel(key))
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> { layout.rowVisible[key] = !layout.isRowVisible(key) }
-                    1 -> moveRow(key, -1)
-                    2 -> moveRow(key, +1)
                 }
                 saveLayout(); rebuild()
             }

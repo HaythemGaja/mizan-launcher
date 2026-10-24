@@ -17,6 +17,9 @@ package com.mizan.launcher.core
  * to the launcher's own SettingsActivity at that page) and the
  * click handler routes them by scheme, never via startActivity
  * on the raw action string.
+ * v3.2 (ask 43): "Refresh home data" is the second internal
+ * target — the explicit, user-requested refresh (the home
+ * never refreshes on its own any more).
  */
 object QuickSettings {
 
@@ -30,6 +33,7 @@ object QuickSettings {
         Target("Storage", "android.settings.INTERNAL_STORAGE_SETTINGS"),
         Target("About device", "android.settings.DEVICE_INFO_SETTINGS"),
         Target("Sort sections", "sreeb:sortsections"),
+        Target("Refresh home data", "sreeb:refreshhome"),
         Target("Sreeb Settings", "")
     )
 

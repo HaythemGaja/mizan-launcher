@@ -70,13 +70,29 @@ object WatchPlay {
     @Volatile
     var onMatchesChanged: (() -> Unit)? = null
 
-    /** The prefs-cached match table, decoded (no store access, no compute). */
+    /**
+     * The prefs-cached match table, decoded (no store access, no compute).
+     * v3.2: memoized by the raw string — prepareWatchData runs on
+     * every home rebuild, and the old code re-decoded the table
+     * JSON on the main thread each time. A worker recompute landing
+     * a new table changes the raw string and invalidates the memo.
+     */
+    @Volatile
+    private var matchesMemoRaw: String? = null
+
+    @Volatile
+    private var matchesMemo: Map<String, WatchMatch.Match>? = null
+
     fun cachedMatches(ctx: Context): Map<String, WatchMatch.Match> {
         val p = prefs(ctx)
-        val decoded = WatchMatch.decodeMatches(
-            try { PrefsSafe.strOrNull(p, K_MATCH_CACHE) } catch (e: Exception) { null }
-        )
-        return decoded.associateBy { "${it.type}|${it.tmdbId}" }
+        val raw = try { PrefsSafe.strOrNull(p, K_MATCH_CACHE) } catch (e: Exception) { null }
+        val memo = matchesMemo
+        if (memo != null && matchesMemoRaw == raw) return memo
+        val decoded = WatchMatch.decodeMatches(raw)
+        val map = decoded.associateBy { "${it.type}|${it.tmdbId}" }
+        matchesMemoRaw = raw
+        matchesMemo = map
+        return map
     }
 
     /**

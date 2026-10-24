@@ -67,6 +67,8 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/HomeCache.kt \
   app/src/main/java/com/mizan/launcher/core/SectionModule.kt \
   app/src/main/java/com/mizan/launcher/core/PlayInLogic.kt \
+  app/src/main/java/com/mizan/launcher/core/RefreshPolicy.kt \
+  app/src/main/java/com/mizan/launcher/core/StartupStages.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {

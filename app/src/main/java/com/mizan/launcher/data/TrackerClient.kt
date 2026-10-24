@@ -109,6 +109,64 @@ object TrackerClient {
      */
     fun warmDiskMirror(ctx: Context) = HomeCacheDisk.warmMirror(ctx)
 
+    /**
+     * v3.2 (ask 43): cheap stored-data probe — prefs strings
+     * present, or a disk mirror present. No parse, no provider
+     * query, so the home build can decide first-run seeding
+     * without paying for data it already has.
+     */
+    fun hasStoredData(ctx: Context): Boolean {
+        return try {
+            val p = prefs(ctx)
+            listOf(K_UPNEXT, K_CONTINUE, K_MOVIES, K_TRACKED, K_FORYOU).any {
+                !PrefsSafe.strOrNull(p, it).isNullOrBlank() ||
+                    !HomeCacheDisk.mirrored(it.removePrefix("tracker_cache_")).isNullOrBlank()
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * v3.2: the worker-warmed parsed memo, WITHOUT parsing — the
+     * home build's only snapshot read. cached() already memoizes
+     * by raw-string key, but its first call in a process still
+     * parses on the caller; prepareTrackerData must never be
+     * that caller. Null until a worker (cold-warm, fetch
+     * landing, explicit parse kick) has parsed.
+     */
+    fun memoOrNull(): Snapshots? = cachedMemo
+
+    @Volatile
+    private var memoWarmInFlight = false
+
+    /**
+     * v3.2: parse on a worker and report back on the caller's
+     * thread via [onWarmed] (which rebuilds). Single-flight.
+     * Never parses on the calling thread.
+     */
+    fun warmMemoAsync(ctx: Context, onWarmed: () -> Unit) {
+        synchronized(this) {
+            if (memoWarmInFlight) return
+            memoWarmInFlight = true
+        }
+        val appCtx = ctx.applicationContext
+        kotlin.concurrent.thread(name = "mizan-tracker-memo") {
+            try {
+                cached(appCtx)
+            } catch (e: Exception) {
+                // A failed parse just leaves the memo empty; the home renders the shell.
+            } finally {
+                synchronized(this) { memoWarmInFlight = false }
+            }
+            try {
+                onWarmed()
+            } catch (e: Exception) {
+                // The caller's rebuild guard handles dead activities.
+            }
+        }
+    }
+
     /** The persisted fetch state, for diagnostics + the fallback line. */
     data class Status(
         val kind: TrackerStatus.Kind,

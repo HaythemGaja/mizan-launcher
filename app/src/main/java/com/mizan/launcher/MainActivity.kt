@@ -162,6 +162,12 @@ class MainActivity : Activity() {
     private var coldStart = true
     private var coldWarmScheduled = false
 
+    /** v3.2: the memo-parse kick guard for prepareTrackerData (see there). */
+    private var trackerMemoKickDone = false
+
+    /** v3.2: wallpaper value the dynamic accent was last computed for (see resolveColours). */
+    private var lastAccentWallpaper: String? = null
+
     // ---- v3.0 startup health (spec §30) ----
     /**
      * This process launched into the SAFE SHELL (data/
@@ -262,6 +268,10 @@ class MainActivity : Activity() {
         // frame → home complete) — App.onCreate marked the zero.
         DiagLog.markStartup("main created")
         prefs = Prefs(this)
+        // v3.2: fine-grained stage marks for the diagnostics
+        // `startup stages:` line — the next slow-start photo can
+        // name the stage instead of just the 10 s total.
+        DiagLog.markStage("prefs ready")
         // v3.0: the safe-shell decision was made in App.onCreate
         // (data/StartupHealthStore.beginLaunch) — read it before
         // the first build so homeStyleKey() can force TV.
@@ -280,30 +290,14 @@ class MainActivity : Activity() {
         }
         handler.removeCallbacks(clockTick)
         handler.post(clockTick)
-        // Rotation/Bing are checked on resume as well as on the tick
-        // (the brief's service-free mechanism — no timers anywhere).
-        checkRotationAndBing()
-        // v2.0: warm the Live TV channel cache in the background; a
-        // changed result rebuilds once so the row appears/disappears.
-        if (::prefs.isInitialized && !prefs.safeMode) {
-            val beforeLive = LiveTv.cached()
-            LiveTv.refreshAsync(this) { result ->
-                if (result != beforeLive && !isTrackerFamily()) rebuild()
-            }
-            // v2.5: same pattern for the WatchNext cache — the
-            // Continue rows (TV + Tracker merge) read the cache;
-            // a changed list rebuilds once. The blocking provider
-            // query itself never runs in a build any more.
-            TvData.refreshWatchNextAsync(this) { rebuild() }
-            // Same pattern for Most Used: the usage tallies refresh
-            // off-thread; a change rebuilds once with the row updated.
-            if (MostUsed.isGranted(this)) {
-                val beforeStats = MostUsed.cachedStats()
-                MostUsed.refreshAsync(this, appsByPkg.mapValues { it.value.label }) { stats ->
-                    if (stats != beforeStats && !isTrackerFamily() && !isIptvStyle()) rebuild()
-                }
-            }
-        }
+        // v3.2 (ask 43): NOTHING refreshes on resume any more.
+        // The v2.0–v2.5 resume kicks (Live TV, WatchNext, Most
+        // Used) and the rotation/Bing check all moved: Live TV /
+        // WatchNext / Most Used refresh only via the explicit
+        // "Refresh home data" control or a section Retry, and
+        // rotation/Bing/weather run from the visible-home clock
+        // tick (housekeeping) instead. A resume is pure
+        // composition from the local cache.
     }
 
     override fun onPause() {
@@ -349,8 +343,10 @@ class MainActivity : Activity() {
             apps = AppCache.get(this)
             appsByPkg = apps.associateBy { it.pkg }
             artworkByPkg = if (prefs.safeMode) emptyMap() else prefs.artworkMap()
+            DiagLog.markStage("apps ready")
             resolveColours()
             setContentView(buildRoot())
+            DiagLog.markStage("composition done")
             // v2.8 cold-start staging: the shell's first frame is
             // probed (DiagLog's startup timings), and the warm
             // worker is kicked — the data reads the shell skipped
@@ -388,7 +384,11 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            refreshWeather()
+            // v3.2 (ask 43): the rebuild only paints the CACHED
+            // weather text — the fetch moved to the visible-home
+            // tick (maybeFetchWeather, via housekeeping), so an
+            // open/resume never pays for a network call here.
+            updateWeatherWidget()
             firstTile?.post { if (currentFocus == null) firstTile?.requestFocus() }
         } catch (e: Throwable) {
             // v3.0: Throwable, not Exception (an inflation OOM is
@@ -559,12 +559,15 @@ class MainActivity : Activity() {
             try { TrackerClient.cached(appCtx) } catch (e: Exception) {
                 // Warm-up is an optimisation; the full build re-reads fail-open.
             }
+            DiagLog.markStage("warm: tracker read")
             try { IptvClient.storeStamp(appCtx) } catch (e: Exception) {
                 // As above.
             }
+            DiagLog.markStage("warm: store read")
             try { WatchPlay.matches(appCtx) } catch (e: Exception) {
                 // As above.
             }
+            DiagLog.markStage("warm: matches read")
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 coldStart = false
@@ -591,7 +594,15 @@ class MainActivity : Activity() {
             // Reddit kinds) runs off the main thread now — this
             // frame uses the preset accent, a landed change
             // rebuilds once with the real one.
-            if (prefs.accentOverride == 0) {
+            // v3.2 (ask 43): recompute ONLY when the wallpaper
+            // actually changed — the old code re-decoded on every
+            // rebuild (every resume), pure open-path churn.
+            if (prefs.accentOverride == 0 &&
+                com.mizan.launcher.core.RefreshPolicy.accentRecomputeNeeded(
+                    lastAccentWallpaper ?: "", prefs.wallpaperValue
+                )
+            ) {
+                lastAccentWallpaper = prefs.wallpaperValue
                 AccentUtil.recomputeAsync(this, prefs) { rebuild() }
             }
             if (prefs.accentOverride != 0) prefs.accentOverride else preset.accent
@@ -643,6 +654,7 @@ class MainActivity : Activity() {
             try { prepareDiscoveryData() } catch (e: Throwable) {
                 Prefs.noteError(this, "prepareDiscovery", e)
             }
+            DiagLog.markStage("discovery ready")
         }
         // v2.8: on the COLD build both prepares are deferred to the
         // warm worker — the tracker prepare parses the snapshot
@@ -656,6 +668,7 @@ class MainActivity : Activity() {
             try { prepareTrackerData() } catch (e: Throwable) {
                 Prefs.noteError(this, "prepareTracker", e)
             }
+            DiagLog.markStage("tracker ready")
         }
         if (isWatchStyle()) {
             if (coldStart) {
@@ -666,6 +679,7 @@ class MainActivity : Activity() {
                 try { prepareWatchData() } catch (e: Throwable) {
                     Prefs.noteError(this, "prepareWatch", e)
                 }
+                DiagLog.markStage("watch ready")
             }
         }
         pendingWallpaper = null
@@ -1048,6 +1062,12 @@ class MainActivity : Activity() {
      * apps/favorites/unknown → plain re-render (in-memory data).
      */
     private fun retrySection(key: String) {
+        // v3.2 (ask 43): a per-section Retry is an explicit
+        // refresh too — it stamps the `last refresh:` line.
+        if (::prefs.isInitialized) {
+            prefs.lastRefreshAt = System.currentTimeMillis()
+            prefs.lastRefreshKind = "retry:$key"
+        }
         when (com.mizan.launcher.core.SectionModule.retrySource(key)) {
             com.mizan.launcher.core.SectionModule.Source.TRACKER ->
                 TrackerClient.refreshAsync(this, force = true) {
@@ -1155,7 +1175,21 @@ class MainActivity : Activity() {
     }
 
     private fun prepareTrackerData() {
-        val snap = TrackerClient.cached(this)
+        // v3.2: the home build NEVER parses snapshots — it reads
+        // only the worker-warmed memo. Cold memo + stored data →
+        // one worker parse kick (guarded per activity instance,
+        // so its landing rebuild cannot re-kick into a loop);
+        // cold memo + no stored data → the shell's empty set
+        // until first-run seeding lands (see buildTrackerHome).
+        val snap = TrackerClient.memoOrNull() ?: run {
+            if (!trackerMemoKickDone && TrackerClient.hasStoredData(this)) {
+                trackerMemoKickDone = true
+                TrackerClient.warmMemoAsync(this) {
+                    runOnUiThread { if (!isFinishing && !isDestroyed) rebuild() }
+                }
+            }
+            TrackerClient.Snapshots.EMPTY
+        }
         tSnap = snap
         var marked = TrackerLogic.decodeMarked(prefs.trackerMarked)
         val pruned = TrackerLogic.pruneMarked(marked, snap.upNext, snap.movies, snap.updated)
@@ -2200,7 +2234,7 @@ class MainActivity : Activity() {
      * The unified info pill: the shared info cluster (clock ·
      * date · weather) inside the pill shell. Focusable — OK opens
      * the full forecast (ask C.11). Carries the tag-"weather"
-     * wrapper refreshWeather finds.
+     * wrapper updateWeatherWidget finds.
      */
     private fun unifiedInfoPill(
         cfg: com.mizan.launcher.core.StatusBarConfig,
@@ -2423,7 +2457,7 @@ class MainActivity : Activity() {
      * The bar's info cluster (v2.1): clock · date · weather on ONE
      * baseline, plain text, dot separators. Sets the [clockView] /
      * [dateView] fields; the weather segment lives in a
-     * tag-"weather" wrapper so refreshWeather can hide it whole
+     * tag-"weather" wrapper so updateWeatherWidget can hide it whole
      * (separator included) when there is no weather, and its text
      * view keeps the tag "weather_text" for findWeatherView.
      * Extracted in v2.9 so the unified bar's info pill builds the
@@ -2718,6 +2752,7 @@ class MainActivity : Activity() {
                     // on the raw action string.
                     when (target.action) {
                         "sreeb:sortsections" -> openSettings("sortsections")
+                        "sreeb:refreshhome" -> refreshHomeData()
                         else -> openSettings()
                     }
                 } else {
@@ -2734,6 +2769,43 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    /**
+     * v3.2 (ask 43): the EXPLICIT home-data refresh — the only
+     * full refresh left, and the only one the user can ask for
+     * by name (quick-settings popover, "Refresh home data").
+     * Forces every source once (tracker provider, discovery
+     * worker, match recompute, Live TV, WatchNext, Most Used,
+     * weather, app list); each landing rebuilds once with what
+     * changed. Records the `last refresh:` diagnostics stamp
+     * (kind "manual") so the next photo can prove no refresh
+     * happened without the user asking.
+     */
+    private fun refreshHomeData() {
+        if (!::prefs.isInitialized) return
+        prefs.lastRefreshAt = System.currentTimeMillis()
+        prefs.lastRefreshKind = "manual"
+        Toast.makeText(this, "Refreshing home data…", Toast.LENGTH_SHORT).show()
+        TrackerClient.refreshAsync(this, force = true) { if (isTrackerFamily()) rebuild() }
+        DiscoveryData.refreshNow(this)
+        WatchPlay.kickRecompute(this)
+        if (!prefs.safeMode) {
+            val beforeLive = LiveTv.cached()
+            LiveTv.refreshAsync(this) { result ->
+                if (result != beforeLive && !isTrackerFamily()) rebuild()
+            }
+            TvData.refreshWatchNextAsync(this) { rebuild() }
+            if (MostUsed.isGranted(this)) {
+                val beforeStats = MostUsed.cachedStats()
+                MostUsed.refreshAsync(this, appsByPkg.mapValues { it.value.label }) { stats ->
+                    if (stats != beforeStats && !isTrackerFamily() && !isIptvStyle()) rebuild()
+                }
+            }
+        }
+        maybeFetchWeather(force = true)
+        AppCache.refreshNow(this)
+        rebuild()
     }
 
     /** (v2.1: the wordy "ᛒ BT" label retired with the bar reorganization — see bluetoothGlyph.) */
@@ -2997,14 +3069,15 @@ class MainActivity : Activity() {
      * (data/MostUsed gathers, core/MostUsedLogic ranks). Needs Usage
      * Access: without the grant the row hides (Settings › Home screen
      * rows offers the grant link). Tiles use the Recents menu flavour
-     * (no Move — the order IS the usage ranking). Queried fresh on
-     * every rebuild, so it refreshes on resume with Recently Used.
+     * (no Move — the order IS the usage ranking).
+     * v3.2 (ask 43): the 30-day query runs ONLY when the cache
+     * is empty (first-build probe) or via explicit Refresh home
+     * data — never on open/resume any more.
      */
     private fun buildMostUsedSection(): View? {
         if (!MostUsed.isGranted(this)) return null
-        // Cold-start rule (v2.0): render from the usage cache only —
-        // the 30-day event query runs on a background thread (warmed
-        // in onResume) and its completion rebuilds with the row.
+        // Render from the usage cache only — an empty cache probes
+        // once on a background thread, its completion rebuilds.
         val stats = MostUsed.cachedStats()
         if (stats == null) {
             MostUsed.refreshAsync(this, appsByPkg.mapValues { it.value.label }) {
@@ -3396,7 +3469,8 @@ class MainActivity : Activity() {
 
     private fun buildContinueSection(): View? {
         // v2.5: the cached list — the blocking provider query
-        // moved to TvData.refreshWatchNextAsync (onResume kick).
+        // runs only via explicit Refresh home data (v3.2: the
+        // old onResume kick is gone).
         val items = TvData.watchNextCached()
         DiagCache.watchNextCount = items.size
         if (items.isEmpty()) return null
@@ -3463,9 +3537,17 @@ class MainActivity : Activity() {
         // unified pill bar now (buildUnifiedBar).
         barHost.addView(buildUnifiedBar(overHero = hero != null))
 
-        // Refresh on resume (throttled inside); a changed snapshot
-        // rebuilds the view once — the new fetchedAt stops any loop.
-        TrackerClient.refreshAsync(this) { if (isTrackerFamily()) rebuild() }
+        // v3.2 (ask 43): NO refresh on open/resume any more — the
+        // old unconditional call re-fetched the provider on
+        // nearly every open (the 60 s throttle lapses between
+        // opens). The only automatic fetch left is first-run
+        // seeding: nothing stored yet, so there is no cache to
+        // render. Every later update is explicit (Refresh home
+        // data, or a section Retry) or a fetch landing from
+        // another screen (Library/Details), which warms the memo.
+        if (!TrackerClient.hasStoredData(this)) {
+            TrackerClient.refreshAsync(this) { if (isTrackerFamily()) rebuild() }
+        }
         if (isWatchStyle()) {
             // Watch (v2.3): the IPTV matches ride along — fresh
             // badges land via data/WatchPlay.onMatchesChanged (set
@@ -6045,6 +6127,11 @@ class MainActivity : Activity() {
         try { checkRotationAndBing() } catch (e: Exception) {
             Prefs.noteError(this, "housekeeping:wallpaper", e)
         }
+        // v3.2 (ask 43): weather's stale-fetch lives HERE (the
+        // visible-home tick), not on open/resume/rebuild.
+        try { maybeFetchWeather() } catch (e: Exception) {
+            // Widget/background only — ignore.
+        }
         try { checkNowPlayingChanged() } catch (e: Exception) {
             // Row refresh is cosmetic; never disturb the home screen.
         }
@@ -6162,19 +6249,37 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun refreshWeather() {
+    /**
+     * v3.2 (ask 43): the rebuild-time half of weather — paints
+     * the CACHED text only. No network, no rebuild trigger.
+     */
+    private fun updateWeatherWidget() {
         if (prefs.safeMode) return
-        // The fetch feeds BOTH the status-bar widget (when present) and
-        // the weather background (when that wallpaper kind is chosen).
+        // The cached text feeds BOTH the status-bar widget (when
+        // present) and the weather background (when that wallpaper
+        // kind is chosen).
         val weatherView = findWeatherView()
         if (weatherView == null && prefs.wallpaperKind != "weather") return
         val cached = prefs.cachedWeather
         if (weatherView != null && cached.isNotEmpty()) weatherView.text = cached
+        setWeatherVisibility(if (cached.isEmpty()) View.GONE else View.VISIBLE)
+    }
+
+    /**
+     * v3.2 (ask 43): the fetch half of weather — called ONLY
+     * from the visible-home clock tick (housekeeping) while
+     * stale, or from the explicit Refresh home data control
+     * (force). Never from open/resume/rebuild. The landing
+     * updates the widget text in place; a weather-wallpaper
+     * background swap rebuilds, but that rebuild happens while
+     * the home is already visible (a wallpaper change, not an
+     * open-path refresh) and re-renders purely from cache.
+     */
+    private fun maybeFetchWeather(force: Boolean = false) {
+        if (!::prefs.isInitialized || prefs.safeMode) return
+        val cached = prefs.cachedWeather
         val stale = System.currentTimeMillis() - prefs.lastWeatherFetch > 30 * 60 * 1000
-        if (!stale) {
-            setWeatherVisibility(if (cached.isEmpty()) View.GONE else View.VISIBLE)
-            return
-        }
+        if (!force && !com.mizan.launcher.core.RefreshPolicy.weatherFetchAllowed(stale, true)) return
         Weather.fetch(prefs.weatherLat, prefs.weatherLon, prefs.weatherUnits) { snap ->
             runOnUiThread {
                 try {
@@ -6262,6 +6367,11 @@ class MainActivity : Activity() {
                 refreshAsync(activity)
             }
             return c ?: emptyList()
+        }
+
+        /** v3.2 (ask 43): explicit app-list refresh (Refresh home data). Single-flight, as usual. */
+        fun refreshNow(activity: Activity) {
+            refreshAsync(activity)
         }
 
         private fun refreshAsync(activity: Activity) {

@@ -64,6 +64,8 @@ import com.mizan.launcher.core.SectionGuard
 import com.mizan.launcher.core.HomeCache
 import com.mizan.launcher.core.SectionModule
 import com.mizan.launcher.core.PlayInLogic
+import com.mizan.launcher.core.RefreshPolicy
+import com.mizan.launcher.core.StartupStages
 import com.mizan.launcher.core.HomeFallback
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
@@ -1999,17 +2001,22 @@ fun main() {
         // --- QuickSettings table ---
         // v3.1 RE-PINNED (ask 41): an internal Sort sections target
         // joins the table (second-to-last); system targets unchanged.
-        check("quicksettings: six system targets, then Sort sections, then Sreeb Settings, actions distinct",
-            QuickSettings.TARGETS.size == 8 &&
+        // v3.2 RE-PINNED (ask 43): a second internal target,
+        // "Refresh home data", joins between Sort sections and
+        // Sreeb Settings; system targets unchanged.
+        check("quicksettings: six system targets, then Sort sections, Refresh home data, Sreeb Settings",
+            QuickSettings.TARGETS.size == 9 &&
                 QuickSettings.TARGETS.last().label == "Sreeb Settings" &&
                 QuickSettings.TARGETS.last().action.isEmpty() &&
                 QuickSettings.TARGETS[6].label == "Sort sections" &&
                 QuickSettings.TARGETS[6].action == "sreeb:sortsections" &&
+                QuickSettings.TARGETS[7].label == "Refresh home data" &&
+                QuickSettings.TARGETS[7].action == "sreeb:refreshhome" &&
                 QuickSettings.TARGETS.take(6).all { it.action.startsWith("android.settings.") } &&
                 QuickSettings.TARGETS.take(6).map { it.action }.toSet().size == 6)
         check("quicksettings: unresolvable targets are filtered, internal + Sreeb Settings stay",
             QuickSettings.visible(QuickSettings.TARGETS) { it.contains("WIFI") }.map { it.label } ==
-                listOf("Wi-Fi", "Sort sections", "Sreeb Settings"))
+                listOf("Wi-Fi", "Sort sections", "Refresh home data", "Sreeb Settings"))
 
         // --- LiveTvLogic state mapping ---
         val lt = LiveTvLogic
@@ -3229,6 +3236,9 @@ fun main() {
     // ---------- (51) v3.1 hero amendment: the hero comes from the schedule (missed + up next) ----------
     section51()
 
+    // ---------- (52) v3.2: no refresh on open, sort in one place, first-frame stages ----------
+    section52()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3930,11 +3940,11 @@ fun section42() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        // Re-pinned in v3.1 (intentional version bump 3.0/23 → 3.1/24 —
-        // the five directives + hero schedule, spec §31).
-        check("v25src: the app version is 3.1 / code 24 (bumped by v3.1)",
-            gradleSrc.contains("versionName = \"3.1\"") &&
-                gradleSrc.contains("versionCode = 24"))
+        // Re-pinned in v3.2 (intentional version bump 3.1/24 → 3.2/25 —
+        // no-refresh-on-open + sort dedup + first-frame stages, spec §32).
+        check("v25src: the app version is 3.2 / code 25 (bumped by v3.2)",
+            gradleSrc.contains("versionName = \"3.2\"") &&
+                gradleSrc.contains("versionCode = 25"))
     }
 }
 
@@ -4822,9 +4832,10 @@ fun section50() {
         check("v31src: discovery Retry forces one TTL-ignoring worker run",
             src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("forceNext") &&
                 src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun refreshNow"))
-        check("v31src: the version bump is 3.1 / code 24",
-            src("app/build.gradle.kts").contains("versionCode = 24") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.1\""))
+        // Re-pinned in v3.2 (intentional version bump 3.1/24 → 3.2/25, spec §32).
+        check("v31src: the version bump is 3.2 / code 25",
+            src("app/build.gradle.kts").contains("versionCode = 25") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.2\""))
     }
 }
 
@@ -4943,4 +4954,73 @@ fun section51() {
             src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("lastTvFacts") &&
                 src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun tvFacts()"))
     }
+}
+
+fun section52() {
+    // ---- pure policy: no auto-refresh on open/resume/switch ----
+    check("refresh52: open/resume/profile-switch never auto-refresh",
+        !RefreshPolicy.autoRefreshAllowed(RefreshPolicy.Trigger.OPEN) &&
+            !RefreshPolicy.autoRefreshAllowed(RefreshPolicy.Trigger.RESUME) &&
+            !RefreshPolicy.autoRefreshAllowed(RefreshPolicy.Trigger.PROFILE_SWITCH))
+    check("refresh52: manual/retry/first-run-seed are the only allowed triggers",
+        RefreshPolicy.autoRefreshAllowed(RefreshPolicy.Trigger.MANUAL) &&
+            RefreshPolicy.autoRefreshAllowed(RefreshPolicy.Trigger.SECTION_RETRY) &&
+            RefreshPolicy.autoRefreshAllowed(RefreshPolicy.Trigger.FIRST_RUN_SEED))
+    check("refresh52: tracker seeds only when nothing is stored",
+        RefreshPolicy.trackerSeedNeeded(false) && !RefreshPolicy.trackerSeedNeeded(true))
+    check("refresh52: discovery fetches only on force or a missing cache file (TTL never fetches)",
+        RefreshPolicy.discoveryFetchAllowed(true, true) &&
+            RefreshPolicy.discoveryFetchAllowed(false, false) &&
+            !RefreshPolicy.discoveryFetchAllowed(false, true))
+    check("refresh52: weather fetches only from the visible-home tick while stale",
+        RefreshPolicy.weatherFetchAllowed(true, true) &&
+            !RefreshPolicy.weatherFetchAllowed(true, false) &&
+            !RefreshPolicy.weatherFetchAllowed(false, true))
+    check("refresh52: accent recomputes only when the wallpaper changed",
+        !RefreshPolicy.accentRecomputeNeeded("wp://a", "wp://a") &&
+            RefreshPolicy.accentRecomputeNeeded("wp://a", "wp://b") &&
+            RefreshPolicy.accentRecomputeNeeded("", "wp://b"))
+
+    // ---- pure stages list: cap + format + same-name replace ----
+    val stages = StartupStages()
+    stages.record("prefs ready", 330)
+    stages.record("apps ready", 410)
+    stages.record("composition done", 900)
+    check("stages52: compact name=ms rendering in record order",
+        stages.text() == "prefs ready=330ms, apps ready=410ms, composition done=900ms")
+    stages.record("apps ready", 950)
+    check("stages52: re-record replaces the earlier same-name stage",
+        stages.text() == "prefs ready=330ms, composition done=900ms, apps ready=950ms")
+    val capped = StartupStages()
+    for (i in 1..40) capped.record("s$i", i.toLong())
+    check("stages52: list caps at 32, oldest dropped",
+        capped.size() == 32 && capped.names().first() == "s9" && capped.names().last() == "s40")
+
+    // ---- source checks: the wiring is really in the app ----
+    fun src(path: String): String = try {
+        java.io.File(path).readText()
+    } catch (e: Exception) {
+        ""
+    }
+    val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+    val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+    val discSrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+    check("refresh52src: onResume carries no refresh kicks any more",
+        mainSrc.contains("NOTHING refreshes on resume"))
+    check("refresh52src: tracker home refreshes only as first-run seeding",
+        mainSrc.contains("if (!TrackerClient.hasStoredData(this))"))
+    check("refresh52src: explicit Refresh home data exists (popover target + handler)",
+        mainSrc.contains("sreeb:refreshhome") && mainSrc.contains("private fun refreshHomeData()"))
+    check("refresh52src: discovery worker fetches only on force-or-empty-cache",
+        discSrc.contains("val allowFetch = force || !hasCoreCache") &&
+            discSrc.contains("if (!loaded) kick(ctx)"))
+    check("refresh52src: home build never parses snapshots (memo-only read + worker kick)",
+        mainSrc.contains("TrackerClient.memoOrNull()") && mainSrc.contains("warmMemoAsync"))
+    check("refresh52src: Home screen row options lost Move up/down (sort only in Sort sections)",
+        !settingsSrc.contains("\"Move row up\"") && !settingsSrc.contains("\"Move row down\"") &&
+            settingsSrc.contains("Sorting lives ONLY in \"Sort sections\""))
+    check("refresh52src: diagnostics gains last-refresh + startup-stages lines",
+        settingsSrc.contains("last refresh:") && settingsSrc.contains("startup stages:"))
+    check("refresh52src: hero schedule rule untouched (missed first, today stays in Coming Soon)",
+        mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
 }

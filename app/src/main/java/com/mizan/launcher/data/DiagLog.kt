@@ -114,6 +114,25 @@ object DiagLog {
         note(if (at >= 0L) "startup: $stage +$at ms" else "startup: $stage")
     }
 
+    /**
+     * v3.2: the fine-grained stage list behind the diagnostics
+     * `startup stages:` line. Unlike markStartup this does NOT
+     * breadcrumb (a stage per rebuild would spam the crumb ring);
+     * it only appends to the capped list, so the next diagnostics
+     * photo can name which stage ate the first-frame time
+     * (provider read, matching, composition, decode, wallpaper).
+     */
+    private val stages = com.mizan.launcher.core.StartupStages()
+
+    /** Record one composition stage with its process-start delta. Cheap, never IO. */
+    fun markStage(name: String) {
+        val at = startupElapsed()
+        if (at >= 0L) stages.record(name, at)
+    }
+
+    /** Compact diagnostics rendering ("" when nothing recorded yet). */
+    fun stagesText(): String = stages.text()
+
     /** The staged shell's first frame was drawn (MainActivity's pre-draw probe). */
     fun recordFirstFrame(ctx: Context) {
         if (firstFrameMs >= 0L) return

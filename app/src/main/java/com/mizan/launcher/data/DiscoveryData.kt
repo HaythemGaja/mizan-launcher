@@ -88,9 +88,18 @@ object DiscoveryData {
     @Volatile
     var onChanged: (() -> Unit)? = null
 
-    /** The current state; kicks the worker when stale/unloaded. Never blocks. */
+    /**
+     * The current state.
+     * v3.2 (ask 43): kicks the worker ONLY until the first run
+     * has hydrated the disk caches into memory — after that the
+     * home build is purely passive. Network fetching inside the
+     * worker is gated separately (see runWorker): TTL expiry is
+     * no longer a fetch trigger; only an explicit refresh/Retry
+     * (force) or a brand-new empty cache (seeding) fetches.
+     * Never blocks.
+     */
     fun snapshot(ctx: Context): State {
-        kick(ctx)
+        if (!loaded) kick(ctx)
         return state
     }
 
@@ -265,11 +274,29 @@ object DiscoveryData {
         forceNext = false
         var next = state
 
+        // v3.2 (ask 43): the ONLY network-fetch gates. An explicit
+        // request (manual Refresh / per-section Retry) forces;
+        // a cache dir with none of the core files fetches once
+        // (first-run seeding). A stale-but-present file NEVER
+        // fetches — TTLs survive only as diagnostics age. The
+        // shaping below (coming-soon from disk facts, for-you
+        // from the cached picks file, trending∩IPTV from the
+        // store) still runs every worker pass, disk-only.
+        val cacheDir = dir(appCtx)
+        val hasCoreCache = listOf(F_TREND_TV, F_TREND_MOVIE, F_TREND_ALL, F_FORYOU).any {
+            try {
+                java.io.File(cacheDir, it).isFile
+            } catch (e: Exception) {
+                false
+            }
+        }
+        val allowFetch = force || !hasCoreCache
+
         // --- trending payloads (TTL 12 h, via the funnel) ---
         var trendingAll: List<Discovery.TrendItem> =
             Discovery.parseTrending(readFile(appCtx, F_TREND_ALL), null)
         fun refreshTrending(name: String, path: String, type: String?): Boolean {
-            if (!force && Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.TRENDING_TTL_MS)) return false
+            if (!allowFetch) return false
             val (json, _) = TrackerClient.tmdbGetBlocking(appCtx, path)
             if (json == null) return false
             writeFile(appCtx, name, json)
@@ -296,32 +323,29 @@ object DiscoveryData {
         val libShows = LibraryLogic.parseLibShows(snap.trackedJson)
         val tvFacts = HashMap<Long, Discovery.TvFacts?>()
         val movieFacts = HashMap<Long, Discovery.MovieFacts?>()
-        var factsDirty = false
         for (show in snap.tracked) {
             val name = detailsName("tv", show.tmdbId)
-            if (force || !Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.DETAILS_TTL_MS)) {
+            if (allowFetch) {
                 val (json, _) = TrackerClient.tmdbGetBlocking(
                     appCtx, LibraryLogic.detailsPath("tv", show.tmdbId)
                 )
-                // Success AND failure are stamped: a dead title must
-                // not be refetched on every resume for 24 h either way.
+                // Success AND failure are stamped (diagnostics age);
+                // v3.2: no auto-refetch exists any more to throttle.
                 writeFile(appCtx, name, json ?: "")
                 stamps[name] = now
                 dirtyStamps = true
-                factsDirty = true
             }
             tvFacts[show.tmdbId] = Discovery.parseTvFacts(readFile(appCtx, name))
         }
         for (movie in snap.movies) {
             val name = detailsName("movie", movie.tmdbId)
-            if (force || !Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.DETAILS_TTL_MS)) {
+            if (allowFetch) {
                 val (json, _) = TrackerClient.tmdbGetBlocking(
                     appCtx, LibraryLogic.detailsPath("movie", movie.tmdbId)
                 )
                 writeFile(appCtx, name, json ?: "")
                 stamps[name] = now
                 dirtyStamps = true
-                factsDirty = true
             }
             movieFacts[movie.tmdbId] = Discovery.parseMovieFacts(readFile(appCtx, name))
         }
@@ -365,8 +389,7 @@ object DiscoveryData {
             ""
         }
         if (launcherKey.isNotBlank()) {
-            val fyStamp = stamps[F_FORYOU] ?: 0L
-            if (force || !Discovery.isFresh(fyStamp, now, Discovery.FORYOU_TTL_MS) || factsDirty) {
+            if (allowFetch) {
                 val picks = computeForYou(appCtx, snap, libShows, tvFacts, movieFacts)
                 if (picks != null) {
                     writeFile(appCtx, F_FORYOU, Discovery.encodePicks(picks))
