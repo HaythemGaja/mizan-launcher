@@ -18,7 +18,7 @@ import com.mizan.launcher.ui.ArrowPinDialog
  *   2. mirrors it into this profile's generalized pending overlay
  *      (core/LibraryLogic) so every surface renders it instantly,
  *   3. where the write is a watched-mark, ALSO updates the v1.8
- *      marked-set, so the home view's Up Next / hero / Movie Night
+ *      marked-set, so the home view's Up Next / hero
  *      hiding behaves exactly as if the mark had been tapped there
  *      (and an unwatch un-hides).
  * Nothing here blocks; the client calls are fire-and-forget.

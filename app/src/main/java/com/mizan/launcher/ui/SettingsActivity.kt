@@ -111,6 +111,7 @@ class SettingsActivity : Activity() {
         "home" to "Home & launcher",
         "look" to "Look & wallpaper",
         "homescreen" to "Home screen",
+        "sortsections" to "Sort sections",
         "statusbar" to "Status bar",
         "weather" to "Weather",
         "lockprofiles" to "Lock & profiles",
@@ -121,7 +122,8 @@ class SettingsActivity : Activity() {
 
     /** v1.6: one glyph per category in the nav list (visual anchors). */
     private val categoryGlyphs: Map<String, String> = mapOf(
-        "home" to "🏠", "look" to "🎨", "homescreen" to "▦", "statusbar" to "🕐",
+        "home" to "🏠", "look" to "🎨", "homescreen" to "▦", "sortsections" to "↕",
+        "statusbar" to "🕐",
         "weather" to "🌦", "lockprofiles" to "🔒", "nowplaying" to "♪",
         "iptv" to "📺", "data" to "💾"
     )
@@ -131,6 +133,7 @@ class SettingsActivity : Activity() {
         "home" to "Default home screen, the watcher, and Speed up",
         "look" to "Theme, wallpaper, icons — and the Reddit source",
         "homescreen" to "Home rows, hidden apps, and folders",
+        "sortsections" to "Reorder and hide home sections for this style",
         "statusbar" to "The top bar: clock, date, weather, quick tiles",
         "weather" to "Location and units for the home weather",
         "lockprofiles" to "Arrow pattern, app locks, profiles, Guest",
@@ -276,6 +279,12 @@ class SettingsActivity : Activity() {
         entered = true
         com.mizan.launcher.data.DiagLog.note("settings opened")
         nav = SettingsNavMachine(categories.map { it.first })
+        // v3.1 (ask 41): deep-link from the quick-settings
+        // "Sort sections" entry (or any future internal target) —
+        // an unknown value keeps the default first category.
+        val deep = intent.getStringExtra("category")
+        val deepIdx = categories.indexOfFirst { it.first == deep }
+        if (deepIdx >= 0) nav.select(deepIdx)
         rebuild()
     }
 
@@ -682,6 +691,7 @@ class SettingsActivity : Activity() {
                 buildRedditDetail(content)
             }
             "homescreen" -> buildHomeScreenDetail(content)
+            "sortsections" -> buildSortSectionsDetail(content)
             "statusbar" -> buildStatusBarDetail(content)
             "weather" -> buildWeatherDetail(content)
             "lockprofiles" -> buildLockProfilesDetail(content)
@@ -1214,6 +1224,164 @@ class SettingsActivity : Activity() {
         ) { trackerSectionOrder() })
     }
 
+    /**
+     * v3.1 (ask 41): "Sort home sections" — one page for the
+     * ACTIVE home style, reusing the existing order stores only
+     * (no second store is invented): Tracker/Watch via
+     * TrackerSections (order + hidden, per profile), TV via
+     * LayoutStore rowOrder + rowVisible, IPTV via LayoutStore for
+     * its favorites/apps rows only — catalogue rows follow the
+     * IPTV store order and have no user sort store, so the page
+     * says so instead of offering fake controls. Each row is a
+     * D-pad row (the row() helper: focusable, scroll-into-view,
+     * focus memory per the v2.8 rules); tapping it opens the
+     * Move up / Move down / Hide-or-Show dialog (the rowOptions
+     * idiom). Every action persists at once and rebuilds the
+     * page, so the home picks it up on return. The existing
+     * hold-OK hide controls keep working — they edit the same
+     * stores.
+     */
+    private fun buildSortSectionsDetail(content: LinearLayout) {
+        val ts = com.mizan.launcher.core.TrackerSections
+        val hs = com.mizan.launcher.core.HomeStyle
+        content.addView(header("Sort home sections"))
+        when {
+            hs.isTracker(prefs.homeStyle) || hs.isWatch(prefs.homeStyle) -> {
+                val cfg = prefs.trackerSectionsConfig()
+                content.addView(info(
+                    "Home style: ${homeStyleLabel()} — tap a section, then Move up, " +
+                        "Move down, or Hide/Show. Changes apply at once."
+                ))
+                content.addView(row(
+                    "Hero — ${if (ts.isShown(cfg, ts.HERO)) "Shown" else "Hidden"}",
+                    "Always first when shown — Hide/Show only"
+                ) {
+                    sortSectionDialog(ts.label(ts.HERO), canMove = false,
+                        shown = ts.isShown(cfg, ts.HERO)) { action ->
+                        applyTrackerSortAction(ts.HERO, action)
+                    }
+                })
+                for ((i, key) in cfg.order.withIndex()) {
+                    content.addView(row(
+                        "${i + 1}. ${ts.label(key)} — " +
+                            if (ts.isShown(cfg, key)) "Shown" else "Hidden",
+                        "Tap for options"
+                    ) {
+                        sortSectionDialog(ts.label(key), canMove = true,
+                            shown = ts.isShown(cfg, key)) { action ->
+                            applyTrackerSortAction(key, action)
+                        }
+                    })
+                }
+            }
+            hs.isIptv(prefs.homeStyle) -> {
+                content.addView(info(
+                    "Home style: IPTV — catalogue rows follow your IPTV store order " +
+                        "and can't be reordered here. Favorites and Apps below can " +
+                        "be hidden or shown."
+                ))
+                for (key in listOf("favorites", "apps")) {
+                    content.addView(row(
+                        "${rowLabel(key)} — " +
+                            if (layout.isRowVisible(key)) "Shown" else "Hidden",
+                        "Tap for options"
+                    ) {
+                        sortSectionDialog(rowLabel(key), canMove = false,
+                            shown = layout.isRowVisible(key)) { action ->
+                            if (action == SortAction.TOGGLE) {
+                                layout.rowVisible[key] = !layout.isRowVisible(key)
+                                saveLayout()
+                                rebuild()
+                            }
+                        }
+                    })
+                }
+            }
+            else -> {
+                content.addView(info(
+                    "Home style: TV — tap a row, then Move up, Move down, or " +
+                        "Hide/Show. Changes apply at once."
+                ))
+                val effectiveOrder = com.mizan.launcher.core.RowOrder.normalize(layout.rowOrder)
+                if (effectiveOrder != layout.rowOrder) {
+                    layout.rowOrder.clear()
+                    layout.rowOrder.addAll(effectiveOrder)
+                }
+                for ((i, key) in layout.rowOrder.withIndex()) {
+                    content.addView(row(
+                        "${i + 1}. ${rowLabel(key)} — " +
+                            if (layout.isRowVisible(key)) "Shown" else "Hidden",
+                        "Tap for options"
+                    ) {
+                        sortSectionDialog(rowLabel(key), canMove = true,
+                            shown = layout.isRowVisible(key)) { action ->
+                            when (action) {
+                                SortAction.TOGGLE ->
+                                    layout.rowVisible[key] = !layout.isRowVisible(key)
+                                SortAction.UP -> moveRow(key, -1)
+                                SortAction.DOWN -> moveRow(key, +1)
+                            }
+                            saveLayout()
+                            rebuild()
+                        }
+                    })
+                }
+            }
+        }
+    }
+
+    /** One sort dialog's outcome (ask 41). */
+    private enum class SortAction { UP, DOWN, TOGGLE }
+
+    /** The Move up / Move down / Hide-or-Show dialog for one sort-page row. */
+    private fun sortSectionDialog(
+        label: String,
+        canMove: Boolean,
+        shown: Boolean,
+        apply: (SortAction) -> Unit
+    ) {
+        val options = mutableListOf<String>()
+        if (canMove) {
+            options.add("Move up")
+            options.add("Move down")
+        }
+        options.add(if (shown) "Hide" else "Show")
+        AlertDialog.Builder(this).setTitle(label)
+            .setItems(options.toTypedArray()) { _, which ->
+                val action = if (canMove) {
+                    when (which) {
+                        0 -> SortAction.UP
+                        1 -> SortAction.DOWN
+                        else -> SortAction.TOGGLE
+                    }
+                } else {
+                    SortAction.TOGGLE
+                }
+                apply(action)
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    /** Apply one sort action to a Tracker/Watch section (existing store only). */
+    private fun applyTrackerSortAction(key: String, action: SortAction) {
+        val ts = com.mizan.launcher.core.TrackerSections
+        when (action) {
+            SortAction.UP -> prefs.setTrackerSectionsConfig(
+                ts.move(prefs.trackerSectionsConfig(), key, -1)
+            )
+            SortAction.DOWN -> prefs.setTrackerSectionsConfig(
+                ts.move(prefs.trackerSectionsConfig(), key, +1)
+            )
+            SortAction.TOGGLE -> prefs.setTrackerSectionsConfig(
+                ts.setShown(
+                    prefs.trackerSectionsConfig(), key,
+                    !ts.isShown(prefs.trackerSectionsConfig(), key)
+                )
+            )
+        }
+        rebuild()
+    }
+
     /** Move up/down dialog for one Tracker section (v2.0). */
     private fun trackerSectionOrder() {
         val ts = com.mizan.launcher.core.TrackerSections
@@ -1611,6 +1779,15 @@ class SettingsActivity : Activity() {
                 "\ndiscovery: " + com.mizan.launcher.core.Discovery.diagText(
                     dDiag.first, dDiag.second.first, dDiag.second.second, dDiag.third
                 )
+            )
+            // v3.1 (ask 38): the quiet home-cache staleness note —
+            // which tracker sections have a last-known disk copy and
+            // how old the oldest is. Rendered from a worker-updated
+            // volatile: composing diagnostics does no IO, and a
+            // stale home never shows an on-screen error for it.
+            append(
+                "\nhome cache: " +
+                    com.mizan.launcher.data.HomeCacheDisk.lastDiag
             )
             val sbCfg = layout.statusBar
             append("\nQuick tiles: master ${if (sbCfg.showQuickTiles) "on" else "off"}" +

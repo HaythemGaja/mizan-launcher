@@ -98,6 +98,17 @@ object TrackerClient {
     /** v1.9: last fetch that returned DATA — the only throttle stamp. */
     private const val K_LAST_OK = "tracker_last_ok"
 
+    /** Provider paths in fetch order — mirrors the keys list in refreshAsync. */
+    private val PATHS = listOf("upnext", "continue", "movies", "tracked", "foryou")
+
+    /**
+     * v3.1 (ask 38): warm the on-disk home-cache mirror into
+     * memory (delegates to data/HomeCacheDisk; spawns its own
+     * worker, idempotent). Called from App.onCreate and from the
+     * fetch worker — never from a home build.
+     */
+    fun warmDiskMirror(ctx: Context) = HomeCacheDisk.warmMirror(ctx)
+
     /** The persisted fetch state, for diagnostics + the fallback line. */
     data class Status(
         val kind: TrackerStatus.Kind,
@@ -162,15 +173,24 @@ object TrackerClient {
     @Volatile
     private var cachedMemoKey: List<Any?>? = null
 
-    /** The last-good snapshots, parsed. Never blocks on the provider. */
+    /**
+     * The last-good snapshots, parsed. Never blocks on the provider.
+     * v3.1 (ask 38, local-first): each path falls back to the
+     * on-disk home-cache mirror (data/HomeCacheDisk, worker-loaded
+     * into memory) when prefs hold nothing for it — a prefs wipe
+     * or corrupt prefs file no longer empties the home. The memo
+     * key includes the mirror values so a late mirror load
+     * invalidates a prefs-empty memo. The home build reads only
+     * this (memory) — zero network, zero disk IO on its path.
+     */
     fun cached(ctx: Context): Snapshots {
         return try {
             val p = prefs(ctx)
-            val rawUp = PrefsSafe.strOrNull(p, K_UPNEXT)
-            val rawCont = PrefsSafe.strOrNull(p, K_CONTINUE)
-            val rawMovies = PrefsSafe.strOrNull(p, K_MOVIES)
-            val rawTracked = PrefsSafe.strOrNull(p, K_TRACKED)
-            val rawForYou = PrefsSafe.strOrNull(p, K_FORYOU)
+            val rawUp = PrefsSafe.strOrNull(p, K_UPNEXT) ?: HomeCacheDisk.mirrored("upnext")
+            val rawCont = PrefsSafe.strOrNull(p, K_CONTINUE) ?: HomeCacheDisk.mirrored("continue")
+            val rawMovies = PrefsSafe.strOrNull(p, K_MOVIES) ?: HomeCacheDisk.mirrored("movies")
+            val rawTracked = PrefsSafe.strOrNull(p, K_TRACKED) ?: HomeCacheDisk.mirrored("tracked")
+            val rawForYou = PrefsSafe.strOrNull(p, K_FORYOU) ?: HomeCacheDisk.mirrored("foryou")
             val updated = PrefsSafe.long(p, K_UPDATED, 0L)
             val forYouUpdated = PrefsSafe.long(p, K_FORYOU_UPDATED, 0L)
             val fetchedAt = PrefsSafe.long(p, K_FETCHED, 0L)
@@ -211,6 +231,9 @@ object TrackerClient {
 
     @Volatile
     private var inFlight = false
+
+    /** Whether a provider fetch is currently running (drives section LOADING placeholders). */
+    fun isRefreshing(): Boolean = inFlight
 
     /**
      * Refresh the cache from the provider on a background thread.
@@ -277,6 +300,16 @@ object TrackerClient {
                 }
                 if (updated > 0) editor.putLong(K_UPDATED, updated)
                 editor.apply()
+                // v3.1 (ask 38): mirror every answered snapshot to
+                // the on-disk home cache on this same worker, so the
+                // home keeps rendering last-known data even if prefs
+                // are later wiped. putSnapshot refuses credential-
+                // shaped payloads; snapshot JSON carries none.
+                warmDiskMirror(appCtx)
+                for ((i, r) in results.withIndex()) {
+                    val json = r.json ?: continue
+                    HomeCacheDisk.putSnapshot(appCtx, PATHS[i], json, now)
+                }
                 val snap = cached(appCtx)
                 val kind = TrackerStatus.classify(
                     installed = isInstalled(appCtx),

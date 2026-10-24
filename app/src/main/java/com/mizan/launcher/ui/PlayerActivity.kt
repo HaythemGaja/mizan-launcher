@@ -744,6 +744,15 @@ class PlayerActivity : Activity() {
             enterPip()
         }
         barButton("↗ External", "external") { openExternal() }
+        // v3.1 (ask 40): hand the CURRENT stream (already resolved
+        // in currentUrl) to another video app. Absent when no URL
+        // is loaded — never a dead button.
+        val playInUrl = currentUrl
+        if (playInUrl != null) {
+            barButton("Play in…", "playin") {
+                com.mizan.launcher.ui.PlayIn.show(this, cur.title, playInUrl)
+            }
+        }
         if (focusTag != null) findBarButton(focusTag)?.requestFocus()
     }
 

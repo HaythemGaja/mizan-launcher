@@ -345,20 +345,24 @@ object WatchPlay {
         activity.startActivity(PlayerActivity.intent(activity, item))
     }
 
+    /**
+     * The PlayItem a matched movie plays as (shared by [playMovie]
+     * and ui/PlayIn's "Play in…" — one construction, two exits).
+     */
+    fun moviePlayItem(vod: IptvLogic.VodItem, token: Token?): PlayItem =
+        PlayItem(
+            kind = IptvLogic.KIND_VOD, source = IptvLogic.SRC_XTREAM,
+            id = vod.id.toString(), title = vod.name, icon = vod.icon,
+            meta = vod.categoryName, ext = vod.ext, catKey = vod.catKey,
+            markTmdbId = token?.tmdbId ?: 0L,
+            markType = token?.type ?: "",
+            markSeason = token?.season ?: 0,
+            markEpisode = token?.episode ?: 0
+        )
+
     /** Play a matched movie from its VOD entry. */
     fun playMovie(activity: Activity, vod: IptvLogic.VodItem, token: Token?) {
-        launch(
-            activity,
-            PlayItem(
-                kind = IptvLogic.KIND_VOD, source = IptvLogic.SRC_XTREAM,
-                id = vod.id.toString(), title = vod.name, icon = vod.icon,
-                meta = vod.categoryName, ext = vod.ext, catKey = vod.catKey,
-                markTmdbId = token?.tmdbId ?: 0L,
-                markType = token?.type ?: "",
-                markSeason = token?.season ?: 0,
-                markEpisode = token?.episode ?: 0
-            )
-        )
+        launch(activity, moviePlayItem(vod, token))
     }
 
     /**

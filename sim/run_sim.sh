@@ -64,6 +64,9 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/PlayerLogic.kt \
   app/src/main/java/com/mizan/launcher/core/StartupHealth.kt \
   app/src/main/java/com/mizan/launcher/core/SectionGuard.kt \
+  app/src/main/java/com/mizan/launcher/core/HomeCache.kt \
+  app/src/main/java/com/mizan/launcher/core/SectionModule.kt \
+  app/src/main/java/com/mizan/launcher/core/PlayInLogic.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -239,7 +242,20 @@ export JAVA_OPTS
   echo "remain the fallback, and diagnostics gains a discovery:"
   echo "line. New section 45. All other checks carry over."
   echo
-  echo "Note (v3.0): the crash-hardening redo (spec S30). New section"
+  echo "Note (v3.1): the five 2026-10-24 directives (spec S31). New section"
+echo "50: Movie Night removal (registry/defaults/composition/hero pool/"
+echo "stored-order drop), the local-first home cache (TTLs, staleness"
+echo "wording, oldest-first prune, credential tripwire), the section"
+echo "lifecycle machine (LOADING/READY/EMPTY/ERROR + retry routing),"
+echo "Play-in candidate filtering (self excluded, no hardcoded"
+echo "packages), and the sort page's stores (TrackerSections moves,"
+echo "QuickSettings internal target) plus source checks for all five"
+echo "wirings. Re-pins with comments: the v2.7 canonical/move/compose/"
+echo "migrate expectations and the hero-pool order/sources (movienight"
+echo "is gone); the numeric-string movie parse check is renamed (the"
+echo "movies data itself is untouched)."
+echo
+echo "Note (v3.0): the crash-hardening redo (spec S30). New section"
   echo "48: the startup-health state machine (two consecutive"
   echo "uncleared starts -> safe shell on the third launch; a clean"
   echo "render + 10s survival clears), the section-guard policy"

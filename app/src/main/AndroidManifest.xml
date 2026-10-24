@@ -36,6 +36,13 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- v3.1 (ask 40, Play in…): without this, queryIntentActivities
+             for ACTION_VIEW video/* returns nothing on API 30+ (package
+             visibility) and the picker would always report "no app". -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="video/*" />
+        </intent>
     </queries>
 
     <!-- v2.3.1: cleartext HTTP is permitted app-wide. Deliberate: this

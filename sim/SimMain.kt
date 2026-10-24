@@ -61,6 +61,9 @@ import com.mizan.launcher.core.PlayerLogic
 import com.mizan.launcher.core.JsonMini
 import com.mizan.launcher.core.StartupHealth
 import com.mizan.launcher.core.SectionGuard
+import com.mizan.launcher.core.HomeCache
+import com.mizan.launcher.core.SectionModule
+import com.mizan.launcher.core.PlayInLogic
 import com.mizan.launcher.core.HomeFallback
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
@@ -1823,6 +1826,8 @@ fun main() {
         val defCfg = ts.decode(null)
         check("sections: default config composes the canonical order",
             ts.compose(defCfg) { true } == ts.CANONICAL)
+        // v3.1 RE-PINNED (ask 37): the input still mentions movienight —
+        // normalize drops it on BOTH sides now, so the round-trip holds.
         check("sections: codec round-trips a custom config",
             ts.decode(ts.encode(ts.normalize(setOf("foryou"), listOf("foryou", "upnext", "continue", "movienight", "favorites", "allapps")))) ==
                 ts.normalize(setOf("foryou"), listOf("foryou", "upnext", "continue", "movienight", "favorites", "allapps")))
@@ -1835,8 +1840,10 @@ fun main() {
         // RE-PINNED in v2.7: the default order intentionally
         // changed (directive: comingsoon after upnext, trending
         // after continue) — the swap happens over the longer list.
+        // v3.1 RE-PINNED (ask 37): foryou's predecessor is now
+        // trendingmovies (movienight gone), so the swap lands there.
         check("sections: move up swaps with the previous row",
-            moved.order == listOf("upnext", "comingsoon", "continue", "trendingtv", "trendingmovies", "foryou", "movienight", "favorites", "allapps"))
+            moved.order == listOf("upnext", "comingsoon", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "allapps"))
         check("sections: moves at the edges and for the hero are no-ops",
             ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
                 ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
@@ -1845,11 +1852,14 @@ fun main() {
         // RE-PINNED in v2.7 (new sections in the canonical tail).
         check("sections: compose follows the configured order, hero first",
             ts.compose(reordered) { true } ==
-                listOf("hero", "allapps", "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies", "movienight", "foryou", "favorites"))
+                // v3.1 RE-PINNED (ask 37): movienight in the input drops via normalize.
+                listOf("hero", "allapps", "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies", "foryou", "favorites"))
         // RE-PINNED in v2.7 (new sections compose when available).
+        // v3.1 RE-PINNED (ask 37): MOVIENIGHT is gone, so the data-empty
+        // gate uses foryou; hidden upnext + gated foryou both drop.
         check("sections: hidden + data-empty sections are both skipped",
-            ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.MOVIENIGHT } ==
-                listOf("hero", "comingsoon", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "allapps"))
+            ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.FORYOU } ==
+                listOf("hero", "comingsoon", "continue", "trendingtv", "trendingmovies", "favorites", "allapps"))
         check("sections: unknown keys are dropped by normalize",
             ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
                 ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
@@ -1987,15 +1997,19 @@ fun main() {
                 aw.with(awMap, "com.netflix.ninja", null).size == 1)
 
         // --- QuickSettings table ---
-        check("quicksettings: six system targets then Sreeb Settings, actions distinct",
-            QuickSettings.TARGETS.size == 7 &&
+        // v3.1 RE-PINNED (ask 41): an internal Sort sections target
+        // joins the table (second-to-last); system targets unchanged.
+        check("quicksettings: six system targets, then Sort sections, then Sreeb Settings, actions distinct",
+            QuickSettings.TARGETS.size == 8 &&
                 QuickSettings.TARGETS.last().label == "Sreeb Settings" &&
                 QuickSettings.TARGETS.last().action.isEmpty() &&
-                QuickSettings.TARGETS.dropLast(1).all { it.action.startsWith("android.settings.") } &&
-                QuickSettings.TARGETS.dropLast(1).map { it.action }.toSet().size == 6)
-        check("quicksettings: unresolvable targets are filtered, Sreeb Settings stays",
+                QuickSettings.TARGETS[6].label == "Sort sections" &&
+                QuickSettings.TARGETS[6].action == "sreeb:sortsections" &&
+                QuickSettings.TARGETS.take(6).all { it.action.startsWith("android.settings.") } &&
+                QuickSettings.TARGETS.take(6).map { it.action }.toSet().size == 6)
+        check("quicksettings: unresolvable targets are filtered, internal + Sreeb Settings stay",
             QuickSettings.visible(QuickSettings.TARGETS) { it.contains("WIFI") }.map { it.label } ==
-                listOf("Wi-Fi", "Sreeb Settings"))
+                listOf("Wi-Fi", "Sort sections", "Sreeb Settings"))
 
         // --- LiveTvLogic state mapping ---
         val lt = LiveTvLogic
@@ -2313,12 +2327,12 @@ fun main() {
                 ll.decodePosterCache("tv|x|/a.jpg\nmovie|5").isEmpty() &&
                 ll.decodePosterCache(null).isEmpty())
 
-        // --- Movie Night hardening (v2.1): a numeric-STRING tmdbId
+        // --- Movie parsing hardening (v2.1; v3.1: the section is gone, the parse stays) ---
         // must still parse — a bridge serializing ids as strings
         // would otherwise silently empty the whole row. ---
         val stringIdMovies =
             """[{"tmdbId":"303","title":"Strung","releaseDate":"2024-03-03","planned":true,"poster":"/s.jpg","watched":false}]"""
-        check("movie night: numeric-string tmdbId still parses",
+        check("movies: numeric-string tmdbId still parses",
             TrackerLogic.parseMovies(stringIdMovies).let {
                 it.size == 1 && it[0].tmdbId == 303L && it[0].title == "Strung" && !it[0].watched
             })
@@ -2331,35 +2345,37 @@ fun main() {
         val hCont = listOf(
             TrackerLogic.ContinueItem(3, "C-Art", "Next S1 E1", 1, 9, "", "/c3.jpg", "", "tv")
         )
-        val hMovies = listOf(
-            TrackerLogic.MovieItem(4, "M-One", "2026-12-01", false, "/m4.jpg", false),
-            TrackerLogic.MovieItem(5, "M-Two", "", true, "", false)
-        )
         val hPicks = listOf(
             TrackerLogic.ForYouPick(6, "tv", "P-Art", "/p6.jpg", 7.5, "Because you watched X", listOf("Drama"), 9.0),
             TrackerLogic.ForYouPick(7, "movie", "P-NoArt", "/p7.jpg", 6.0, "Trending", emptyList(), 5.0)
         )
+        // v3.1 RE-PINNED (hero schedule): the pool is the schedule —
+        // both Up Next dates precede today, so both are missed,
+        // most overdue first; Continue/For You only join an EMPTY
+        // schedule (pinned in section 51).
         val pool = TrackerLogic.heroCandidates(
-            hUp, hCont, hMovies, hPicks, mapOf("tv|6" to "/p6-back.jpg")
+            hUp, hCont, hPicks, mapOf("tv|6" to "/p6-back.jpg"), "2026-11-03"
         )
-        check("hero pool: order is Up Next, Continue, Movie Night, For You (backdrop-first in section)",
-            pool.map { it.title } == listOf("U-Art", "C-Art", "U-NoArt", "M-One", "M-Two", "P-Art"),
+        check("hero pool: missed first, most overdue first (backdrop never reorders)",
+            pool.map { it.title } == listOf("U-NoArt", "U-Art"),
             pool.map { it.title }.toString())
-        check("hero pool: every candidate carries its exact section name as source",
-            pool.map { it.source } == listOf(
-                "Up Next", "Continue Watching", "Up Next",
-                "Movie Night", "Movie Night", "For You"
-            ),
-            pool.map { it.source }.toString())
-        check("hero pool: poster-only For You pick stays out; a known backdrop lets it in",
-            pool.none { it.title == "P-NoArt" } &&
-                pool.first { it.title == "P-Art" }.backdrop == "/p6-back.jpg" &&
-                pool.first { it.title == "P-Art" }.sub == "Because you watched X")
-        check("hero pool: movie hero uses the movie path (type movie, release date, no fake backdrop)",
-            pool.first { it.title == "M-One" }.let {
-                it.type == "movie" && it.dateIso == "2026-12-01" && it.backdrop.isEmpty()
-            } &&
-                pool.first { it.title == "M-Two" }.sub == "Planned")
+        check("hero pool: missed heroes carry the Missed source + label with date chip",
+            pool.map { it.source } == listOf("Missed", "Missed") &&
+                pool[0].sub == "Missed · S1 E1 · Nov 1" &&
+                pool[1].sub == "Missed · S1 E2 · Nov 2",
+            pool.map { it.sub }.toString())
+        val fallbackPool = TrackerLogic.heroCandidates(
+            emptyList(), hCont, hPicks, mapOf("tv|6" to "/p6-back.jpg"), "2026-11-03"
+        )
+        check("hero pool: empty schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)",
+            fallbackPool.map { it.title } == listOf("C-Art", "P-Art") &&
+                fallbackPool.map { it.source } == listOf("Continue Watching", "For You") &&
+                fallbackPool.first { it.title == "P-Art" }.backdrop == "/p6-back.jpg" &&
+                fallbackPool.first { it.title == "P-Art" }.sub == "Because you watched X" &&
+                fallbackPool.none { it.title == "P-NoArt" })
+        // v3.1 DELETED (ask 37): movie heroes no longer exist — the
+        // pool is Up Next → Continue → For You, and movies data
+        // itself still parses (see the numeric-string check above).
         check("hero pool: two-source overload keeps the v1.8 order and tags",
             TrackerLogic.heroCandidates(hUp, hCont).map { it.title to it.source } == listOf(
                 "U-Art" to "Up Next", "C-Art" to "Continue Watching", "U-NoArt" to "Up Next"
@@ -3207,6 +3223,12 @@ fun main() {
     // ---------- (49) v3.0: corrupt/partial startup state — the app still opens on his real data shapes ----------
     section49()
 
+    // ---------- (50) v3.1: Movie Night removal, local-first home cache, section modules, Play in…, sort page ----------
+    section50()
+
+    // ---------- (51) v3.1 hero amendment: the hero comes from the schedule (missed + up next) ----------
+    section51()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3704,19 +3726,22 @@ fun section45() {
 
         // --- sections: the v2.7 set ---
         val tsx = TrackerSections
+        // v3.1 RE-PINNED (ask 37): movienight removed from the canonical order.
         check("sections: v2.7 canonical order is the directive's focus order",
             tsx.CANONICAL == listOf(
                 "hero", "upnext", "comingsoon", "continue", "trendingtv",
-                "trendingmovies", "movienight", "foryou", "favorites", "allapps"
+                "trendingmovies", "foryou", "favorites", "allapps"
             ))
         check("sections: v2.7 labels",
             tsx.label(tsx.COMINGSOON) == "Coming Soon" &&
                 tsx.label(tsx.TRENDINGTV) == "Trending TV" &&
                 tsx.label(tsx.TRENDINGMOVIES) == "Trending Movies")
+        // v3.1 RE-PINNED (ask 37): a stored movienight drops on decode;
+        // the remaining order + appended focus rows are unchanged.
         check("sections: a pre-v2.7 stored order keeps its order; the new rows append",
             tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|").order ==
                 listOf(
-                    "upnext", "continue", "movienight", "foryou", "favorites",
+                    "upnext", "continue", "foryou", "favorites",
                     "allapps", "comingsoon", "trendingtv", "trendingmovies"
                 ))
 
@@ -3905,11 +3930,11 @@ fun section42() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        // Re-pinned in v3.0 (intentional version bump 2.9/22 → 3.0/23 —
-        // the crash-hardening redo, spec §30).
-        check("v25src: the app version is 3.0 / code 23 (bumped by v3.0)",
-            gradleSrc.contains("versionName = \"3.0\"") &&
-                gradleSrc.contains("versionCode = 23"))
+        // Re-pinned in v3.1 (intentional version bump 3.0/23 → 3.1/24 —
+        // the five directives + hero schedule, spec §31).
+        check("v25src: the app version is 3.1 / code 24 (bumped by v3.1)",
+            gradleSrc.contains("versionName = \"3.1\"") &&
+                gradleSrc.contains("versionCode = 24"))
     }
 }
 
@@ -3927,7 +3952,7 @@ fun section46() {
         check("migrate: the appended rows splice into their canonical slots",
             migrated.order == listOf(
                 "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies",
-                "movienight", "foryou", "favorites", "allapps"
+                "foryou", "favorites", "allapps"
             ))
         check("migrate: idempotent — a second pass changes nothing",
             tsx.migrateOrder(migrated) == migrated)
@@ -3939,7 +3964,7 @@ fun section46() {
         check("migrate: only the still-appended rows move (comingsoon already placed stays)",
             tsx.migrateOrder(partial).order == listOf(
                 "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies",
-                "movienight", "foryou", "favorites", "allapps"
+                "foryou", "favorites", "allapps"
             ))
         val parked = tsx.decode(
             "upnext,continue,comingsoon,movienight,foryou,favorites,allapps,trendingtv,trendingmovies|"
@@ -3947,14 +3972,14 @@ fun section46() {
         check("migrate: a focus row parked mid-list (before foryou) is never itself moved",
             tsx.migrateOrder(parked).order == listOf(
                 "upnext", "continue", "trendingtv", "trendingmovies", "comingsoon",
-                "movienight", "foryou", "favorites", "allapps"
+                "foryou", "favorites", "allapps"
             ))
         val custom = tsx.decode(
             "movienight,upnext,continue,foryou,favorites,allapps,comingsoon,trendingtv,trendingmovies|"
         )
         check("migrate: the user's other rows keep their relative order exactly",
             tsx.migrateOrder(custom).order == listOf(
-                "movienight", "upnext", "comingsoon", "continue", "trendingtv",
+                "upnext", "comingsoon", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "allapps"
             ))
         val hiddenCfg = tsx.decode(
@@ -4617,5 +4642,305 @@ fun section49() {
         check("v30src: the open-path workers record Errors too (Throwable catches, finally-reset flags)",
             watchPlaySrc.contains("catch (e: Throwable)") &&
                 discoverySrc.contains("catch (e: Throwable)"))
+    }
+}
+
+/**
+ * v3.1 (spec §31): the five 2026-10-24 directives.
+ * (37) Movie Night removed — registry, defaults, composition, hero
+ * pool, stored orders. (38) Local-first home cache — TTLs,
+ * staleness wording, size prune, credential tripwire. (39) One
+ * module per section — LOADING → READY / EMPTY / ERROR + retry
+ * routing. (40) Play in… — candidate filtering (self excluded,
+ * no hardcoded packages). (41) Sort page — the pure stores it
+ * edits (TrackerSections move/hide, QuickSettings internal target).
+ */
+fun section50() {
+    run {
+        val ts = TrackerSections
+        val hour = 60L * 60L * 1000L
+
+        // ---- (37) Movie Night is gone everywhere ----
+        check("v31: movienight is not in the canonical order or the row set",
+            "movienight" !in ts.CANONICAL && "movienight" !in ts.ROWS)
+        check("v31: no section claims the Movie Night label anymore",
+            ts.label("movienight") != "Movie Night")
+        val stored = ts.decode("upnext,continue,movienight,foryou,favorites,allapps|movienight,comingsoon")
+        check("v31: a stored order mentioning movienight loses it (order AND hidden) without breaking",
+            "movienight" !in stored.order && "movienight" !in stored.hidden &&
+                stored.order.containsAll(listOf("upnext", "continue", "foryou", "favorites", "allapps")))
+        check("v31: compose never emits movienight, even for a stored config that mentions it",
+            "movienight" !in ts.compose(stored) { true })
+        check("v31: move/hide on the removed key are no-ops (the sort page can't resurrect it)",
+            ts.move(ts.decode(null), "movienight", -1) == ts.decode(null) &&
+                ts.setShown(ts.decode(null), "movienight", false) == ts.decode(null))
+        val pool = TrackerLogic.heroCandidates(
+            listOf(TrackerLogic.UpNextItem(1, "U", "S1 E1", "2026-11-01", "", "/u.jpg", "", 1, 1, "tv")),
+            emptyList(),
+            listOf(TrackerLogic.ForYouPick(2, "tv", "P", "/p.jpg", 7.0, "R", emptyList(), 5.0)),
+            mapOf("tv|2" to "/p-back.jpg"),
+            "2026-11-01"
+        )
+        check("v31: the hero pool carries no Movie Night source (today item lands in the up-next tier)",
+            pool.none { it.source == "Movie Night" } &&
+                pool.map { it.source } == listOf("Up Next") &&
+                pool[0].sub == "Up next · S1 E1")
+
+        // ---- (38) HomeCache: TTLs, staleness, prune, credential tripwire ----
+        check("v31: cache TTLs are trending 12h, discovery + snapshots 24h",
+            HomeCache.TRENDING_TTL_MS == 12L * hour &&
+                HomeCache.DISCOVERY_TTL_MS == 24L * hour &&
+                HomeCache.SNAPSHOT_TTL_MS == 24L * hour)
+        val now = 1_000_000_000_000L
+        check("v31: freshness is strict inside the TTL and false at/after it, for 0, and for the future",
+            HomeCache.isFresh(now - hour, 12L * hour, now) &&
+                !HomeCache.isFresh(now - 12L * hour, 12L * hour, now) &&
+                !HomeCache.isFresh(0L, 12L * hour, now) &&
+                !HomeCache.isFresh(now + hour, 12L * hour, now))
+        check("v31: age wording is no data / minutes / hours / days",
+            HomeCache.ageLabel(0L, now) == "no data" &&
+                HomeCache.ageLabel(now - 30L * 60L * 1000L, now) == "30m old" &&
+                HomeCache.ageLabel(now - 3L * hour, now) == "3h old" &&
+                HomeCache.ageLabel(now - 50L * hour, now) == "2d old")
+        val manifest = listOf(
+            HomeCache.Entry("upnext", now - 5L * hour, 1000L),
+            HomeCache.Entry("continue", now - 3L * hour, 1000L),
+            HomeCache.Entry("foryou", now - 1L * hour, 1000L)
+        )
+        check("v31: prune under the cap deletes nothing",
+            HomeCache.prune(manifest, keepSection = "foryou", capBytes = 10_000L).isEmpty())
+        check("v31: prune over the cap deletes oldest first and never the section being written",
+            HomeCache.prune(manifest, keepSection = "foryou", capBytes = 2_500L) == listOf("upnext"))
+        check("v31: prune keeps the written section even when it alone busts the cap",
+            HomeCache.prune(
+                listOf(HomeCache.Entry("foryou", now, 9_999L)),
+                keepSection = "foryou", capBytes = 100L
+            ).isEmpty())
+        check("v31: the credential tripwire fires on Xtream/TMDB shapes and passes clean snapshot JSON",
+            HomeCache.containsCredentialPattern("http://panel:8080/live/u/p/1.ts?username=hay&password=x") &&
+                HomeCache.containsCredentialPattern("{\"tmdb_key\":\"abc\"}") &&
+                HomeCache.containsCredentialPattern("movie/list?api_key=abc") &&
+                !HomeCache.containsCredentialPattern("[{\"tmdbId\":1,\"title\":\"Slow Horses\"}]"))
+        check("v31: the diagnostics line names coverage, oldest age, and size — never content",
+            HomeCache.diagLine(setOf("upnext", "continue"), now - 3L * hour, 2048L, now) ==
+                "2/5 sections · 3h old · 2KB" &&
+                HomeCache.diagLine(emptySet(), 0L, 0L, now).startsWith("0/5 sections · empty"))
+
+        // ---- (39) SectionModule: state machine + retry routing ----
+        check("v31: decide precedence — loading beats failure, failure beats data, data beats empty",
+            SectionModule.decide(hasData = false, loading = true, failed = true) == SectionModule.State.LOADING &&
+                SectionModule.decide(hasData = true, loading = false, failed = true) == SectionModule.State.ERROR &&
+                SectionModule.decide(hasData = true, loading = false, failed = false) == SectionModule.State.READY &&
+                SectionModule.decide(hasData = false, loading = false, failed = false) == SectionModule.State.EMPTY)
+        check("v31: only ERROR is retryable",
+            SectionModule.isRetryable(SectionModule.State.ERROR) &&
+                !SectionModule.isRetryable(SectionModule.State.LOADING) &&
+                !SectionModule.isRetryable(SectionModule.State.READY) &&
+                !SectionModule.isRetryable(SectionModule.State.EMPTY))
+        check("v31: retry routing — tracker, discovery, iptv, apps, unknown",
+            SectionModule.retrySource("upnext") == SectionModule.Source.TRACKER &&
+                SectionModule.retrySource("foryou") == SectionModule.Source.TRACKER &&
+                SectionModule.retrySource("comingsoon") == SectionModule.Source.DISCOVERY &&
+                SectionModule.retrySource("trendingmovies") == SectionModule.Source.DISCOVERY &&
+                SectionModule.retrySource("iptv-trending") == SectionModule.Source.DISCOVERY &&
+                SectionModule.retrySource("iptv-row") == SectionModule.Source.IPTV &&
+                SectionModule.retrySource("favorites") == SectionModule.Source.APPS &&
+                SectionModule.retrySource("bogus") == SectionModule.Source.NONE)
+        check("v31: a section with data never reports loading, even mid-refresh",
+            !SectionModule.isLoading("upnext", hasData = true, trackerFetching = true, discoveryLoaded = false))
+        check("v31: loading is tracker-fetching for tracker rows, discovery-unloaded for discovery rows",
+            SectionModule.isLoading("upnext", hasData = false, trackerFetching = true, discoveryLoaded = true) &&
+                !SectionModule.isLoading("upnext", hasData = false, trackerFetching = false, discoveryLoaded = true) &&
+                SectionModule.isLoading("trendingtv", hasData = false, trackerFetching = false, discoveryLoaded = false) &&
+                !SectionModule.isLoading("trendingtv", hasData = false, trackerFetching = false, discoveryLoaded = true) &&
+                !SectionModule.isLoading("favorites", hasData = false, trackerFetching = true, discoveryLoaded = false))
+
+        // ---- (40) PlayInLogic: self excluded, sorted, no hardcoded names ----
+        val cands = PlayInLogic.filter(
+            listOf(
+                PlayInLogic.Candidate("com.other.player", "Z Player"),
+                PlayInLogic.Candidate("com.mizan.launcher", "Sreeb"),
+                PlayInLogic.Candidate("com.another.app", "a Player"),
+                PlayInLogic.Candidate("", "Blank")
+            ),
+            "com.mizan.launcher"
+        )
+        check("v31: Play-in drops Sreeb itself and blank packages, sorts the rest by label",
+            cands.map { it.pkg } == listOf("com.another.app", "com.other.player") &&
+                PlayInLogic.hasHandler(cands) &&
+                !PlayInLogic.hasHandler(
+                    PlayInLogic.filter(
+                        listOf(PlayInLogic.Candidate("com.mizan.launcher", "Sreeb")),
+                        "com.mizan.launcher"
+                    )
+                ))
+
+        // ---- (41) Sort page: the stores it edits + the internal popover target ----
+        check("v31: sort-page moves reuse TrackerSections move (edges are no-ops, middle swaps)",
+            TrackerSections.move(TrackerSections.decode(null), "upnext", -1) ==
+                TrackerSections.decode(null) &&
+                TrackerSections.move(TrackerSections.decode(null), "allapps", 1) ==
+                    TrackerSections.decode(null))
+        val qsTargets = QuickSettings.visible(QuickSettings.TARGETS) { false }
+        check("v31: the Sort sections popover entry survives a resolves-nothing filter (internal target)",
+            qsTargets.any { it.action == "sreeb:sortsections" } &&
+                qsTargets.none { it.action == "android.settings.WIFI_SETTINGS" } &&
+                qsTargets.any { it.action.isEmpty() } &&
+                QuickSettings.isInternal(QuickSettings.Target("Sort sections", "sreeb:sortsections")) &&
+                !QuickSettings.isInternal(QuickSettings.Target("Wi-Fi", "android.settings.WIFI_SETTINGS")))
+
+        // ---- source checks: the wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("v31src: tracker home renders loading placeholders at configured positions + retry tiles",
+            mainSrc.contains("renderKeys") && mainSrc.contains("sectionLoadingTile(") &&
+                mainSrc.contains("retrySection(key)"))
+        check("v31src: Play-in entries exist in card menus and the hero/menu paths use the shared resolvers",
+            mainSrc.contains("onPlayIn") && mainSrc.contains("playInEpisode(") &&
+                mainSrc.contains("playInMovie(") && mainSrc.contains("Play in…"))
+        check("v31src: quick-settings routes the internal Sort sections target to Settings by category",
+            mainSrc.contains("sreeb:sortsections") && mainSrc.contains("openSettings(\"sortsections\")"))
+        check("v31src: tracker snapshots mirror to the home cache on the fetch worker",
+            src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt").contains("HomeCacheDisk.putSnapshot"))
+        val playInSrc = src("app/src/main/java/com/mizan/launcher/ui/PlayIn.kt")
+        check("v31src: Play-in discovers handlers via the intent query — no hardcoded app packages",
+            playInSrc.contains("queryIntentActivities") &&
+                !playInSrc.contains("Smarters") && !playInSrc.contains("Reezn") &&
+                playInSrc.contains("No other video app can open this stream"))
+        check("v31src: the manifest declares the video/* queries intent (else the picker is always empty)",
+            src("app/src/main/AndroidManifest.xml").contains("android:mimeType=\"video/*\""))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("v31src: the Sort sections page + its dialog + the category deep-link exist",
+            settingsSrc.contains("buildSortSectionsDetail") &&
+                settingsSrc.contains("sortSectionDialog") &&
+                settingsSrc.contains("\"sortsections\"") &&
+                settingsSrc.contains("getStringExtra(\"category\")"))
+        check("v31src: discovery Retry forces one TTL-ignoring worker run",
+            src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("forceNext") &&
+                src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun refreshNow"))
+        check("v31src: the version bump is 3.1 / code 24",
+            src("app/build.gradle.kts").contains("versionCode = 24") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.1\""))
+    }
+}
+
+/**
+ * v3.1 hero amendment (spec §31): the hero pool is the schedule.
+ * Missed (aired strictly before today, most overdue first) then
+ * up-next (today or unknown, dated first, unknowns last); future
+ * episodes are never hero material; unknown dates sort into
+ * up-next, never emptying the hero; an empty schedule falls back
+ * to Continue → For You; a Coming Soon entry evicts a hero item
+ * only for the SAME episode (ties go to Coming Soon).
+ */
+fun section51() {
+    run {
+        val today = "2026-11-05"
+        fun up(id: Long, date: String, season: Int, episode: Int, bd: String = "/b.jpg") =
+            TrackerLogic.UpNextItem(id, "S$id", "S$season E$episode", date, "/p.jpg", bd, "", season, episode, "tv")
+        fun cont(id: Long, bd: String) =
+            TrackerLogic.ContinueItem(id, "C$id", "Next S1 E1", 1, 9, "/p.jpg", bd, "", "tv")
+        val picks = listOf(
+            TrackerLogic.ForYouPick(6, "tv", "P-Art", "/p6.jpg", 7.5, "Because", listOf("Drama"), 9.0),
+            TrackerLogic.ForYouPick(7, "movie", "P-NoArt", "/p7.jpg", 6.0, "Trending", emptyList(), 5.0)
+        )
+        val backdrops = mapOf("tv|6" to "/p6-back.jpg")
+
+        // ---- tiers + ordering (input deliberately shuffled) ----
+        val pool = TrackerLogic.heroCandidates(
+            listOf(
+                up(16, "2026-11-20", 1, 1), // future — never hero
+                up(15, "", 1, 3), // unknown — up-next tier, last
+                up(13, "2026-11-05", 1, 1), // today — up-next tier
+                up(11, "2026-10-25", 1, 2), // missed
+                up(14, "2026-11-05", 1, 2), // today — up-next tier
+                up(10, "2026-10-20", 1, 1), // missed, most overdue
+                up(12, "2026-11-01", 2, 3) // missed
+            ),
+            listOf(cont(3, "/b3.jpg")), picks, backdrops, today
+        )
+        check("hero51: missed first (most overdue first), then up-next (today, then unknown)",
+            pool.map { it.tmdbId } == listOf(10L, 11L, 12L, 13L, 14L, 15L),
+            pool.map { it.tmdbId }.toString())
+        check("hero51: future episodes are never hero material",
+            pool.none { it.tmdbId == 16L })
+        check("hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords",
+            pool[0].sub == "Missed · S1 E1 · Oct 20" &&
+                pool[2].sub == "Missed · S2 E3 · Nov 1" &&
+                pool[3].sub == "Up next · S1 E1" &&
+                pool[5].sub == "Up next · S1 E3" &&
+                pool[0].source == "Missed" && pool[3].source == "Up Next")
+        check("hero51: a schedule pool never falls back to Continue/For You",
+            pool.none { it.source == "Continue Watching" || it.source == "For You" })
+
+        // ---- empty schedule → previous behaviour ----
+        val fallback = TrackerLogic.heroCandidates(
+            listOf(up(16, "2026-11-20", 1, 1)),
+            listOf(cont(3, "/b3.jpg"), cont(4, "")), picks, backdrops, today
+        )
+        check("hero51: an all-future schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)",
+            fallback.map { it.tmdbId } == listOf(3L, 4L, 6L) &&
+                fallback.map { it.source } == listOf("Continue Watching", "Continue Watching", "For You"))
+        check("hero51: an empty library yields an empty pool (never a fabricated hero)",
+            TrackerLogic.heroCandidates(emptyList(), emptyList(), emptyList(), emptyMap(), today).isEmpty())
+        check("hero51: a blank today disables schedule shaping (fallback, never a crash)",
+            TrackerLogic.heroCandidates(
+                listOf(up(10, "2026-10-20", 1, 1)), listOf(cont(3, "/b3.jpg")),
+                emptyList(), emptyMap(), ""
+            ).map { it.tmdbId } == listOf(3L))
+
+        // ---- Coming Soon exclusion is episode-precise ----
+        val soon = listOf(
+            Discovery.SoonItem(20, "tv", "H", "", "2026-11-20", "S1 E1"), // same episode → evicts
+            Discovery.SoonItem(21, "tv", "I", "", "2026-11-20", "S1 E8"), // different episode → keeps
+            Discovery.SoonItem(22, "tv", "J", "", "2026-11-20", "") // no coords → cannot prove → keeps
+        )
+        val excluded = TrackerLogic.heroCandidates(
+            listOf(up(20, "2026-10-20", 1, 1), up(21, "2026-10-21", 1, 2), up(22, "2026-10-22", 1, 1)),
+            emptyList(), emptyList(), emptyMap(), today, soon
+        )
+        check("hero51: no title shares an episode with Coming Soon (ties go to Coming Soon; other episodes keep their hero)",
+            excluded.map { it.tmdbId } == listOf(21L, 22L) &&
+                excluded.none { it.tmdbId == 20L })
+
+        // ---- TMDB date fill: snapshot wins; fill needs matching coords ----
+        val facts = mapOf(
+            30L to Discovery.TvFacts("2026-10-28", 2, 4, "", 0.0, emptyList()),
+            31L to Discovery.TvFacts("2026-10-28", 9, 9, "", 0.0, emptyList()),
+            32L to Discovery.TvFacts("2026-10-29", 3, 1, "", 0.0, emptyList())
+        )
+        val filled = TrackerLogic.fillHeroDates(
+            listOf(
+                up(30, "", 2, 4), // blank + matching coords → filled
+                up(31, "", 2, 4), // blank + mismatched coords → unfilled
+                up(32, "", 0, 0), // blank + no coords → filled with facts coords
+                up(33, "2026-10-01", 2, 4), // snapshot date wins → untouched
+                up(34, "", 2, 4) // no facts → untouched
+            ),
+            facts
+        )
+        check("hero51: date fill fills matching-coord blanks, fills coords when absent, never overwrites",
+            filled[0].dateIso == "2026-10-28" && filled[0].season == 2 && filled[0].episode == 4 &&
+                filled[1].dateIso.isBlank() &&
+                filled[2].dateIso == "2026-10-29" && filled[2].season == 3 && filled[2].episode == 1 &&
+                filled[3].dateIso == "2026-10-01" &&
+                filled[4].dateIso.isBlank())
+
+        // ---- source checks: the schedule wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("hero51src: the home builds its hero from filled schedule dates + Coming Soon exclusion",
+            mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
+        check("hero51src: the discovery worker publishes last-known TMDB facts for the hero fill",
+            src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("lastTvFacts") &&
+                src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun tvFacts()"))
     }
 }

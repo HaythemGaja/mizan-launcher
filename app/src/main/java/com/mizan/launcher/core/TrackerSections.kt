@@ -22,9 +22,15 @@ package com.mizan.launcher.core
  * simply reports "not available" and fails open quietly.
  *
  * Persisted as one line: `order-csv|hidden-csv` using the canonical
- * section keys, e.g. `upnext,continue,movienight,foryou,favorites,allapps|`.
+ * section keys, e.g. `upnext,continue,foryou,favorites,allapps|`.
  * Decode is fail-open: anything unknown is dropped, anything missing
  * falls back to the canonical defaults.
+ *
+ * v3.1 (ask 37): Movie Night is REMOVED — it was always empty on
+ * Haythem's TV. The key is gone from CANONICAL/ROWS/label, so any
+ * stored order or hidden set still mentioning "movienight" loses
+ * it through [normalize] on the next read (no separate migration
+ * step: decode() normalizes, and normalize drops unknown keys).
  */
 object TrackerSections {
 
@@ -34,15 +40,14 @@ object TrackerSections {
     const val CONTINUE = "continue"
     const val TRENDINGTV = "trendingtv"
     const val TRENDINGMOVIES = "trendingmovies"
-    const val MOVIENIGHT = "movienight"
     const val FORYOU = "foryou"
     const val FAVORITES = "favorites"
     const val ALLAPPS = "allapps"
 
-    /** Every section, in the order a fresh profile sees them (v2.7 default). */
+    /** Every section, in the order a fresh profile sees them (v3.1: Movie Night removed). */
     val CANONICAL: List<String> = listOf(
         HERO, UPNEXT, COMINGSOON, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
-        MOVIENIGHT, FORYOU, FAVORITES, ALLAPPS
+        FORYOU, FAVORITES, ALLAPPS
     )
 
     /** The reorderable rows (everything except the hero). */
@@ -60,7 +65,6 @@ object TrackerSections {
         CONTINUE -> "Continue Watching"
         TRENDINGTV -> "Trending TV"
         TRENDINGMOVIES -> "Trending Movies"
-        MOVIENIGHT -> "Movie Night"
         FORYOU -> "For You"
         FAVORITES -> "Favorites"
         ALLAPPS -> "All apps"

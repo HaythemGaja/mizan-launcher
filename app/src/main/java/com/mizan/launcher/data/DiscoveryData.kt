@@ -65,6 +65,15 @@ object DiscoveryData {
     @Volatile
     private var loaded = false
 
+    /**
+     * v3.1 (ask 39): one-shot Retry bypass — a per-section Retry
+     * sets this, and the next worker run ignores every TTL once
+     * (then clears it), so Retry always re-fetches instead of
+     * re-reading a stale-but-"fresh" stamp.
+     */
+    @Volatile
+    private var forceNext = false
+
     @Volatile
     private var inFlight = false
 
@@ -87,6 +96,30 @@ object DiscoveryData {
 
     /** The current state WITHOUT kicking (diagnostics-adjacent reads). */
     fun peek(): State = state
+
+    /**
+     * v3.1 (hero schedule): the last worker run's per-show TMDB
+     * facts (next_episode_to_air date + season/episode), kept in
+     * memory for the hero's date fill. Worker-written, freely
+     * readable — the hero build never waits on a fetch for it.
+     */
+    @Volatile
+    private var lastTvFacts: Map<Long, com.mizan.launcher.core.Discovery.TvFacts> = emptyMap()
+
+    /** Last-known TMDB next-episode facts by show TMDB id (memory only). */
+    fun tvFacts(): Map<Long, com.mizan.launcher.core.Discovery.TvFacts> = lastTvFacts
+
+    /** Whether the worker's first run completed (drives section LOADING placeholders). */
+    fun isLoaded(): Boolean = loaded
+
+    /**
+     * v3.1 (ask 39): per-section Retry for Coming Soon / Trending:
+     * force one TTL-ignoring worker run. Single-flight via kick().
+     */
+    fun refreshNow(ctx: Context) {
+        forceNext = true
+        kick(ctx)
+    }
 
     private fun kick(ctx: Context) {
         synchronized(this) {
@@ -228,13 +261,15 @@ object DiscoveryData {
             state = loadFromDisk(appCtx)
             loaded = true
         }
+        val force = forceNext
+        forceNext = false
         var next = state
 
         // --- trending payloads (TTL 12 h, via the funnel) ---
         var trendingAll: List<Discovery.TrendItem> =
             Discovery.parseTrending(readFile(appCtx, F_TREND_ALL), null)
         fun refreshTrending(name: String, path: String, type: String?): Boolean {
-            if (Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.TRENDING_TTL_MS)) return false
+            if (!force && Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.TRENDING_TTL_MS)) return false
             val (json, _) = TrackerClient.tmdbGetBlocking(appCtx, path)
             if (json == null) return false
             writeFile(appCtx, name, json)
@@ -264,7 +299,7 @@ object DiscoveryData {
         var factsDirty = false
         for (show in snap.tracked) {
             val name = detailsName("tv", show.tmdbId)
-            if (!Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.DETAILS_TTL_MS)) {
+            if (force || !Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.DETAILS_TTL_MS)) {
                 val (json, _) = TrackerClient.tmdbGetBlocking(
                     appCtx, LibraryLogic.detailsPath("tv", show.tmdbId)
                 )
@@ -279,7 +314,7 @@ object DiscoveryData {
         }
         for (movie in snap.movies) {
             val name = detailsName("movie", movie.tmdbId)
-            if (!Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.DETAILS_TTL_MS)) {
+            if (force || !Discovery.isFresh(stamps[name] ?: 0L, now, Discovery.DETAILS_TTL_MS)) {
                 val (json, _) = TrackerClient.tmdbGetBlocking(
                     appCtx, LibraryLogic.detailsPath("movie", movie.tmdbId)
                 )
@@ -331,7 +366,7 @@ object DiscoveryData {
         }
         if (launcherKey.isNotBlank()) {
             val fyStamp = stamps[F_FORYOU] ?: 0L
-            if (!Discovery.isFresh(fyStamp, now, Discovery.FORYOU_TTL_MS) || factsDirty) {
+            if (force || !Discovery.isFresh(fyStamp, now, Discovery.FORYOU_TTL_MS) || factsDirty) {
                 val picks = computeForYou(appCtx, snap, libShows, tvFacts, movieFacts)
                 if (picks != null) {
                     writeFile(appCtx, F_FORYOU, Discovery.encodePicks(picks))
@@ -398,6 +433,12 @@ object DiscoveryData {
 
         val changed = next != state
         state = next
+        // v3.1 (hero schedule): publish the facts for the hero's
+        // date fill (null facts dropped — a show without a next
+        // episode simply has no entry).
+        lastTvFacts = tvFacts.entries.mapNotNull { (id, facts) ->
+            facts?.let { id to it }
+        }.toMap()
         return changed
     }
 

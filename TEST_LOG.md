@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-24 02:10 UTC
+Date: 2026-10-24 18:17 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -169,6 +169,19 @@ computeForYou ported to core/Discovery — seeds, affinity,
 recommendations + discover, pick codec), tracker snapshots
 remain the fallback, and diagnostics gains a discovery:
 line. New section 45. All other checks carry over.
+
+Note (v3.1): the five 2026-10-24 directives (spec S31). New section
+50: Movie Night removal (registry/defaults/composition/hero pool/
+stored-order drop), the local-first home cache (TTLs, staleness
+wording, oldest-first prune, credential tripwire), the section
+lifecycle machine (LOADING/READY/EMPTY/ERROR + retry routing),
+Play-in candidate filtering (self excluded, no hardcoded
+packages), and the sort page's stores (TrackerSections moves,
+QuickSettings internal target) plus source checks for all five
+wirings. Re-pins with comments: the v2.7 canonical/move/compose/
+migrate expectations and the hero-pool order/sources (movienight
+is gone); the numeric-string movie parse check is renamed (the
+movies data itself is untouched).
 
 Note (v3.0): the crash-hardening redo (spec S30). New section
 48: the startup-health state machine (two consecutive
@@ -636,8 +649,8 @@ PASS  mostused: hidden + non-launchable excluded, limit respected, zero counts d
 PASS  artwork: 12 presets with names + colours, indices coerced
 PASS  artwork: codec round-trips presets and escaped URLs
 PASS  artwork: garbage decodes empty; with() sets and removes
-PASS  quicksettings: six system targets then Sreeb Settings, actions distinct
-PASS  quicksettings: unresolvable targets are filtered, Sreeb Settings stays
+PASS  quicksettings: six system targets, then Sort sections, then Sreeb Settings, actions distinct
+PASS  quicksettings: unresolvable targets are filtered, internal + Sreeb Settings stay
 PASS  livetv: state precedence (feature, security, failure, count)
 PASS  livetv: diagnostics wording
 PASS  library: tracked parse keeps watched set + muted + planned, drops bad rows
@@ -679,11 +692,10 @@ PASS  tmdb: retryable = http/io/unknown only
 PASS  tmdb: user lines (no_key names the fix; http carries the code)
 PASS  tmdb: diagnostics wording (v2.6: path + human text + raw token in parens)
 PASS  poster cache: codec round-trips, garbage dropped
-PASS  movie night: numeric-string tmdbId still parses
-PASS  hero pool: order is Up Next, Continue, Movie Night, For You (backdrop-first in section)
-PASS  hero pool: every candidate carries its exact section name as source
-PASS  hero pool: poster-only For You pick stays out; a known backdrop lets it in
-PASS  hero pool: movie hero uses the movie path (type movie, release date, no fake backdrop)
+PASS  movies: numeric-string tmdbId still parses
+PASS  hero pool: missed first, most overdue first (backdrop never reorders)
+PASS  hero pool: missed heroes carry the Missed source + label with date chip
+PASS  hero pool: empty schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)
 PASS  hero pool: two-source overload keeps the v1.8 order and tags
 PASS  iptv: bare host gains http:// and loses the trailing slash
 PASS  iptv: account needs server + user + pass
@@ -831,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.0 / code 23 (bumped by v3.0)
+PASS  v25src: the app version is 3.1 / code 24 (bumped by v3.1)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1058,5 +1070,47 @@ PASS  startup-state: a truncated store index decodes to null (the store re-deriv
 PASS  startup-state: a wrong-typed store index count degrades to 0 in a valid index, never throws
 PASS  v30src: a whole-home fallback holds the startup clear (degraded gate wired)
 PASS  v30src: the open-path workers record Errors too (Throwable catches, finally-reset flags)
-RESULT: 857 passed, 0 failed, 857 total
+PASS  v31: movienight is not in the canonical order or the row set
+PASS  v31: no section claims the Movie Night label anymore
+PASS  v31: a stored order mentioning movienight loses it (order AND hidden) without breaking
+PASS  v31: compose never emits movienight, even for a stored config that mentions it
+PASS  v31: move/hide on the removed key are no-ops (the sort page can't resurrect it)
+PASS  v31: the hero pool carries no Movie Night source (today item lands in the up-next tier)
+PASS  v31: cache TTLs are trending 12h, discovery + snapshots 24h
+PASS  v31: freshness is strict inside the TTL and false at/after it, for 0, and for the future
+PASS  v31: age wording is no data / minutes / hours / days
+PASS  v31: prune under the cap deletes nothing
+PASS  v31: prune over the cap deletes oldest first and never the section being written
+PASS  v31: prune keeps the written section even when it alone busts the cap
+PASS  v31: the credential tripwire fires on Xtream/TMDB shapes and passes clean snapshot JSON
+PASS  v31: the diagnostics line names coverage, oldest age, and size ? never content
+PASS  v31: decide precedence ? loading beats failure, failure beats data, data beats empty
+PASS  v31: only ERROR is retryable
+PASS  v31: retry routing ? tracker, discovery, iptv, apps, unknown
+PASS  v31: a section with data never reports loading, even mid-refresh
+PASS  v31: loading is tracker-fetching for tracker rows, discovery-unloaded for discovery rows
+PASS  v31: Play-in drops Sreeb itself and blank packages, sorts the rest by label
+PASS  v31: sort-page moves reuse TrackerSections move (edges are no-ops, middle swaps)
+PASS  v31: the Sort sections popover entry survives a resolves-nothing filter (internal target)
+PASS  v31src: tracker home renders loading placeholders at configured positions + retry tiles
+PASS  v31src: Play-in entries exist in card menus and the hero/menu paths use the shared resolvers
+PASS  v31src: quick-settings routes the internal Sort sections target to Settings by category
+PASS  v31src: tracker snapshots mirror to the home cache on the fetch worker
+PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app packages
+PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
+PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
+PASS  v31src: discovery Retry forces one TTL-ignoring worker run
+PASS  v31src: the version bump is 3.1 / code 24
+PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
+PASS  hero51: future episodes are never hero material
+PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
+PASS  hero51: a schedule pool never falls back to Continue/For You
+PASS  hero51: an all-future schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)
+PASS  hero51: an empty library yields an empty pool (never a fabricated hero)
+PASS  hero51: a blank today disables schedule shaping (fallback, never a crash)
+PASS  hero51: no title shares an episode with Coming Soon (ties go to Coming Soon; other episodes keep their hero)
+PASS  hero51: date fill fills matching-coord blanks, fills coords when absent, never overwrites
+PASS  hero51src: the home builds its hero from filled schedule dates + Coming Soon exclusion
+PASS  hero51src: the discovery worker publishes last-known TMDB facts for the hero fill
+RESULT: 898 passed, 0 failed, 898 total
 ```

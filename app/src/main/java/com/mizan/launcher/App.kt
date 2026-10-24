@@ -50,5 +50,9 @@ class App : Application() {
             // A prefs hiccup must never block process start.
         }
         IptvClient.ensureStore(this)
+        // v3.1 (ask 38): warm the home-cache mirror on its own
+        // worker so a prefs wipe still leaves last-known tracker
+        // data for the first home build of this process.
+        com.mizan.launcher.data.TrackerClient.warmDiskMirror(this)
     }
 }

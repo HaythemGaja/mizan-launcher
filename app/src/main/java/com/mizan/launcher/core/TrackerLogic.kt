@@ -75,10 +75,10 @@ object TrackerLogic {
     )
 
     /**
-     * A hero-panel candidate, unified from the four Tracker
-     * sections (v2.1 pool widening). [source] is the EXACT on-screen
-     * section name the candidate came from ("Up Next", "Continue
-     * Watching", "Movie Night", "For You") — the hero panel renders
+     * A hero-panel candidate, unified from the Tracker sections
+     * (v2.1 pool widening; v3.1: Movie Night removed). [source] is
+     * the EXACT on-screen section name the candidate came from
+     * ("Up Next", "Continue Watching", "For You") — the hero panel renders
      * it as a small source label above the title. Continue items
      * carry no episode coordinates and no air date (season/episode
      * 0, dateIso ""), so a mark-watched from a Continue-sourced hero
@@ -113,8 +113,10 @@ object TrackerLogic {
     // v2.9 rule keys on the MATCH and resolves on demand (ask
     // F.25). heroPrimaryAction is retired with it.
     const val SOURCE_CONTINUE = "Continue Watching"
-    const val SOURCE_MOVIE_NIGHT = "Movie Night"
     const val SOURCE_FOR_YOU = "For You"
+
+    /** v3.1 (hero schedule): a tracked show's next episode already aired — the hero's first tier. */
+    const val SOURCE_MISSED = "Missed"
 
     /**
      * One locally-marked item: the user tapped "Mark watched" in the
@@ -159,7 +161,7 @@ object TrackerLogic {
      * A TMDB id from a snapshot value. v2.1: numeric STRINGS are
      * accepted too (defensive — a bridge that serializes ids as
      * strings must not silently empty a whole section; that failure
-     * mode is exactly what the Movie Night investigation chased).
+     * mode is exactly what the v2.1 empty-section investigation chased).
      */
     private fun num(v: Any?): Long =
         (v as? Number)?.toLong() ?: (v as? String)?.trim()?.toLongOrNull() ?: 0L
@@ -260,40 +262,15 @@ object TrackerLogic {
 
     // ------------------------------------------------------------ hero
 
-    /** The v1.8 two-source pool (kept for the original callers/tests). */
-    fun heroCandidates(
-        upNext: List<UpNextItem>,
-        cont: List<ContinueItem>
-    ): List<HeroItem> = heroCandidates(upNext, cont, emptyList(), emptyList(), emptyMap())
-
     /**
-     * The hero cycle list (v2.1: pool widened to all four Tracker
-     * sections). Priority order: Up Next → Continue Watching →
-     * Movie Night → For You; within Up Next and Continue, items WITH
-     * a backdrop come before those without (the v1.8 rule), so
-     * index 0 is still "first Up Next item with a backdrop, else
-     * first Continue item with a backdrop, else the first Up Next
-     * item". Callers pass the ALREADY-FILTERED section lists
-     * (marked-set / overlay filtering happens upstream, identically
-     * for the new sources).
-     *
-     * Movie Night: /movies carries NO backdrop, so movie heroes
-     * render over the page gradient (their poster is NOT stretched
-     * into a fake backdrop); their order is the Movie Night order
-     * as supplied. [MovieItem.releaseDate] becomes dateIso, so a
-     * movie releasing today earns the NEW badge.
-     *
-     * For You: the /foryou pick shape has NO backdrop field either —
-     * a pick joins the pool only when a backdrop path is known for
-     * it from [backdrops] (keyed "type|id", learned from tmdb_get
-     * details fetches). Poster-only picks stay out, per the brief.
+     * The v1.8 two-source pool, preserved EXACTLY (backdrop-first
+     * Up Next + Continue) for the original callers/tests. The home
+     * no longer uses this overload — it uses the schedule overload
+     * below (v3.1 hero amendment).
      */
     fun heroCandidates(
         upNext: List<UpNextItem>,
-        cont: List<ContinueItem>,
-        movies: List<MovieItem>,
-        picks: List<ForYouPick>,
-        backdrops: Map<String, String>
+        cont: List<ContinueItem>
     ): List<HeroItem> {
         fun UpNextItem.hero() = HeroItem(
             tmdbId, title, sub, dateIso, poster, backdrop, overview,
@@ -303,19 +280,129 @@ object TrackerLogic {
             tmdbId, title, sub, "", poster, backdrop, overview,
             type, season = 0, episode = 0, fromContinue = true, source = SOURCE_CONTINUE
         )
-        fun MovieItem.hero() = HeroItem(
-            tmdbId = tmdbId,
-            title = title,
-            sub = if (planned) "Planned" else "Movie",
-            dateIso = releaseDate,
-            poster = poster,
-            backdrop = "",
-            overview = "",
-            type = "movie",
-            season = 0,
-            episode = 0,
-            fromContinue = false,
-            source = SOURCE_MOVIE_NIGHT
+        return upNext.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
+            cont.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
+            upNext.filter { it.backdrop.isBlank() }.map { it.hero() } +
+            cont.filter { it.backdrop.isBlank() }.map { it.hero() }
+    }
+
+    /**
+     * Fill blank snapshot air dates for hero shaping (v3.1 hero
+     * amendment, TMDB fallback): the tracker's /upnext snapshot
+     * fields win whenever present; a blank date fills from the
+     * discovery worker's last-known TMDB facts ([facts], keyed by
+     * TMDB id — memory only, never a fetch). The fill is
+     * conservative on purpose: a date fills only when the facts'
+     * next episode MATCHES the item's episode coordinates, or
+     * when the item carries no coordinates at all (then the
+     * facts' coordinates fill too, as one consistent pair). A
+     * date for a DIFFERENT episode never lands on this title —
+     * the item keeps its blank date and sorts into the up-next
+     * tier (unknown dates never empty the hero).
+     */
+    fun fillHeroDates(
+        upNext: List<UpNextItem>,
+        facts: Map<Long, Discovery.TvFacts>
+    ): List<UpNextItem> = upNext.map { item ->
+        if (item.dateIso.isNotBlank()) {
+            item
+        } else {
+            val f = facts[item.tmdbId]
+            if (f == null || f.nextDateIso.isBlank()) {
+                item
+            } else if (item.season <= 0 || item.episode <= 0) {
+                item.copy(
+                    dateIso = f.nextDateIso,
+                    season = f.nextSeason, episode = f.nextEpisode
+                )
+            } else if (f.nextSeason == item.season && f.nextEpisode == item.episode) {
+                item.copy(dateIso = f.nextDateIso)
+            } else {
+                item
+            }
+        }
+    }
+
+    /**
+     * The hero cycle list (v3.1 hero amendment: the hero comes
+     * from the SCHEDULE). Tiers, in order:
+     * 1. Missed — the next unwatched episode already aired (air
+     *    date strictly before [todayIso], device local date),
+     *    most overdue first (earliest air date first).
+     * 2. Up next — next episodes watchable now: air date == today,
+     *    or unknown (blank). Dated items keep snapshot order;
+     *    unknown dates sort last within the tier.
+     * A show whose next episode has NOT aired yet (air date after
+     * today) is NOT hero material — it stays in Coming Soon.
+     * Dates compare lexicographically on trimmed yyyy-MM-dd
+     * (chronological for well-formed ISO; the tracker emits
+     * padded ISO, and a malformed date sorts as unknown-adjacent
+     * rather than crashing the pool).
+     *
+     * No title in both hero and Coming Soon: a candidate is
+     * dropped when [comingSoon] lists the SAME title with the
+     * SAME episode coordinates (Coming Soon's sub carries
+     * "SxEy"). A Coming Soon entry without coordinates cannot
+     * prove sameness, so it never evicts a hero item — and a
+     * behind-on-show case (hero S1E5, Coming Soon S1E8) keeps
+     * its hero, because the episodes differ. Ties on the same
+     * episode resolve to Coming Soon.
+     *
+     * If the schedule pool is entirely empty (no Up Next items
+     * with a next episode — e.g. everything is future-dated),
+     * the pool falls back to the previous behaviour: Continue
+     * Watching (backdrop-first, v1.8 rule) then For You picks
+     * with a known backdrop. The hero is never empty while the
+     * library has content. Callers pass the ALREADY-FILTERED
+     * section lists (marked-set / overlay filtering upstream).
+     *
+     * Labels: missed heroes read "Missed · SxEy · Mon D" (the
+     * date chip, when the air date is known); up-next heroes
+     * read "Up next · SxEy". Source labels are "Missed" /
+     * "Up Next" respectively. A backdrop-less hero still renders
+     * (over the page gradient, as the old movie heroes did) —
+     * backdrop presence never reorders the schedule tiers.
+     */
+    fun heroCandidates(
+        upNext: List<UpNextItem>,
+        cont: List<ContinueItem>,
+        picks: List<ForYouPick>,
+        backdrops: Map<String, String>,
+        todayIso: String,
+        comingSoon: List<Discovery.SoonItem> = emptyList()
+    ): List<HeroItem> {
+        fun coordsOf(item: UpNextItem): String =
+            if (item.season > 0 && item.episode > 0) {
+                "S${item.season} E${item.episode}"
+            } else {
+                ""
+            }
+        fun UpNextItem.missedHero() = HeroItem(
+            tmdbId = tmdbId, title = title,
+            sub = listOfNotNull(
+                "Missed",
+                coordsOf(this).ifBlank { null },
+                shortDate(dateIso).ifBlank { null }
+            ).joinToString(" · "),
+            dateIso = dateIso, poster = poster, backdrop = backdrop,
+            overview = overview, type = type,
+            season = season, episode = episode,
+            fromContinue = false, source = SOURCE_MISSED
+        )
+        fun UpNextItem.upNextHero() = HeroItem(
+            tmdbId = tmdbId, title = title,
+            sub = listOfNotNull(
+                "Up next",
+                coordsOf(this).ifBlank { null }
+            ).joinToString(" · "),
+            dateIso = dateIso, poster = poster, backdrop = backdrop,
+            overview = overview, type = type,
+            season = season, episode = episode,
+            fromContinue = false, source = SOURCE_UP_NEXT
+        )
+        fun ContinueItem.hero() = HeroItem(
+            tmdbId, title, sub, "", poster, backdrop, overview,
+            type, season = 0, episode = 0, fromContinue = true, source = SOURCE_CONTINUE
         )
         fun ForYouPick.hero(backdropPath: String) = HeroItem(
             tmdbId = id,
@@ -331,16 +418,43 @@ object TrackerLogic {
             fromContinue = false,
             source = SOURCE_FOR_YOU
         )
+        val today = todayIso.trim()
+        val eligible = if (today.isBlank()) {
+            emptyList()
+        } else {
+            upNext.filter { item ->
+                val se = coordsOf(item)
+                se.isBlank() || comingSoon.none {
+                    it.tmdbId == item.tmdbId && it.sub.isNotBlank() && it.sub == se
+                }
+            }
+        }
+        val missed = eligible
+            .filter { it.dateIso.isNotBlank() && it.dateIso.trim() < today }
+            .sortedBy { it.dateIso.trim() }
+            .map { it.missedHero() }
+        val upNextTier = eligible
+            .filter { it.dateIso.isBlank() || it.dateIso.trim() == today }
+            .sortedWith(compareBy<UpNextItem> { it.dateIso.isBlank() })
+            .map { it.upNextHero() }
+        val schedule = missed + upNextTier
+        if (schedule.isNotEmpty()) return schedule
         val forYouHeroes = picks.mapNotNull { pick ->
             val bd = backdrops[pick.key()].orEmpty()
             if (bd.isBlank()) null else pick.hero(bd)
         }
-        return upNext.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
-            cont.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
-            upNext.filter { it.backdrop.isBlank() }.map { it.hero() } +
+        return cont.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
             cont.filter { it.backdrop.isBlank() }.map { it.hero() } +
-            movies.map { it.hero() } +
             forYouHeroes
+    }
+
+    /** "Oct 20" for a yyyy-MM-dd date; "" when unparseable. */
+    private fun shortDate(dateIso: String): String {
+        val p = dateIso.trim().split("-")
+        val m = p.getOrNull(1)?.toIntOrNull() ?: return ""
+        val d = p.getOrNull(2)?.toIntOrNull() ?: return ""
+        if (m !in 1..12 || d !in 1..31) return ""
+        return "${MONTHS[m - 1]} $d"
     }
 
     /** The hero at [index] in the cycle (wraps in both directions). */

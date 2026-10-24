@@ -128,7 +128,6 @@ class MainActivity : Activity() {
     private var tMarked: List<TrackerLogic.MarkedEntry> = emptyList()
     private var tUpNext: List<TrackerLogic.UpNextItem> = emptyList()
     private var tCont: List<TrackerLogic.ContinueItem> = emptyList()
-    private var tMovies: List<TrackerLogic.MovieItem> = emptyList()
     private var tPicks: List<TrackerLogic.ForYouPick> = emptyList()
     private var tHeroCandidates: List<TrackerLogic.HeroItem> = emptyList()
     /** v2.7: the discovery working set (data/DiscoveryData's last landed state). */
@@ -924,8 +923,10 @@ class MainActivity : Activity() {
                 // v3.0 (core/SectionGuard): a failed row renders
                 // the error tile in its place — visible, reported
                 // (throttled), never silent, never fatal.
+                // v3.1 (ask 39): Retry re-renders (TV rows are
+                // in-memory; there is no loader to re-run).
                 noteSectionFailure("row:$key", e)
-                sectionErrorTile(rowTileLabel(key))
+                sectionErrorTile(rowTileLabel(key)) { rebuild() }
             }
             if (section != null) content.addView(section)
         }
@@ -958,7 +959,9 @@ class MainActivity : Activity() {
     }
 
     /** The quiet error tile a failed home section renders in its place. */
-    private fun sectionErrorTile(label: String): View {
+    private fun sectionErrorTile(label: String, onRetry: (() -> Unit)? = null): View {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
         val tile = TextView(this)
         tile.text = SectionGuard.tileText(label)
         tile.setTextColor(subColour)
@@ -966,7 +969,98 @@ class MainActivity : Activity() {
         val lp = LinearLayout.LayoutParams(-1, -2)
         lp.setMargins(0, Ui.dp(this, 6), Ui.dp(this, 60), Ui.dp(this, 10))
         tile.layoutParams = lp
-        return tile
+        box.addView(tile)
+        // v3.1 (ask 39): the tile's own Retry re-runs ONLY this
+        // section's loader (see retrySection). No retry → the
+        // pre-v3.1 plain tile, unchanged.
+        if (onRetry != null) {
+            val retry = TextView(this)
+            retry.text = "↻ Retry"
+            retry.setTextColor(accent)
+            retry.textSize = 15f
+            retry.isFocusable = true
+            retry.setPadding(
+                Ui.dp(this, 12), Ui.dp(this, 8), Ui.dp(this, 12), Ui.dp(this, 8)
+            )
+            retry.setOnClickListener { onRetry() }
+            retry.setOnKeyListener { _, keyCode, event ->
+                if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER &&
+                    event.action == android.view.KeyEvent.ACTION_UP
+                ) {
+                    onRetry()
+                    true
+                } else false
+            }
+            box.addView(retry)
+        }
+        return box
+    }
+
+    /**
+     * v3.1 (ask 39): a section's LOADING placeholder — its title
+     * plus one "Loading…" card. The card is NOT focusable, so the
+     * D-pad skips it (never focus-trapping); the section title
+     * still anchors the position while its worker runs.
+     */
+    private fun sectionLoadingTile(label: String): View {
+        val box = section(label)
+        val loading = TextView(this)
+        loading.text = "Loading…"
+        loading.setTextColor(subColour)
+        loading.textSize = 15f
+        loading.isFocusable = false
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 6), Ui.dp(this, 60), Ui.dp(this, 10))
+        loading.layoutParams = lp
+        box.addView(loading)
+        return box
+    }
+
+    /**
+     * v3.1 (ask 39): is this tracker-family section LOADING right
+     * now — shown, no data yet, and its source worker still
+     * running? Pure routing lives in core/SectionModule; this
+     * supplies the live worker flags. Sections WITH data never
+     * report loading (stale-while-revalidate).
+     */
+    private fun sectionLoading(key: String, continueCards: List<TrackerLogic.ContinueCard>): Boolean {
+        val hasData = when (key) {
+            TrackerSections.HERO -> false
+            TrackerSections.UPNEXT -> tUpNext.isNotEmpty()
+            TrackerSections.COMINGSOON -> dSoon.isNotEmpty()
+            TrackerSections.CONTINUE -> continueCards.isNotEmpty()
+            TrackerSections.TRENDINGTV -> dTrendTv.isNotEmpty()
+            TrackerSections.TRENDINGMOVIES -> dTrendMovies.isNotEmpty()
+            TrackerSections.FORYOU -> tPicks.isNotEmpty()
+            else -> true
+        }
+        return com.mizan.launcher.core.SectionModule.isLoading(
+            key, hasData,
+            TrackerClient.isRefreshing(), DiscoveryData.isLoaded()
+        )
+    }
+
+    /**
+     * v3.1 (ask 39): a section's own Retry — re-runs ONLY that
+     * section's loader. Tracker → forced provider fetch (lands
+     * one rebuild); discovery → TTL-ignoring worker run (lands
+     * one rebuild via onChanged); IPTV rows → forced slice reload;
+     * apps/favorites/unknown → plain re-render (in-memory data).
+     */
+    private fun retrySection(key: String) {
+        when (com.mizan.launcher.core.SectionModule.retrySource(key)) {
+            com.mizan.launcher.core.SectionModule.Source.TRACKER ->
+                TrackerClient.refreshAsync(this, force = true) {
+                    if (isTrackerFamily()) rebuild()
+                }
+            com.mizan.launcher.core.SectionModule.Source.DISCOVERY ->
+                DiscoveryData.refreshNow(this)
+            com.mizan.launcher.core.SectionModule.Source.IPTV -> {
+                iptvHomeStamp = Long.MIN_VALUE
+                ensureIptvHomeData(IptvClient.storeStamp(this))
+            }
+            else -> rebuild()
+        }
     }
 
     /** Human labels for the TV home's row keys (error tiles). */
@@ -991,7 +1085,6 @@ class MainActivity : Activity() {
         TrackerSections.CONTINUE -> "Continue"
         TrackerSections.TRENDINGTV -> "Trending TV"
         TrackerSections.TRENDINGMOVIES -> "Trending Movies"
-        TrackerSections.MOVIENIGHT -> "Movie Night"
         TrackerSections.FORYOU -> "For You"
         TrackerSections.FAVORITES -> "Favorites"
         TrackerSections.ALLAPPS -> "Apps"
@@ -1073,7 +1166,6 @@ class MainActivity : Activity() {
         tMarked = marked
         tUpNext = TrackerLogic.filterUpNext(snap.upNext, marked)
         tCont = TrackerLogic.filterContinue(snap.cont, marked)
-        tMovies = TrackerLogic.orderMovies(snap.movies, marked)
         var overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
         val prunedOverlay = TrackerLogic.pruneForYouOverlay(
             overlay, snap.forYou, snap.tracked, snap.movies, snap.forYouUpdated
@@ -1093,13 +1185,22 @@ class MainActivity : Activity() {
             snap.forYou
         }
         tPicks = TrackerLogic.filterForYou(fySource, snap.tracked, snap.movies, overlay)
-        // v2.1: the hero pool spans all four sections (Up Next →
-        // Continue → Movie Night → For You), each list already
-        // filtered exactly as its row is. For You picks join only
-        // with a backdrop learned from a details fetch (the pick
-        // shape carries none) — see TrackerLogic.heroCandidates.
+        // v3.1 (hero schedule amendment): the hero comes from the
+        // SCHEDULE — missed episodes first, then watchable-now
+        // up-next, with the previous Continue → For You pool only
+        // as the empty-schedule fallback. Dates prefer the
+        // tracker's /upnext snapshot fields; blank ones fill from
+        // the discovery worker's last-known TMDB facts (memory
+        // only — the hero never waits on a fetch; the worker's
+        // landing rebuild refreshes the pool). dSoon is already
+        // set (prepareDiscoveryData runs first), so the
+        // same-episode Coming Soon exclusion applies.
+        val heroUpNext = TrackerLogic.fillHeroDates(
+            tUpNext, DiscoveryData.tvFacts()
+        )
         tHeroCandidates = TrackerLogic.heroCandidates(
-            tUpNext, tCont, tMovies, tPicks, TrackerClient.backdropCache(this)
+            heroUpNext, tCont, tPicks, TrackerClient.backdropCache(this),
+            todayIso(), dSoon
         )
     }
 
@@ -1181,7 +1282,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Play a matched movie from the Watch home (Movie Night / hero / For You). */
+    /** Play a matched movie from the Watch home (hero / For You). */
     private fun playMovieItem(movie: TrackerLogic.MovieItem) {
         DiagLog.note("watch: movie play tapped")
         val match = watchMatch("movie", movie.tmdbId)
@@ -1206,6 +1307,50 @@ class MainActivity : Activity() {
     }
 
     /**
+     * v3.1 (ask 40): "Play in…" for a matched Up Next episode —
+     * the episode's IPTV stream, handed to another video app via
+     * ui/PlayIn. Unmatched or coordinate-less cards never offer
+     * the entry (the call site gates on the match).
+     */
+    private fun playInEpisode(item: TrackerLogic.UpNextItem) {
+        val match = watchMatch("tv", item.tmdbId)
+        if (match == null || item.season <= 0 || item.episode <= 0) {
+            Toast.makeText(this, "No playable stream for this episode", Toast.LENGTH_LONG)
+                .show()
+            return
+        }
+        com.mizan.launcher.ui.PlayIn.showForEpisode(
+            this, match, item.season, item.episode, item.title
+        )
+    }
+
+    /** v3.1 (ask 40): "Play in…" for a matched movie (same VOD resolution as playMovieItem). */
+    private fun playInMovie(movie: TrackerLogic.MovieItem) {
+        val match = watchMatch("movie", movie.tmdbId)
+        if (match == null) {
+            Toast.makeText(this, "No playable stream for this title", Toast.LENGTH_LONG)
+                .show()
+            return
+        }
+        val token = if (TrackerClient.cached(this).movies.any { it.tmdbId == movie.tmdbId }) {
+            WatchPlay.Token(movie.tmdbId, "movie", 0, 0)
+        } else {
+            null
+        }
+        WatchPlay.resolveVod(this, match) { vod ->
+            if (isFinishing || isDestroyed) return@resolveVod
+            if (vod == null) {
+                Toast.makeText(this, "Couldn't find this title on your IPTV", Toast.LENGTH_LONG)
+                    .show()
+                return@resolveVod
+            }
+            com.mizan.launcher.ui.PlayIn.showForPlayItem(
+                this, WatchPlay.moviePlayItem(vod, token)
+            )
+        }
+    }
+
+    /**
      * The hero's ▶ Play press (v2.9, ask F.25): resolve on demand,
      * then play. Movies hand off to playMovieItem (its VOD store
      * scan is local and fast). Shows run the resolve flow —
@@ -1225,10 +1370,11 @@ class MainActivity : Activity() {
     ) {
         if (heroResolvePhase == WatchMatch.ResolvePhase.FINDING) return
         if (hero.type == "movie") {
-            val movieItem = tMovies.firstOrNull { it.tmdbId == hero.tmdbId }
-                ?: TrackerLogic.MovieItem(
-                    hero.tmdbId, hero.title, hero.dateIso, false, hero.poster, false
-                )
+            // v3.1: no tMovies list anymore (Movie Night removed) —
+            // the hero itself carries every field playMovieItem needs.
+            val movieItem = TrackerLogic.MovieItem(
+                hero.tmdbId, hero.title, hero.dateIso, false, hero.poster, false
+            )
             playMovieItem(movieItem)
             return
         }
@@ -1448,8 +1594,11 @@ class MainActivity : Activity() {
                     content.addView(buildIptvRow(row))
                 } catch (e: Throwable) {
                     // v3.0 (core/SectionGuard): error tile, not a silent drop.
+                    // v3.1 (ask 39): Retry re-slices this store generation.
                     noteSectionFailure("row:iptv:${row.kind}", e)
-                    content.addView(sectionErrorTile("IPTV row"))
+                    content.addView(
+                        sectionErrorTile("IPTV row") { retrySection("iptv-row") }
+                    )
                 }
             }
         }
@@ -1462,7 +1611,11 @@ class MainActivity : Activity() {
                 content.addView(buildIptvTrendingSection(dState.trendingIptv))
             } catch (e: Throwable) {
                 noteSectionFailure("row:iptv:trending", e)
-                content.addView(sectionErrorTile("Trending on your IPTV"))
+                content.addView(
+                    sectionErrorTile("Trending on your IPTV") {
+                        retrySection("iptv-trending")
+                    }
+                )
             }
         }
         if (layout.isRowVisible("favorites")) {
@@ -1470,7 +1623,9 @@ class MainActivity : Activity() {
                 content.addView(buildFavoritesSection())
             } catch (e: Throwable) {
                 noteSectionFailure("row:iptv:favorites", e)
-                content.addView(sectionErrorTile("Favorites"))
+                content.addView(
+                    sectionErrorTile("Favorites") { retrySection("favorites") }
+                )
             }
         }
         if (layout.isRowVisible("apps")) {
@@ -1478,7 +1633,9 @@ class MainActivity : Activity() {
                 content.addView(buildAppsSection())
             } catch (e: Throwable) {
                 noteSectionFailure("row:iptv:apps", e)
-                content.addView(sectionErrorTile("Apps"))
+                content.addView(
+                    sectionErrorTile("Apps") { retrySection("allapps") }
+                )
             }
         }
     }
@@ -1791,6 +1948,21 @@ class MainActivity : Activity() {
         val isSeries = card.kind == IptvLogic.KIND_SERIES
         labels.add(if (isSeries) "Open" else "▶ Play")
         actions.add { iptvCardClicked(card, row) }
+        if (!isSeries) {
+            // v3.1 (ask 40): the card's own stream, handed over —
+            // same PlayItem construction as iptvPlayCardItem.
+            labels.add("Play in…")
+            actions.add {
+                com.mizan.launcher.ui.PlayIn.showForPlayItem(
+                    this,
+                    PlayItem(
+                        kind = card.kind, source = card.source, id = card.id,
+                        title = card.title, icon = card.image, meta = card.meta,
+                        ext = card.ext, catKey = card.catKey, directUrl = card.directUrl
+                    )
+                )
+            }
+        }
         if (card.kind == IptvLogic.KIND_LIVE) {
             val ch = iptvHomeLive.firstOrNull { it.key == card.key }
             val shift = ch?.let { iptvCatchUpItem(it) }
@@ -2540,6 +2712,14 @@ class MainActivity : Activity() {
                 val target = visible[which]
                 if (target.action.isEmpty()) {
                     openSettings()
+                } else if (com.mizan.launcher.core.QuickSettings.isInternal(target)) {
+                    // v3.1 (ask 41): internal targets route by
+                    // scheme to our own pages — never startActivity
+                    // on the raw action string.
+                    when (target.action) {
+                        "sreeb:sortsections" -> openSettings("sortsections")
+                        else -> openSettings()
+                    }
                 } else {
                     try {
                         startActivity(Intent(target.action))
@@ -2694,8 +2874,15 @@ class MainActivity : Activity() {
      * every entry point — this tile, the corner gear, watcher
      * deep-links — is covered exactly once, and nothing prompts here.
      */
-    private fun openSettings() {
-        startActivity(Intent(this, SettingsActivity::class.java))
+    /**
+     * v3.1 (ask 41): [category] deep-links SettingsActivity at a
+     * page (used by the quick-settings "Sort sections" entry);
+     * null opens at the default first category, as before.
+     */
+    private fun openSettings(category: String? = null) {
+        val intent = Intent(this, SettingsActivity::class.java)
+        if (category != null) intent.putExtra("category", category)
+        startActivity(intent)
     }
 
     /** Profile switch menu on the status-bar profile tile (click or hold-OK). */
@@ -3226,7 +3413,7 @@ class MainActivity : Activity() {
     // core/TrackerLogic; contract in the tracker repo's
     // LAUNCHER_SYNC.md). Composition: the TV status bar, the hero
     // panel (or the no-data fallback), Up Next, merged Continue
-    // Watching, Movie Night, then Favorites + All Apps EXACTLY as
+    // Watching, then Favorites + All Apps EXACTLY as
     // the TV view builds them. Recently Used / Now Playing rows are
     // NOT part of this view. Everything fail-open: no tracker data
     // simply means no hero and no tracker rows.
@@ -3317,7 +3504,6 @@ class MainActivity : Activity() {
             TrackerSections.CONTINUE to continueCards.isNotEmpty(),
             TrackerSections.TRENDINGTV to dTrendTv.isNotEmpty(),
             TrackerSections.TRENDINGMOVIES to dTrendMovies.isNotEmpty(),
-            TrackerSections.MOVIENIGHT to tMovies.isNotEmpty(),
             TrackerSections.FORYOU to tPicks.isNotEmpty(),
             // v2.8: on the cold shell the app list has not landed
             // yet — the two app-backed sections join at the warm
@@ -3326,6 +3512,24 @@ class MainActivity : Activity() {
             TrackerSections.ALLAPPS to (!coldStart && layout.isRowVisible("apps"))
         )
         val order = TrackerSections.compose(sectionsCfg) { available[it] == true }
+        // v3.1 (ask 39): the render list is compose() PLUS loading
+        // placeholders at their configured position for SHOWN
+        // sections whose source worker is still running. Empty
+        // sections stay skipped (no bare headers); the order-empty
+        // fallback below still reads compose()'s output alone.
+        // On the cold shell the single "Loading your library…"
+        // line covers every section, so placeholders start at the
+        // warm rebuild (coldStart suppresses them).
+        val renderKeys = ArrayList<String>()
+        if (TrackerSections.isShown(sectionsCfg, TrackerSections.HERO) && hero != null) {
+            renderKeys.add(TrackerSections.HERO)
+        }
+        for (key in sectionsCfg.order) {
+            if (!TrackerSections.isShown(sectionsCfg, key)) continue
+            if (available[key] == true || (!coldStart && sectionLoading(key, continueCards))) {
+                renderKeys.add(key)
+            }
+        }
 
         if (order.isEmpty()) {
             if (coldStart) {
@@ -3364,7 +3568,13 @@ class MainActivity : Activity() {
             content.addView(buildLibraryEntryRow())
         }
 
-        for (key in order) {
+        for (key in renderKeys) {
+            // v3.1: a loading section renders its placeholder and
+            // nothing else — it never delays its neighbours.
+            if (sectionLoading(key, continueCards)) {
+                content.addView(sectionLoadingTile(trackerTileLabel(key)))
+                continue
+            }
             try {
                 when (key) {
                     TrackerSections.HERO ->
@@ -3380,8 +3590,6 @@ class MainActivity : Activity() {
                         content.addView(buildTrendingSection(dTrendTv, "tv"))
                     TrackerSections.TRENDINGMOVIES ->
                         content.addView(buildTrendingSection(dTrendMovies, "movie"))
-                    TrackerSections.MOVIENIGHT ->
-                        content.addView(buildMovieNightSection(tMovies))
                     TrackerSections.FORYOU ->
                         content.addView(buildForYouSection(tPicks))
                     TrackerSections.FAVORITES ->
@@ -3392,8 +3600,12 @@ class MainActivity : Activity() {
             } catch (e: Throwable) {
                 // v3.0 (core/SectionGuard): was Exception + silent
                 // drop — the section now renders its error tile.
+                // v3.1 (ask 39): the tile carries its own Retry,
+                // which re-runs ONLY this section's loader.
                 noteSectionFailure("row:tracker:$key", e)
-                content.addView(sectionErrorTile(trackerTileLabel(key)))
+                content.addView(
+                    sectionErrorTile(trackerTileLabel(key)) { retrySection(key) }
+                )
             }
         }
         startHeroRotation()
@@ -3515,10 +3727,6 @@ class MainActivity : Activity() {
         val metaParts = ArrayList<String>()
         if (hero.sub.isNotBlank()) metaParts.add(hero.sub)
         var countdown = TrackerLogic.countdownLabel(hero.dateIso, todayIso())
-        // Movies don't "air": a past release date reads "Released".
-        if (hero.source == TrackerLogic.SOURCE_MOVIE_NIGHT && countdown == "Aired") {
-            countdown = "Released"
-        }
         if (countdown.isNotEmpty()) metaParts.add(countdown)
         if (metaParts.isNotEmpty()) {
             val meta = TextView(this)
@@ -3579,10 +3787,10 @@ class MainActivity : Activity() {
             // pick keeps Details/Add — a pick carries no episode
             // coordinates to play.
             val fyMovie = if (isWatchStyle() && hero.type == "movie") {
-                tMovies.firstOrNull { it.tmdbId == hero.tmdbId }
-                    ?: TrackerLogic.MovieItem(
-                        hero.tmdbId, hero.title, hero.dateIso, false, hero.poster, false
-                    )
+                // v3.1: ad-hoc MovieItem (no tMovies list anymore).
+                TrackerLogic.MovieItem(
+                    hero.tmdbId, hero.title, hero.dateIso, false, hero.poster, false
+                )
             } else {
                 null
             }
@@ -3616,7 +3824,7 @@ class MainActivity : Activity() {
         } else if (trackerHere) {
             // Mark watched needs episode coordinates: Up Next heroes
             // carry their own; a Continue hero borrows them from the
-            // same show's Up Next item; a Movie Night hero uses the
+            // same show's Up Next item; a movie hero uses the
             // movie path (0, 0). No coordinates → no button.
             val coords: Pair<Int, Int>? = when {
                 hero.type == "movie" -> 0 to 0
@@ -3870,10 +4078,17 @@ class MainActivity : Activity() {
      * Hold-OK menu for a tracker card: Details (v2.1, in-launcher) /
      * Open Tracker (+ Mark watched when offered).
      */
+    /**
+     * v3.1 (ask 40): [onPlayIn] appends a "Play in…" entry LAST
+     * (existing positions never move). Only call sites with a
+     * playable IPTV match pass it — unmatched cards get no entry,
+     * because Sreeb has no stream to hand over for them.
+     */
     private fun openTrackerCardMenu(
         title: String,
         onMark: (() -> Unit)?,
-        onDetails: (() -> Unit)? = null
+        onDetails: (() -> Unit)? = null,
+        onPlayIn: (() -> Unit)? = null
     ) {
         val labels = mutableListOf<String>()
         val actions = mutableListOf<() -> Unit>()
@@ -3886,6 +4101,10 @@ class MainActivity : Activity() {
         if (onMark != null) {
             labels.add("Mark watched")
             actions.add(onMark)
+        }
+        if (onPlayIn != null) {
+            labels.add("Play in…")
+            actions.add(onPlayIn)
         }
         AlertDialog.Builder(this)
             .setTitle(title)
@@ -4222,6 +4441,13 @@ class MainActivity : Activity() {
                         },
                         onDetails = {
                             openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+                        },
+                        // v3.1 (ask 40): matched shows only — the
+                        // entry hands the episode stream over.
+                        onPlayIn = if (wMatch != null) {
+                            { playInEpisode(item) }
+                        } else {
+                            null
                         }
                     )
                 },
@@ -4314,44 +4540,6 @@ class MainActivity : Activity() {
             } else {
                 row.addView(watchTile(system[card.systemIndex]))
             }
-        }
-        box.addView(horizontalScroller(row))
-        return box
-    }
-
-    private fun buildMovieNightSection(movies: List<TrackerLogic.MovieItem>): View {
-        val box = section("Movie Night")
-        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
-        val today = todayIso()
-        for (movie in movies) {
-            val parts = ArrayList<String>()
-            val countdown = TrackerLogic.countdownLabel(movie.releaseDate, today)
-            if (countdown.isNotEmpty()) parts.add(countdown)
-            if (movie.planned) parts.add("Planned")
-            val wMatch = watchMatch("movie", movie.tmdbId)
-            val card = portraitCard(
-                posterPath = movie.poster,
-                title = movie.title,
-                meta = parts.joinToString(" · "),
-                glyph = "🎬",
-                onClick = {
-                    // v2.9 (ask F.25): matched plays; unmatched
-                    // opens the in-launcher Details.
-                    if (wMatch != null) playMovieItem(movie)
-                    else openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
-                },
-                onLong = {
-                    openTrackerCardMenu(
-                        movie.title,
-                        onMark = { markWatched(movie.tmdbId, "movie", 0, 0) },
-                        onDetails = {
-                            openTitleDetails(movie.tmdbId, "movie", movie.title, movie.poster)
-                        }
-                    )
-                },
-                badge = WatchMatch.cardBadge(wMatch != null)
-            )
-            row.addView(card)
         }
         box.addView(horizontalScroller(row))
         return box
@@ -4609,6 +4797,14 @@ class MainActivity : Activity() {
             labels.add("▶ Play")
             prefix.add {
                 playMovieItem(
+                    TrackerLogic.MovieItem(pick.id, pick.title, "", false, pick.poster, false)
+                )
+            }
+            // v3.1 (ask 40): same match, handed to another video
+            // app instead of the built-in player.
+            labels.add("Play in…")
+            prefix.add {
+                playInMovie(
                     TrackerLogic.MovieItem(pick.id, pick.title, "", false, pick.poster, false)
                 )
             }
