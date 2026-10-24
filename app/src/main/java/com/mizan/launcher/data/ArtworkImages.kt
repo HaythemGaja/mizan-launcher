@@ -2,7 +2,6 @@ package com.mizan.launcher.data
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.widget.ImageView
@@ -27,6 +26,15 @@ object ArtworkImages {
         "Mozilla/5.0 (Linux; Android 12; TV) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 MizanLauncher/2.0"
     private const val MAX_BYTES = 8 * 1024 * 1024
+
+    /**
+     * Decoded-bitmap ceiling (v3.0): the byte cap above does NOT
+     * bound decoded pixels — a small PNG can expand to gigapixels
+     * and OOM the process mid-decode. Every decode in this object
+     * goes through DecodeBounds with this longest-side cap (icon
+     * art never displays larger than a few hundred px).
+     */
+    private const val MAX_DIM = 1024
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val shapedCache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
@@ -70,7 +78,9 @@ object ArtworkImages {
                     invalidate(appCtx, pkg)
                     true
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable, not Exception (v3.0): a decode Error on
+                // this worker must still report failure, not die.
                 false
             }
             mainHandler.post { onResult(ok) }
@@ -102,7 +112,7 @@ object ArtworkImages {
             val raw: Bitmap? = try {
                 val file = fileFor(appCtx, pkg)
                 if (file.isFile) {
-                    BitmapFactory.decodeFile(file.absolutePath)
+                    DecodeBounds.decodeFileBounded(file.absolutePath, MAX_DIM)
                 } else {
                     val bmp = download(url)
                     if (bmp != null) {
@@ -113,7 +123,7 @@ object ArtworkImages {
                     }
                     bmp
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 null
             }
             if (raw == null) return@thread
@@ -154,7 +164,7 @@ object ArtworkImages {
                 }
                 buf.toByteArray()
             }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            DecodeBounds.decodeBytesBounded(bytes, MAX_DIM)
         } catch (e: Exception) {
             null
         } finally {

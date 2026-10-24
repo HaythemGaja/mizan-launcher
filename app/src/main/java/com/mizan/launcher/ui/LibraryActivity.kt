@@ -75,7 +75,32 @@ class LibraryActivity : Activity() {
 
     // ------------------------------------------------------------ render
 
+    /**
+     * v3.0: every Library build runs behind this guard (the
+     * IptvActivity rule): an escape is recorded and replaced by a
+     * worded line, never a black screen or a dead process.
+     */
     private fun rebuild() {
+        try {
+            rebuildInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "libraryRebuild", e)
+            val box = contentBox ?: return
+            try {
+                box.removeAllViews()
+                val line = TextView(this)
+                line.text = "Your library hit a snag — press Back and try again. " +
+                    "The error is noted in the launcher's diagnostics."
+                line.setTextColor(0xFFB3B3B3.toInt())
+                line.textSize = 17f
+                box.addView(line)
+            } catch (ignored: Throwable) {
+                // Leave whatever is on screen rather than crash.
+            }
+        }
+    }
+
+    private fun rebuildInner() {
         val box = contentBox ?: return
         val focusedBefore = focusedKey
         box.removeAllViews()

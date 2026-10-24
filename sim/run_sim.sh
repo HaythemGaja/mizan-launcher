@@ -62,6 +62,8 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/Discovery.kt \
   app/src/main/java/com/mizan/launcher/core/Diag.kt \
   app/src/main/java/com/mizan/launcher/core/PlayerLogic.kt \
+  app/src/main/java/com/mizan/launcher/core/StartupHealth.kt \
+  app/src/main/java/com/mizan/launcher/core/SectionGuard.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {
@@ -236,6 +238,32 @@ export JAVA_OPTS
   echo "recommendations + discover, pick codec), tracker snapshots"
   echo "remain the fallback, and diagnostics gains a discovery:"
   echo "line. New section 45. All other checks carry over."
+  echo
+  echo "Note (v3.0): the crash-hardening redo (spec S30). New section"
+  echo "48: the startup-health state machine (two consecutive"
+  echo "uncleared starts -> safe shell on the third launch; a clean"
+  echo "render + 10s survival clears), the section-guard policy"
+  echo "(a throwing section — Error included — yields its error"
+  echo "tile; reporting throttled to one per section per minute;"
+  echo "tracker/watch/iptv fall back to the TV render, TV to the"
+  echo "emergency root), JSON depth caps (JsonMini + the streaming"
+  echo "parser refuse nesting past 64 — a 5000-deep hostile payload"
+  echo "now reads as malformed instead of overflowing the stack),"
+  echo "malformed-input fixtures for the discovery / season-episode"
+  echo "/ store-index / short-EPG parsers, and source checks for the"
+  echo "prefs funnel (every read through PrefsSafe; a wrong-typed"
+  echo "stored value evicts itself and reads as its default), the"
+  echo "guarded rebuilds in every activity, the main-thread-only"
+  echo "crash-handler chain, the bounded image decodes and the"
+  echo "rename-first store swap. One re-pin: the version check now"
+  echo "expects 3.0 / code 23 (intentional bump for the redo). All"
+  echo "794 v2.9 checks carry over. Section 49 adds the crash-on-"
+  echo "open fixtures: truncated / garbled / half-migrated startup"
+  echo "state (layout document, row + section orders, home style,"
+  echo "tracker snapshots, match cache, discovery cache, store"
+  echo "index) all fail open — and a whole-home fallback on the"
+  echo "first build now HOLDS the startup-health clear, so a"
+  echo "deterministic composition crash still arms the safe shell."
   echo
   echo '```'
   java -jar sim/sim.jar

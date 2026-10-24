@@ -98,7 +98,8 @@ object DiscoveryData {
             var changed = false
             try {
                 changed = runWorker(appCtx)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable since v3.0 (same rule as the match worker).
                 Prefs.noteError(appCtx, "discovery", e)
             } finally {
                 synchronized(this) { inFlight = false }
@@ -163,7 +164,7 @@ object DiscoveryData {
 
     private fun stamps(ctx: Context): MutableMap<String, Long> {
         val raw = try {
-            prefs(ctx).getString(K_STAMPS, null)
+            PrefsSafe.strOrNull(prefs(ctx), K_STAMPS)
         } catch (e: Exception) {
             null
         } ?: return LinkedHashMap()
@@ -536,9 +537,9 @@ object DiscoveryData {
         return try {
             val p = prefs(ctx)
             Triple(
-                p.getString(K_SOURCE, "tracker") ?: "tracker",
-                p.getInt(K_SOON_N, 0) to p.getInt(K_TREND_N, 0),
-                p.getInt(K_FORYOU_N, 0)
+                PrefsSafe.str(p, K_SOURCE, "tracker"),
+                PrefsSafe.int(p, K_SOON_N, 0) to PrefsSafe.int(p, K_TREND_N, 0),
+                PrefsSafe.int(p, K_FORYOU_N, 0)
             )
         } catch (e: Exception) {
             Triple("tracker", 0 to 0, 0)

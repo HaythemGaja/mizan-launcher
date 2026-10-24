@@ -434,7 +434,33 @@ class DetailsActivity : Activity() {
 
     // ------------------------------------------------------------ render
 
+    /**
+     * v3.0: every Details build runs behind this guard (the
+     * IptvActivity rule): an escape — including an inflation OOM
+     * on a rich title — is recorded and replaced by a worded line,
+     * never a black screen or a dead process.
+     */
     private fun rebuild() {
+        try {
+            rebuildInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "detailsRebuild", e)
+            val box = contentBox ?: return
+            try {
+                box.removeAllViews()
+                val line = TextView(this)
+                line.text = "This title hit a snag — press Back and try again. " +
+                    "The error is noted in the launcher's diagnostics."
+                line.setTextColor(0xFFB3B3B3.toInt())
+                line.textSize = 17f
+                box.addView(line)
+            } catch (ignored: Throwable) {
+                // Leave whatever is on screen rather than crash.
+            }
+        }
+    }
+
+    private fun rebuildInner() {
         val box = contentBox ?: return
         readSnapshotState()
         // v2.3: the Watch match for this title (ids only, cached).

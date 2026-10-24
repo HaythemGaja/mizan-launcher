@@ -94,8 +94,10 @@ class WatcherService : AccessibilityService() {
         // Loop guard: Mizan was just foreground — do not fight it.
         if (now - lastOwnForegroundAt < 1_000) return
         val ownPrefsAt = try {
-            getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
-                .getLong("own_foreground_at", 0)
+            com.mizan.launcher.data.PrefsSafe.long(
+                getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE),
+                "own_foreground_at", 0
+            )
         } catch (e: Exception) { 0 }
         if (now - ownPrefsAt < 1_000) return
         // Debounce: max one relaunch per 2 seconds.

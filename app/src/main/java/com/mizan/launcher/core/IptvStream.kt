@@ -27,12 +27,22 @@ import java.io.Reader
  * as a failed endpoint and keeps the previous store — silently
  * ingesting half a catalogue would be worse than keeping the old
  * one whole.
+ *
+ * v3.0: nesting inside an element is capped at JsonMini.MAX_DEPTH.
+ * The reader recurses per container over panel-supplied data; an
+ * unbounded hostile document died with StackOverflowError — an
+ * Error the ingest's Exception catches could not stop. Past the
+ * cap the reader throws IllegalArgumentException like any other
+ * malformed input, and the endpoint simply fails (old store kept).
  */
 object IptvStream {
 
     /** A one-char-pushback cursor over a Reader. */
     private class Cursor(private val r: Reader) {
         private var pushed: Int = NONE
+
+        /** Current container nesting depth (v3.0 cap — see class doc). */
+        var depth: Int = 0
 
         fun read(): Int {
             if (pushed != NONE) {
@@ -121,6 +131,15 @@ object IptvStream {
     }
 
     private fun readObject(c: Cursor): Map<String, Any?> {
+        if (++c.depth > JsonMini.MAX_DEPTH) throw IllegalArgumentException("nesting")
+        try {
+            return readObjectInner(c)
+        } finally {
+            c.depth--
+        }
+    }
+
+    private fun readObjectInner(c: Cursor): Map<String, Any?> {
         val out = LinkedHashMap<String, Any?>()
         c.read() // '{'
         c.skipWs()
@@ -144,6 +163,15 @@ object IptvStream {
     }
 
     private fun readArray(c: Cursor): List<Any?> {
+        if (++c.depth > JsonMini.MAX_DEPTH) throw IllegalArgumentException("nesting")
+        try {
+            return readArrayInner(c)
+        } finally {
+            c.depth--
+        }
+    }
+
+    private fun readArrayInner(c: Cursor): List<Any?> {
         val out = ArrayList<Any?>()
         c.read() // '['
         c.skipWs()

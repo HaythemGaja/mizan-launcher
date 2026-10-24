@@ -58,6 +58,10 @@ import com.mizan.launcher.core.Artwork
 import com.mizan.launcher.core.DiagScrub
 import com.mizan.launcher.core.UnifiedBar
 import com.mizan.launcher.core.PlayerLogic
+import com.mizan.launcher.core.JsonMini
+import com.mizan.launcher.core.StartupHealth
+import com.mizan.launcher.core.SectionGuard
+import com.mizan.launcher.core.HomeFallback
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.AppCategories
@@ -3197,6 +3201,12 @@ fun main() {
     // ---------- (47) v2.9: audit fixes — play routing, artwork fit, unified bar, scrub, discovery source ----------
     section47()
 
+    // ---------- (48) v3.0: crash-hardening redo — startup health, section guards, parser depth caps, prefs funnel ----------
+    section48()
+
+    // ---------- (49) v3.0: corrupt/partial startup state — the app still opens on his real data shapes ----------
+    section49()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3895,10 +3905,11 @@ fun section42() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        // Re-pinned in v2.9 (intentional version bump 2.8/21 → 2.9/22).
-        check("v25src: the app version is 2.9 / code 22 (bumped by v2.9)",
-            gradleSrc.contains("versionName = \"2.9\"") &&
-                gradleSrc.contains("versionCode = 22"))
+        // Re-pinned in v3.0 (intentional version bump 2.9/22 → 3.0/23 —
+        // the crash-hardening redo, spec §30).
+        check("v25src: the app version is 3.0 / code 23 (bumped by v3.0)",
+            gradleSrc.contains("versionName = \"3.0\"") &&
+                gradleSrc.contains("versionCode = 23"))
     }
 }
 
@@ -4027,9 +4038,14 @@ fun section46() {
             mainSrc.contains("WatchMatch.heroPrimary(") &&
                 mainSrc.contains("playHeroPrimary(hero, heroCoords") &&
                 !mainSrc.contains("heroButton(\"Open Tracker\""))
+        // Re-pinned in v3.0 (intentional change): the deferred prepare
+        // call is unchanged semantically (tracker style, warm builds
+        // only) but now sits inside the v3.0 Throwable guard, so the
+        // pinned line is the guard's try form (spec §30).
         check("v28src: cold start is staged (warm worker + deferred prepares + shell lines)",
             mainSrc.contains("mizan-coldwarm") &&
-                mainSrc.contains("if (trackerStyle && !coldStart) prepareTrackerData()") &&
+                mainSrc.contains("if (trackerStyle && !coldStart) {") &&
+                mainSrc.contains("try { prepareTrackerData() } catch (e: Throwable)") &&
                 mainSrc.contains("Loading your library…") &&
                 mainSrc.contains("Loading your channels…"))
         val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
@@ -4226,4 +4242,380 @@ fun section47() {
     val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
     check("v29src: the details header fits a poster complete (no banner crop)",
         detailsSrc.contains("Artwork.headerFit(hasBackdrop)"))
+}
+
+/** v3.0 checks — the crash-hardening redo (spec §30): startup health, section guards, parser depth caps, the prefs funnel. */
+fun section48() {
+    run {
+        println("-- section 48: v3.0 crash hardening (startup health, section guards, depth caps, prefs funnel)")
+
+        // ---- startup-health state machine (core/StartupHealth) ----
+        val sh = StartupHealth
+        check("health: threshold is two consecutive uncleared starts",
+            sh.SAFE_SHELL_THRESHOLD == 2 && sh.SURVIVAL_MS == 10_000L)
+        check("health: modeFor — 0/1 uncleared is NORMAL, 2+ is SAFE_SHELL, negatives coerce to NORMAL",
+            sh.modeFor(0) == StartupHealth.Mode.NORMAL &&
+                sh.modeFor(1) == StartupHealth.Mode.NORMAL &&
+                sh.modeFor(2) == StartupHealth.Mode.SAFE_SHELL &&
+                sh.modeFor(9) == StartupHealth.Mode.SAFE_SHELL &&
+                sh.modeFor(-3) == StartupHealth.Mode.NORMAL)
+        // The store protocol, composed exactly as data/StartupHealthStore
+        // runs it: mode read from the counter, then onLaunch persists +1;
+        // a completed render + survival applies onCleared.
+        var counter = 0
+        fun launch(dies: Boolean): StartupHealth.Mode {
+            val mode = sh.modeFor(counter)
+            counter = sh.onLaunch(counter)
+            if (!dies) counter = sh.onCleared()
+            return mode
+        }
+        val seq1 = listOf(launch(dies = true), launch(dies = true), launch(dies = true))
+        check("health: [die, die] -> the THIRD launch is the safe shell",
+            seq1 == listOf(
+                StartupHealth.Mode.NORMAL,
+                StartupHealth.Mode.NORMAL,
+                StartupHealth.Mode.SAFE_SHELL
+            ))
+        counter = 0
+        val seq2 = listOf(launch(dies = true), launch(dies = false), launch(dies = true), launch(dies = true))
+        check("health: one clean render breaks the run — [die, clear, die, die] stays NORMAL throughout",
+            seq2.all { it == StartupHealth.Mode.NORMAL } && counter == 2)
+        val seq3mode = launch(dies = false)
+        check("health: the launch after two consecutive deaths is SAFE_SHELL, and its clean render clears",
+            seq3mode == StartupHealth.Mode.SAFE_SHELL && counter == 0)
+        val seq4mode = launch(dies = false)
+        check("health: after a cleared safe-shell launch the next launch is NORMAL again",
+            seq4mode == StartupHealth.Mode.NORMAL && counter == 0)
+        check("health: the notice names safe mode and points at Diagnostics",
+            sh.NOTICE_TEXT.contains("safe mode") && sh.NOTICE_TEXT.contains("Diagnostics"))
+        check("health: the diagnostics line carries the count and the shell state",
+            sh.diagnosticsLine(2, true) == "startup health: 2 uncleared start(s) · safe shell ON" &&
+                sh.diagnosticsLine(0, false) == "startup health: 0 uncleared start(s) · safe shell off")
+
+        // ---- section-guard policy (core/SectionGuard + core/HomeFallback) ----
+        check("guard: the error tile names the section and points at Diagnostics",
+            SectionGuard.tileText("Up Next") ==
+                "⚠ Up Next couldn't load — details in Settings › Diagnostics" &&
+                SectionGuard.tileText("Apps").contains("Apps"))
+        check("guard: reporting is throttled to one per section per 60s window",
+            SectionGuard.shouldReport(0L, 100_000L) &&
+                !SectionGuard.shouldReport(100_000L, 130_000L) &&
+                SectionGuard.shouldReport(100_000L, 160_000L) &&
+                !SectionGuard.shouldReport(100_000L, 159_999L))
+        check("fallback: tracker/watch/iptv homes fall back to the TV render; tv/unknown to the emergency root",
+            HomeFallback.fallbackFor("tracker") == HomeFallback.Fallback.TV_RENDER &&
+                HomeFallback.fallbackFor("watch") == HomeFallback.Fallback.TV_RENDER &&
+                HomeFallback.fallbackFor("iptv") == HomeFallback.Fallback.TV_RENDER &&
+                HomeFallback.fallbackFor("tv") == HomeFallback.Fallback.EMERGENCY_ROOT &&
+                HomeFallback.fallbackFor("banana") == HomeFallback.Fallback.EMERGENCY_ROOT)
+        // The containment contract, modelled as data (the Android side
+        // renders views, which the sim cannot run — the source checks
+        // below pin the wiring): a section builder that throws ANY
+        // Throwable — an Error included — yields its tile in place and
+        // the sections around it still compose.
+        val composed = ArrayList<String>()
+        val builders: List<Pair<String, () -> String>> = listOf(
+            "one" to { "row-one" },
+            "two" to { throw OutOfMemoryError("simulated inflation OOM") },
+            "three" to { "row-three" }
+        )
+        for ((label, build) in builders) {
+            composed.add(
+                try { build() } catch (e: Throwable) { SectionGuard.tileText(label) }
+            )
+        }
+        check("guard: a throwing section (Error included) yields its tile; the others still render",
+            composed == listOf("row-one", SectionGuard.tileText("two"), "row-three"))
+
+        // ---- JSON depth caps (core/JsonMini + core/IptvStream) ----
+        check("json: the depth cap is 64",
+            JsonMini.MAX_DEPTH == 64)
+        check("json: a 5000-deep document parses to null instead of overflowing the stack",
+            JsonMini.parse("[".repeat(5000) + "]".repeat(5000)) == null)
+        check("json: nesting inside the cap parses (60 levels), past it reads as malformed (100 levels)",
+            JsonMini.parse("[".repeat(60) + "1" + "]".repeat(60)) != null &&
+                JsonMini.parse("[".repeat(100) + "1" + "]".repeat(100)) == null)
+        val wide = "[" + (1..200).joinToString(",") { "{\"a\":[$it]}" } + "]"
+        check("json: a wide shallow document (200 siblings at depth 3) parses — depth is per-branch, not cumulative",
+            (JsonMini.parse(wide) as? List<*>)?.size == 200)
+        check("json: malformed documents read as null (truncated, bad token, trailing garbage, empty)",
+            JsonMini.parse("{") == null &&
+                JsonMini.parse("{\"a\":}") == null &&
+                JsonMini.parse("[1,2") == null &&
+                JsonMini.parse("{\"a\":1} trailing") == null &&
+                JsonMini.parse("") == null &&
+                JsonMini.parse(null) == null)
+        val streamOk = try {
+            var n = 0
+            IptvStream.streamArray(java.io.StringReader("[{\"id\":1},{\"id\":2}]")) { n++ }
+            n
+        } catch (e: Throwable) {
+            -1
+        }
+        check("stream: a small array still streams element by element", streamOk == 2)
+        val deepElement = "[{\"x\":" + "[".repeat(5000) + "]".repeat(5000) + "}]"
+        val deepOutcome = try {
+            IptvStream.streamArray(java.io.StringReader(deepElement)) { }
+            "no-throw"
+        } catch (e: IllegalArgumentException) {
+            "iae"
+        } catch (e: Throwable) {
+            "other:" + e.javaClass.simpleName
+        }
+        check("stream: a hostile deeply-nested element fails as IllegalArgumentException, not StackOverflowError",
+            deepOutcome == "iae", deepOutcome)
+        val badStream = try {
+            IptvStream.streamArray(java.io.StringReader("[{\"id\":}]")) { }
+            "no-throw"
+        } catch (e: IllegalArgumentException) {
+            "iae"
+        } catch (e: Throwable) {
+            "other"
+        }
+        check("stream: malformed input throws (the ingest keeps the previous store)", badStream == "iae")
+
+        // ---- malformed fixtures for the network-fed parsers ----
+        check("fixtures: discovery parsers fail open on garbage (trending empty, facts null)",
+            Discovery.parseTrending("not json", "tv").isEmpty() &&
+                Discovery.parseTrending(null, "movie").isEmpty() &&
+                Discovery.parseTrending("{\"results\":{}}", "tv").isEmpty() &&
+                Discovery.parseTvFacts("garbage") == null &&
+                Discovery.parseTvFacts("{") == null &&
+                Discovery.parseMovieFacts(null) == null)
+        check("fixtures: series-episodes parser fails open on garbage",
+            LibraryLogic.parseSeasonEpisodes("garbage").isEmpty() &&
+                LibraryLogic.parseSeasonEpisodes(null).isEmpty() &&
+                LibraryLogic.parseSeasonEpisodes("{\"episodes\":\"nope\"}").isEmpty())
+        check("fixtures: the IPTV store index decoder rejects garbage",
+            IptvStore.decodeIndex("garbage") == null &&
+                IptvStore.decodeIndex(null) == null &&
+                IptvStore.decodeIndex("[]") == null)
+        check("fixtures: the short-EPG parser fails open on garbage",
+            IptvEpg.parseShortEpg("garbage", "ch1").isEmpty() &&
+                IptvEpg.parseShortEpg(null, "ch1").isEmpty())
+
+        // ---- source checks: the v3.0 wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        // The prefs funnel: no raw typed reads survive in Prefs.kt,
+        // and every read routes through data/PrefsSafe.
+        val prefsSrc = src("app/src/main/java/com/mizan/launcher/data/Prefs.kt")
+        check("v30src: Prefs reads carry no raw typed getters any more",
+            prefsSrc.isNotEmpty() &&
+                !prefsSrc.contains(".getString(") && !prefsSrc.contains(".getInt(") &&
+                !prefsSrc.contains(".getBoolean(") && !prefsSrc.contains(".getLong(") &&
+                !prefsSrc.contains(".getStringSet("))
+        check("v30src: Prefs routes its reads through PrefsSafe",
+            prefsSrc.contains("PrefsSafe.str(") && prefsSrc.contains("PrefsSafe.int(") &&
+                prefsSrc.contains("PrefsSafe.bool(") && prefsSrc.contains("PrefsSafe.long(") &&
+                prefsSrc.contains("PrefsSafe.stringSet("))
+        val safeSrc = src("app/src/main/java/com/mizan/launcher/data/PrefsSafe.kt")
+        check("v30src: PrefsSafe is the ClassCastException funnel (catch + evict + default)",
+            safeSrc.contains("catch (e: ClassCastException)") && safeSrc.contains("remove(key)"))
+        val trackerSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        val iptvSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
+        val discoverySrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+        val watchPlaySrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+        check("v30src: the data clients read prefs through PrefsSafe too (no raw p.getString survives)",
+            trackerSrc.contains("PrefsSafe.") && iptvSrc.contains("PrefsSafe.") &&
+                discoverySrc.contains("PrefsSafe.") && watchPlaySrc.contains("PrefsSafe.") &&
+                !trackerSrc.contains("p.getString(") && !iptvSrc.contains("p.getString(") &&
+                !discoverySrc.contains("p.getString(") && !watchPlaySrc.contains("p.getString("))
+        // Startup health: store, bootstrap, shell gates, diagnostics line.
+        val storeSrc = src("app/src/main/java/com/mizan/launcher/data/StartupHealthStore.kt")
+        check("v30src: the health counter lives in its own tiny prefs file, committed synchronously",
+            storeSrc.contains("\"mizan_health\"") && storeSrc.contains("commit()") &&
+                storeSrc.contains("fun beginLaunch") && storeSrc.contains("fun markCleared"))
+        val appSrc = src("app/src/main/java/com/mizan/launcher/App.kt")
+        check("v30src: App.onCreate begins the startup AFTER the diagnostics install",
+            appSrc.contains("StartupHealthStore.beginLaunch(this)") &&
+                appSrc.indexOf("DiagLog.install(this)") <
+                appSrc.indexOf("StartupHealthStore.beginLaunch(this)"))
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("v30src: MainActivity reads the shell decision and forces TV in the shell",
+            mainSrc.contains("StartupHealthStore.safeShellArmed") &&
+                mainSrc.contains("prefs.safeMode || safeShell"))
+        check("v30src: the shell renders its notice and the TV-style row gate uses the shell gate",
+            mainSrc.contains("StartupHealth.NOTICE_TEXT") &&
+                mainSrc.contains("val rowKeys = if (shellSafe)"))
+        check("v30src: a completed render arms the survival clear (10s, main looper)",
+            mainSrc.contains("scheduleStartupClear") &&
+                mainSrc.contains("StartupHealth.SURVIVAL_MS") &&
+                mainSrc.contains("StartupHealthStore.markCleared"))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("v30src: diagnostics carries the startup-health line",
+            settingsSrc.contains("StartupHealthStore") && settingsSrc.contains("diagnosticsLine"))
+        // Crash containment: whole-home guards, emergency root, tiles.
+        check("v30src: the tracker home carries the whole-home Throwable guard (was unguarded)",
+            mainSrc.contains("Prefs.noteError(this, \"trackerhome\", e)") &&
+                mainSrc.contains("catch (e: Throwable)"))
+        check("v30src: rebuild() itself is Throwable-guarded and renders the emergency root",
+            mainSrc.contains("private fun buildEmergencyRoot()") &&
+                mainSrc.contains("Prefs.noteError(this, \"rebuild\", e)"))
+        check("v30src: failed home sections render the SectionGuard error tile in all three homes",
+            mainSrc.contains("sectionErrorTile(rowTileLabel(key))") &&
+                mainSrc.contains("sectionErrorTile(trackerTileLabel(key))") &&
+                mainSrc.contains("sectionErrorTile(\"IPTV row\")"))
+        check("v30src: every secondary activity's build is guarded (its noteError tag is present)",
+            settingsSrc.contains("\"settingsRebuild\"") &&
+                src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
+                    .contains("\"detailsRebuild\"") &&
+                src("app/src/main/java/com/mizan/launcher/ui/LibraryActivity.kt")
+                    .contains("\"libraryRebuild\"") &&
+                src("app/src/main/java/com/mizan/launcher/ui/ForecastActivity.kt")
+                    .contains("\"forecastRender\"") &&
+                src("app/src/main/java/com/mizan/launcher/ui/SearchActivity.kt")
+                    .contains("\"searchRoot\"") &&
+                src("app/src/main/java/com/mizan/launcher/ui/TmdbSearchActivity.kt")
+                    .contains("\"tmdbSearchRoot\"") &&
+                src("app/src/main/java/com/mizan/launcher/ui/AllAppsActivity.kt")
+                    .contains("\"allAppsRoot\"") &&
+                src("app/src/main/java/com/mizan/launcher/ui/PlayerActivity.kt")
+                    .contains("\"playerCreate\""))
+        check("v30src: a single settings page is contained (page tag) without killing Settings",
+            settingsSrc.contains("\"settingsPage:"))
+        // Death semantics: worker uncaughts log + degrade; only main chains.
+        val diagSrc = src("app/src/main/java/com/mizan/launcher/data/DiagLog.kt")
+        check("v30src: the crash handler chains to the system handler ONLY for the main thread",
+            diagSrc.contains("t === Looper.getMainLooper().thread") && diagSrc.contains("if (isMain)"))
+        check("v30src: the watchdog's judge block is Throwable-guarded (it cannot die silently)",
+            diagSrc.contains("Keep watching"))
+        // Decode bounds: one funnel, every former raw path routed through it.
+        val artworkSrc = src("app/src/main/java/com/mizan/launcher/data/ArtworkImages.kt")
+        val accentSrc = src("app/src/main/java/com/mizan/launcher/data/AccentUtil.kt")
+        val weatherArtSrc = src("app/src/main/java/com/mizan/launcher/data/WeatherArt.kt")
+        val boundsSrc = src("app/src/main/java/com/mizan/launcher/data/DecodeBounds.kt")
+        check("v30src: artwork decodes are bounded through DecodeBounds (no raw decode left)",
+            artworkSrc.contains("DecodeBounds.decodeBytesBounded") &&
+                artworkSrc.contains("DecodeBounds.decodeFileBounded") &&
+                !artworkSrc.contains("BitmapFactory.decode"))
+        check("v30src: wallpaper decodes sample from measured bounds, not a fixed factor",
+            accentSrc.contains("DecodeBounds.sampleSize") &&
+                accentSrc.contains("DecodeBounds.decodeFileBounded") &&
+                !accentSrc.contains("inSampleSize = 4"))
+        check("v30src: the weather-art render is size-capped and DecodeBounds does the two-pass decode",
+            weatherArtSrc.contains("MAX_DIM = 1920") &&
+                boundsSrc.contains("inJustDecodeBounds") && boundsSrc.contains("fun sampleSize"))
+        // Store swap: rename-first (no delete-then-rename window).
+        val swapBody = iptvSrc.substringAfter("private fun swapFile").substringBefore("private fun ingestOnce")
+        check("v30src: swapFile renames over the destination first and never deletes it first",
+            swapBody.contains("tmp.renameTo(dest)") && !swapBody.contains("dest.delete()"))
+        check("v30src: the ingest loop's per-endpoint catch is Throwable (callbacks still drain in finally)",
+            iptvSrc.contains("} catch (e: Throwable) {") && iptvSrc.contains("iptvIngest"))
+    }
+}
+
+/**
+ * v3.0 §49 — corrupt/partial STARTUP state (the crash-on-open
+ * fixtures): the exact shapes a cold open consumes on his TV —
+ * profile-2 prefs values, a migrated section order, tracker
+ * snapshots, the match cache, discovery cache files — each fed
+ * truncated, wrong-typed or half-migrated, proving every startup
+ * decoder fails open instead of killing the open. (Prefs values
+ * whose TYPE is wrong are covered by the PrefsSafe funnel —
+ * Android-layer, source-pinned in §48; what the sim proves here
+ * is the string-content layer every one of those values feeds.)
+ */
+fun section49() {
+    run {
+        println("-- section 49: v3.0 corrupt/partial startup state (the app still opens)")
+
+        // ---- layout document (prefs "layout"): truncated + garbled lines ----
+        val layoutTrunc = LayoutCodec.decode(
+            "rows=favorites,apps\nfav=com.example.tv,truncat"
+        )
+        check("startup-state: a truncated layout document still decodes (good lines survive)",
+            layoutTrunc.rowOrder == listOf("favorites", "apps"))
+        val layoutGarbage = LayoutCodec.decode(
+            "rows=\nstatus=%%%\nfolder2=\u0000broken\n=orphan\nrows=favorites"
+        )
+        check("startup-state: a garbled layout document decodes to a usable layout, never throws",
+            layoutGarbage.rowOrder.isNotEmpty())
+        check("startup-state: empty/absent layout documents decode to defaults",
+            LayoutCodec.decode(null).rowOrder.isNotEmpty() &&
+                LayoutCodec.decode("").rowOrder.isNotEmpty())
+
+        // ---- row order (TV home): unknown + partial stored orders ----
+        // (normalize splices the four insertion rows around their
+        // anchors; base rows come from the stored order itself —
+        // unknown keys ride along and the render loop skips them.)
+        val rowsNorm = RowOrder.normalize(listOf("apps", "banana"))
+        check("startup-state: a partial row order with an unknown key normalizes without throwing",
+            rowsNorm.contains("apps") && rowsNorm.contains("recents") &&
+                rowsNorm.contains("livetv"))
+        val rowsAnchored = RowOrder.normalize(listOf("favorites", "apps"))
+        check("startup-state: insertion rows splice after their anchors in a partial order",
+            rowsAnchored.indexOf("recents") == rowsAnchored.indexOf("favorites") + 1)
+
+        // ---- tracker section order: half-migrated + garbled ----
+        val halfMigrated = TrackerSections.decode("upnext,continue,movienight,foryou,favorites,allapps|")
+        val migrated = TrackerSections.migrateOrder(halfMigrated)
+        check("startup-state: the half-migrated section order migrates without losing sections",
+            migrated.order.containsAll(
+                listOf("upnext", "continue", "comingsoon", "trendingtv", "trendingmovies")
+            ))
+        val garbledSections = TrackerSections.decode("xyz,hero,hero,|bogus,,")
+        val composedGarbled = TrackerSections.compose(garbledSections) { true }
+        check("startup-state: a garbled section order composes canonically (no dupes, no unknowns)",
+            composedGarbled == composedGarbled.distinct() &&
+                composedGarbled.all { it in TrackerSections.CANONICAL })
+        check("startup-state: a truncated section order (cut mid-token) still composes",
+            TrackerSections.compose(TrackerSections.decode("upn|")) { true }.isNotEmpty())
+
+        // ---- home style: stored values from other versions ----
+        check("startup-state: stored home styles normalize (retired ipad -> tv, garbage -> tv)",
+            HomeStyle.normalize("watch") == "watch" &&
+                HomeStyle.normalize("ipad") == "tv" &&
+                HomeStyle.normalize("banana") == "tv" &&
+                HomeStyle.normalize(null) == "tv")
+
+        // ---- tracker snapshots (the warm-open parse): truncated documents ----
+        check("startup-state: truncated tracker snapshot documents parse to empty, never throw",
+            TrackerLogic.parseUpNext("{\"items\":[{\"tmdbId\":1,").isEmpty() &&
+                TrackerLogic.parseContinue("{\"items\":[").isEmpty() &&
+                TrackerLogic.parseMovies("garbage").isEmpty() &&
+                TrackerLogic.parseTrackedShows("[{\"id\":").isEmpty() &&
+                TrackerLogic.parseForYou("").isEmpty())
+
+        // ---- watch match cache (line codec): truncated/garbled lines ----
+        val matches = WatchMatch.decodeMatches(
+            "123|tv|456|1|1\n789|tv|bad|1|0\npartial|\n\n42|movie|7|0|0"
+        )
+        check("startup-state: a half-corrupt match cache keeps its good lines and skips the rest",
+            matches.size == 2 && matches[0].tmdbId == 123L && matches[1].tmdbId == 42L)
+        check("startup-state: an absent match cache decodes empty",
+            WatchMatch.decodeMatches(null).isEmpty() && WatchMatch.decodeMatches("").isEmpty())
+
+        // ---- discovery cache files (v2.7/v2.9-written): empty + truncated ----
+        check("startup-state: empty/truncated discovery cache documents read as no data",
+            Discovery.parseTrending("", "tv").isEmpty() &&
+                Discovery.parseTrending("{\"results\":[{\"id\":1,\"name\":\"X\"", "tv").isEmpty() &&
+                Discovery.parseTrending("{\"results\":[", null).isEmpty())
+
+        // ---- IPTV store index: truncated mid-document, wrong-typed counts ----
+        check("startup-state: a truncated store index decodes to null (the store re-derives, the open survives)",
+            IptvStore.decodeIndex("{\"live\":11380,\"vod\":319") == null)
+        check("startup-state: a wrong-typed store index count degrades to 0 in a valid index, never throws",
+            IptvStore.decodeIndex("{\"live\":\"eleven\"}")?.liveCount == 0)
+
+        // ---- source checks: the degraded-build gate + worker widenings ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("v30src: a whole-home fallback holds the startup clear (degraded gate wired)",
+            mainSrc.contains("buildDegraded = true") &&
+                mainSrc.contains("onStartupRenderCompleted") &&
+                mainSrc.contains("startup health: degraded build — clear held"))
+        val watchPlaySrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+        val discoverySrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+        check("v30src: the open-path workers record Errors too (Throwable catches, finally-reset flags)",
+            watchPlaySrc.contains("catch (e: Throwable)") &&
+                discoverySrc.contains("catch (e: Throwable)"))
+    }
 }

@@ -51,6 +51,8 @@ import com.mizan.launcher.core.TrackerSections
 import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.core.RotationLogic
 import com.mizan.launcher.core.RowOrder
+import com.mizan.launcher.core.SectionGuard
+import com.mizan.launcher.core.StartupHealth
 import com.mizan.launcher.core.Themes
 import com.mizan.launcher.core.TileLayout
 import com.mizan.launcher.core.WeatherLogic
@@ -66,6 +68,7 @@ import com.mizan.launcher.data.LiveTv
 import com.mizan.launcher.data.MostUsed
 import com.mizan.launcher.data.NowPlayingData
 import com.mizan.launcher.data.Prefs
+import com.mizan.launcher.data.StartupHealthStore
 import com.mizan.launcher.data.TmdbImages
 import com.mizan.launcher.data.TrackerActions
 import com.mizan.launcher.data.IptvClient
@@ -160,6 +163,36 @@ class MainActivity : Activity() {
     private var coldStart = true
     private var coldWarmScheduled = false
 
+    // ---- v3.0 startup health (spec §30) ----
+    /**
+     * This process launched into the SAFE SHELL (data/
+     * StartupHealthStore's decision, from core/StartupHealth):
+     * two consecutive startups died uncleared, so this launch
+     * renders the plain TV home — no hero/discovery/IPTV
+     * composition — with the safe-mode notice. Read once in
+     * onCreate; the decision is per-process.
+     */
+    private var safeShell = false
+
+    /** Set once the startup-clear timer is armed for this activity. */
+    private var startupClearScheduled = false
+
+    /**
+     * The CURRENT build fell back as a whole (tracker/IPTV home →
+     * TV render, or the emergency root): the intended home did
+     * NOT complete, so the startup-health clear must be HELD for
+     * this build — a deterministic composition failure would
+     * otherwise "clear" on every fallback render and the safe
+     * shell could never arm. Section-level tiles do NOT set this:
+     * the intended home rendered (degraded), the app opened.
+     * Reset at every rebuild; read by the frame probe of the
+     * build that set it.
+     */
+    private var buildDegraded = false
+
+    /** Per-section failure-report throttle state (core/SectionGuard). */
+    private val sectionReportAt = HashMap<String, Long>()
+
     /** 0 = no frame probe owed, 1 = first frame, 2 = home-complete frame. */
     private var frameProbeStage = 0
 
@@ -230,6 +263,10 @@ class MainActivity : Activity() {
         // frame → home complete) — App.onCreate marked the zero.
         DiagLog.markStartup("main created")
         prefs = Prefs(this)
+        // v3.0: the safe-shell decision was made in App.onCreate
+        // (data/StartupHealthStore.beginLaunch) — read it before
+        // the first build so homeStyleKey() can force TV.
+        safeShell = StartupHealthStore.safeShellArmed
         rebuild()
     }
 
@@ -307,6 +344,7 @@ class MainActivity : Activity() {
 
     private fun rebuild() {
         stopHeroRotation()
+        buildDegraded = false
         try {
             layout = prefs.layout
             apps = AppCache.get(this)
@@ -336,7 +374,7 @@ class MainActivity : Activity() {
             val rootView = homeRoot
             if (pending != null && rootView != null) {
                 kotlin.concurrent.thread(name = "mizan-wallpaper") {
-                    val bmp = try { pending() } catch (e: Exception) { null }
+                    val bmp = try { pending() } catch (e: Throwable) { null }
                     if (bmp != null) {
                         rootView.post {
                             if (rootView.isAttachedToWindow) {
@@ -353,9 +391,84 @@ class MainActivity : Activity() {
             }
             refreshWeather()
             firstTile?.post { if (currentFocus == null) firstTile?.requestFocus() }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // v3.0: Throwable, not Exception (an inflation OOM is
+            // an Error) — and the failure now renders the EMERGENCY
+            // ROOT instead of leaving whatever content view was (or
+            // wasn't) set. The repeating black screen WAS this
+            // catch's silence: noteError recorded the death and the
+            // window stayed empty on every launch.
             Prefs.noteError(this, "rebuild", e)
+            try {
+                setContentView(buildEmergencyRoot())
+            } catch (ignored: Throwable) {
+                // Nothing left to render with — the note above is
+                // the evidence, and the uncleared startup arms the
+                // safe shell for the next launch.
+            }
         }
+    }
+
+    /**
+     * v3.0 emergency root (core/HomeFallback's EMERGENCY_ROOT):
+     * rendered when buildRoot itself fails, so the window is never
+     * left empty. Deliberately minimal — a notice, the Settings &
+     * Diagnostics entry (focus lands there), and the apps section
+     * when IT builds. Surviving this render clears the
+     * startup-health counter like any completed home (the stage-2
+     * probe attached below).
+     */
+    private fun buildEmergencyRoot(): View {
+        // The emergency root is a fallback, not a completed home:
+        // hold the startup-health clear for this build.
+        buildDegraded = true
+        val root = FrameLayout(this)
+        val preset = Themes.preset("apple_black")
+        root.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(preset.bgTop, preset.bgBottom)
+        )
+        val content = LinearLayout(this)
+        content.orientation = LinearLayout.VERTICAL
+        content.setPadding(
+            Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 40)
+        )
+        val notice = TextView(this)
+        notice.text = "Sreeb hit a problem building the home screen."
+        notice.setTextColor(preset.text)
+        notice.textSize = 20f
+        content.addView(notice)
+        val settings = TextView(this)
+        settings.text = "⚙  Settings & Diagnostics"
+        settings.setTextColor(preset.text)
+        settings.textSize = 17f
+        settings.isFocusable = true
+        settings.isClickable = true
+        settings.setPadding(
+            Ui.dp(this, 18), Ui.dp(this, 13), Ui.dp(this, 18), Ui.dp(this, 13)
+        )
+        val slp = LinearLayout.LayoutParams(-1, -2)
+        slp.setMargins(0, Ui.dp(this, 16), Ui.dp(this, 60), Ui.dp(this, 12))
+        settings.layoutParams = slp
+        settings.background = Ui.tileBackground(
+            preset.accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this
+        )
+        settings.setOnClickListener { openSettings() }
+        content.addView(settings)
+        firstTile = settings
+        try {
+            content.addView(buildAppsSection())
+        } catch (ignored: Throwable) {
+            // Even the apps section failed — the two entries above
+            // are the floor, and they are enough to reach help.
+        }
+        val scroll = ScrollView(this)
+        scroll.isFillViewport = true
+        scroll.addView(content)
+        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        homeRoot = root
+        attachFrameProbe(root, 2)
+        return root
     }
 
     /**
@@ -377,13 +490,55 @@ class MainActivity : Activity() {
                         DiagLog.recordFirstFrame(appCtx)
                         if (!isTrackerFamily() && !isIptvStyle()) {
                             DiagLog.recordHomeComplete(appCtx)
+                            onStartupRenderCompleted()
                         }
                     } else {
                         DiagLog.recordHomeComplete(appCtx)
+                        onStartupRenderCompleted()
                     }
                     return true
                 }
             }
+        )
+    }
+
+    /**
+     * A home render completed (the frame probe's completing
+     * stage). The startup-health clear arms ONLY when the build
+     * that rendered was the intended home — a whole-home
+     * fallback (tracker/IPTV → TV render, or the emergency root)
+     * means the startup did NOT complete, and clearing here
+     * would reset the counter on every fallback render so the
+     * safe shell could never arm against a deterministic
+     * composition crash. The hold is breadcrumbed so Diagnostics
+     * shows it. Section-level error tiles do not hold the clear:
+     * the intended home rendered and the app opened.
+     */
+    private fun onStartupRenderCompleted() {
+        if (buildDegraded) {
+            DiagLog.note("startup health: degraded build — clear held")
+        } else {
+            scheduleStartupClear()
+        }
+    }
+
+    /**
+     * v3.0: arm the startup-health clear (core/StartupHealth): the
+     * home completed its full render, so if the process now
+     * survives [StartupHealth.SURVIVAL_MS] the persisted uncleared
+     * counter resets. The runnable rides the main looper — a
+     * process that dies first takes the message with it, which is
+     * exactly the semantics the safe shell needs. Armed once per
+     * activity; later rebuilds don't re-arm (the counter is
+     * already 0 by then in the normal case).
+     */
+    private fun scheduleStartupClear() {
+        if (startupClearScheduled) return
+        startupClearScheduled = true
+        val appCtx = applicationContext
+        handler.postDelayed(
+            { StartupHealthStore.markCleared(appCtx) },
+            StartupHealth.SURVIVAL_MS
         )
     }
 
@@ -424,7 +579,7 @@ class MainActivity : Activity() {
 
     /** Theme colours for this profile, with Dynamic accent and Safe mode applied. */
     private fun resolveColours() {
-        if (prefs.safeMode) {
+        if (prefs.safeMode || safeShell) {
             val p = Themes.preset("apple_black")
             accent = p.accent; textColour = p.text; subColour = p.subText
             return
@@ -444,6 +599,25 @@ class MainActivity : Activity() {
         } else preset.accent
     }
 
+    /**
+     * The dim corner gear (the always-visible way back into
+     * Settings): shown when the status bar can't carry its
+     * Settings tile — and, since v3.0, also installed when the top
+     * bar's build fails, so a bar failure can never trap the user
+     * out of Settings.
+     */
+    private fun addCornerGear(root: FrameLayout) {
+        val gear = quickTile("⚙") { openSettings() }
+        // v2.0: hold-OK on the gear opens Quick settings.
+        gear.setOnLongClickListener { showQuickSettings(); true }
+        gear.alpha = 0.55f
+        val glp = FrameLayout.LayoutParams(-2, -2)
+        glp.gravity = Gravity.TOP or Gravity.END
+        glp.setMargins(0, Ui.dp(this, 18), Ui.dp(this, 40), 0)
+        gear.layoutParams = glp
+        root.addView(gear)
+    }
+
     private fun buildRoot(): View {
         val root = FrameLayout(this)
 
@@ -453,12 +627,24 @@ class MainActivity : Activity() {
         // v2.3: the Watch style is the same composition + the IPTV
         // link, so every "trackerStyle" gate below is family-wide.
         val trackerStyle = isTrackerFamily()
+        // v3.0: the safe shell composes like safe mode (plain
+        // frame, favorites + apps rows only, no wallpaper work) —
+        // one gate for both, so the shell path adds no composition
+        // of its own that could fail.
+        val shellSafe = prefs.safeMode || safeShell
         // v2.7: discovery (Coming Soon / Trending / launcher For
         // You / IPTV trending) prepares BEFORE the tracker working
         // set — prepareTrackerData consults it for the For You
         // source. Its snapshot never blocks: stale state renders,
         // the worker's landing rebuilds once.
-        if (trackerStyle || isIptvStyle()) prepareDiscoveryData()
+        // v3.0: each prepare is Throwable-guarded — a prepare
+        // failure degrades its working set to the fail-open empty
+        // state, never the whole home with it.
+        if (trackerStyle || isIptvStyle()) {
+            try { prepareDiscoveryData() } catch (e: Throwable) {
+                Prefs.noteError(this, "prepareDiscovery", e)
+            }
+        }
         // v2.8: on the COLD build both prepares are deferred to the
         // warm worker — the tracker prepare parses the snapshot
         // documents and the Watch prepare reads the match table,
@@ -467,14 +653,20 @@ class MainActivity : Activity() {
         // the fill path); the tracker refresh has no listener to
         // miss — the warm landing's rebuild runs both prepares
         // with every memo warm.
-        if (trackerStyle && !coldStart) prepareTrackerData()
+        if (trackerStyle && !coldStart) {
+            try { prepareTrackerData() } catch (e: Throwable) {
+                Prefs.noteError(this, "prepareTracker", e)
+            }
+        }
         if (isWatchStyle()) {
             if (coldStart) {
                 WatchPlay.onMatchesChanged = {
                     runOnUiThread { if (isWatchStyle()) rebuild() }
                 }
             } else {
-                prepareWatchData()
+                try { prepareWatchData() } catch (e: Throwable) {
+                    Prefs.noteError(this, "prepareWatch", e)
+                }
             }
         }
         pendingWallpaper = null
@@ -486,10 +678,10 @@ class MainActivity : Activity() {
         var top = preset.bgTop
         var bottom = preset.bgBottom
         var imageShown = false
-        if (!prefs.safeMode && prefs.wallpaperKind != "weather") {
+        if (!shellSafe && prefs.wallpaperKind != "weather") {
             prefs.weatherBgStatus = "off"
         }
-        if (!prefs.safeMode && !trackerStyle) {
+        if (!shellSafe && !trackerStyle) {
             when (prefs.wallpaperKind) {
                 // Weather background (v1.2): drawn from the cached
                 // snapshot's palette + motif. No data (offline / never
@@ -581,7 +773,7 @@ class MainActivity : Activity() {
         // tile goes with it, which would trap the user out of Settings.
         // Keep one dim corner gear as the escape hatch — it is part of
         // the frame, not the bar, and it's the only trace left.
-        val barCfg = if (prefs.safeMode) {
+        val barCfg = if (shellSafe) {
             com.mizan.launcher.core.StatusBarConfig()
         } else {
             layout.statusBar
@@ -595,7 +787,7 @@ class MainActivity : Activity() {
         // pre-v1.9 composition exactly. Bar builders are unchanged;
         // only their parent differs ([barHost]), so focus travel
         // keeps its shape: header first, rows below.
-        val stickyBar = !prefs.safeMode && prefs.stickyStatusBar && barCfg.showBar
+        val stickyBar = !shellSafe && prefs.stickyStatusBar && barCfg.showBar
         val stickyHeader = LinearLayout(this)
         stickyHeader.orientation = LinearLayout.VERTICAL
         val homeFrame = LinearLayout(this)
@@ -612,15 +804,7 @@ class MainActivity : Activity() {
         // its Settings tile was switched off (per-tile toggles) — there
         // must ALWAYS be a visible way back into Settings.
         if (!barCfg.showBar || !barCfg.showTileSettings) {
-            val gear = quickTile("⚙") { openSettings() }
-            // v2.0: hold-OK on the gear opens Quick settings.
-            gear.setOnLongClickListener { showQuickSettings(); true }
-            gear.alpha = 0.55f
-            val glp = FrameLayout.LayoutParams(-2, -2)
-            glp.gravity = Gravity.TOP or Gravity.END
-            glp.setMargins(0, Ui.dp(this, 18), Ui.dp(this, 40), 0)
-            gear.layoutParams = glp
-            root.addView(gear)
+            addCornerGear(root)
         }
         // Guest pill when the bar is fully hidden (v1.4): the pill that
         // normally lives in the bar (see buildTopBar) moves to the
@@ -638,13 +822,35 @@ class MainActivity : Activity() {
         // v1.8: the Tracker home style — same frame (wallpaper, scrim,
         // corner gear/pill), an alternate root render. The TV render
         // below is untouched and tracker-free.
+        // v3.0: the call carries the same whole-home guard the IPTV
+        // render got in v2.3.2 — before this, ANY throw in the
+        // tracker composition (hero select, the unified bar, the
+        // sections pre-work) escaped buildRoot into rebuild()'s
+        // catch and left no content view at all: the black screen.
+        // Now the partial views drop and the TV render below runs
+        // instead (core/HomeFallback: tracker-family → TV_RENDER).
+        // The tracker backdrop layer stays in the root under the
+        // TV rows — a cosmetic trace of the fallback, nothing more.
         if (isTrackerFamily()) {
-            buildTrackerHome(content, barHost)
-            homeRoot = root
-            if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
-                attachMoveHint(root)
+            val trackerBuilt = try {
+                buildTrackerHome(content, barHost)
+                true
+            } catch (e: Throwable) {
+                Prefs.noteError(this, "trackerhome", e)
+                buildDegraded = true
+                content.removeAllViews()
+                barHost.removeAllViews()
+                firstTile = null
+                false
             }
-            return root
+            if (trackerBuilt) {
+                homeRoot = root
+                if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
+                    attachMoveHint(root)
+                }
+                return root
+            }
+            // Fall through to the standard TV render.
         }
 
         // v2.2: the IPTV home style — same frame again (the wallpaper
@@ -664,6 +870,7 @@ class MainActivity : Activity() {
                 true
             } catch (e: Throwable) {
                 Prefs.noteError(this, "iptvhome", e)
+                buildDegraded = true
                 content.removeAllViews()
                 barHost.removeAllViews()
                 firstTile = null
@@ -679,29 +886,46 @@ class MainActivity : Activity() {
             // Fall through to the standard TV render.
         }
 
-        barHost.addView(buildTopBar())
+        // v3.0: a failing top bar degrades to NO bar (plus the
+        // corner gear, so Settings stays reachable) instead of
+        // taking the whole home with it.
+        try {
+            barHost.addView(buildTopBar())
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "topbar", e)
+            addCornerGear(root)
+        }
+
+        // v3.0: the safe shell announces itself at the top of the
+        // home — visible, plain, and a tap away from Diagnostics.
+        if (safeShell) {
+            content.addView(safeShellNotice())
+        }
 
         // v1.4: stored orders from older versions lack the new rows;
         // RowOrder.normalize slots them at their canonical positions.
-        val rowKeys = if (prefs.safeMode) listOf("favorites", "apps") else RowOrder.normalize(layout.rowOrder)
+        val rowKeys = if (shellSafe) listOf("favorites", "apps") else RowOrder.normalize(layout.rowOrder)
         for (key in rowKeys) {
-            if (!prefs.safeMode && !layout.isRowVisible(key)) continue
+            if (!shellSafe && !layout.isRowVisible(key)) continue
             val section = try {
                 when (key) {
                     "favorites" -> buildFavoritesSection()
-                    "recents" -> if (prefs.safeMode) null else buildRecentsSection()
-                    "mostused" -> if (prefs.safeMode) null else buildMostUsedSection()
-                    "folders" -> if (prefs.safeMode) null else buildFoldersSection()
-                    "nowplaying" -> if (prefs.safeMode) null else buildNowPlayingSection()
-                    "continue" -> if (prefs.safeMode) null else buildContinueSection()
-                    "inputs" -> if (prefs.safeMode) null else buildInputsSection()
-                    "livetv" -> if (prefs.safeMode) null else buildLiveTvSection()
+                    "recents" -> if (shellSafe) null else buildRecentsSection()
+                    "mostused" -> if (shellSafe) null else buildMostUsedSection()
+                    "folders" -> if (shellSafe) null else buildFoldersSection()
+                    "nowplaying" -> if (shellSafe) null else buildNowPlayingSection()
+                    "continue" -> if (shellSafe) null else buildContinueSection()
+                    "inputs" -> if (shellSafe) null else buildInputsSection()
+                    "livetv" -> if (shellSafe) null else buildLiveTvSection()
                     "apps" -> buildAppsSection()
                     else -> null
                 }
-            } catch (e: Exception) {
-                Prefs.noteError(this, "row:$key", e)
-                null
+            } catch (e: Throwable) {
+                // v3.0 (core/SectionGuard): a failed row renders
+                // the error tile in its place — visible, reported
+                // (throttled), never silent, never fatal.
+                noteSectionFailure("row:$key", e)
+                sectionErrorTile(rowTileLabel(key))
             }
             if (section != null) content.addView(section)
         }
@@ -711,6 +935,92 @@ class MainActivity : Activity() {
         homeRoot = root
         if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) attachMoveHint(root)
         return root
+    }
+
+    // ---------------------------------------------------------------
+    // v3.0 crash-contained composition helpers (core/SectionGuard).
+    // ---------------------------------------------------------------
+
+    /**
+     * Report a home section's build failure — throttled per
+     * section (core/SectionGuard.shouldReport): rebuilds retry
+     * failing sections on every resume, and the diagnostics error
+     * line must stay readable. The error TILE renders on every
+     * failure regardless; only the report is throttled.
+     */
+    private fun noteSectionFailure(where: String, e: Throwable) {
+        val now = System.currentTimeMillis()
+        if (SectionGuard.shouldReport(sectionReportAt[where] ?: 0L, now)) {
+            sectionReportAt[where] = now
+            DiagLog.note("section failed: $where (${e.javaClass.simpleName})")
+            Prefs.noteError(this, where, e)
+        }
+    }
+
+    /** The quiet error tile a failed home section renders in its place. */
+    private fun sectionErrorTile(label: String): View {
+        val tile = TextView(this)
+        tile.text = SectionGuard.tileText(label)
+        tile.setTextColor(subColour)
+        tile.textSize = 15f
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 6), Ui.dp(this, 60), Ui.dp(this, 10))
+        tile.layoutParams = lp
+        return tile
+    }
+
+    /** Human labels for the TV home's row keys (error tiles). */
+    private fun rowTileLabel(key: String): String = when (key) {
+        "favorites" -> "Favorites"
+        "recents" -> "Recently used"
+        "mostused" -> "Most used"
+        "folders" -> "Folders"
+        "nowplaying" -> "Now playing"
+        "continue" -> "Continue watching"
+        "inputs" -> "Inputs"
+        "livetv" -> "Live TV"
+        "apps" -> "Apps"
+        else -> key
+    }
+
+    /** Human labels for the tracker home's section keys (error tiles). */
+    private fun trackerTileLabel(key: String): String = when (key) {
+        TrackerSections.HERO -> "Hero"
+        TrackerSections.UPNEXT -> "Up Next"
+        TrackerSections.COMINGSOON -> "Coming Soon"
+        TrackerSections.CONTINUE -> "Continue"
+        TrackerSections.TRENDINGTV -> "Trending TV"
+        TrackerSections.TRENDINGMOVIES -> "Trending Movies"
+        TrackerSections.MOVIENIGHT -> "Movie Night"
+        TrackerSections.FORYOU -> "For You"
+        TrackerSections.FAVORITES -> "Favorites"
+        TrackerSections.ALLAPPS -> "Apps"
+        else -> key
+    }
+
+    /**
+     * The safe shell's notice (v3.0): the plain line from
+     * core/StartupHealth at the top of the shell home; tapping it
+     * opens Settings, where Diagnostics lives.
+     */
+    private fun safeShellNotice(): View {
+        val notice = TextView(this)
+        notice.text = StartupHealth.NOTICE_TEXT
+        notice.setTextColor(textColour)
+        notice.textSize = 16f
+        notice.isFocusable = true
+        notice.isClickable = true
+        notice.setPadding(
+            Ui.dp(this, 18), Ui.dp(this, 13), Ui.dp(this, 18), Ui.dp(this, 13)
+        )
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 4), Ui.dp(this, 60), Ui.dp(this, 12))
+        notice.layoutParams = lp
+        notice.background = Ui.tileBackground(
+            accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this
+        )
+        notice.setOnClickListener { openSettings() }
+        return notice
     }
 
     // ---------------------------------------------------------------
@@ -1051,9 +1361,9 @@ class MainActivity : Activity() {
     // profiles saved with it open in the TV style (spec §20.1).
     // ---------------------------------------------------------------
 
-    /** The effective home style: safe mode always forces TV. */
+    /** The effective home style: safe mode — and the v3.0 safe shell — always force TV. */
     private fun homeStyleKey(): String =
-        if (prefs.safeMode) com.mizan.launcher.core.HomeStyle.TV else prefs.homeStyle
+        if (prefs.safeMode || safeShell) com.mizan.launcher.core.HomeStyle.TV else prefs.homeStyle
 
     private fun isTrackerStyle(): Boolean =
         com.mizan.launcher.core.HomeStyle.isTracker(homeStyleKey())
@@ -1136,8 +1446,10 @@ class MainActivity : Activity() {
             for (row in iptvHomeRows) {
                 try {
                     content.addView(buildIptvRow(row))
-                } catch (e: Exception) {
-                    Prefs.noteError(this, "row:iptv:${row.kind}", e)
+                } catch (e: Throwable) {
+                    // v3.0 (core/SectionGuard): error tile, not a silent drop.
+                    noteSectionFailure("row:iptv:${row.kind}", e)
+                    content.addView(sectionErrorTile("IPTV row"))
                 }
             }
         }
@@ -1148,22 +1460,25 @@ class MainActivity : Activity() {
         if (dState.trendingIptv.isNotEmpty()) {
             try {
                 content.addView(buildIptvTrendingSection(dState.trendingIptv))
-            } catch (e: Exception) {
-                Prefs.noteError(this, "row:iptv:trending", e)
+            } catch (e: Throwable) {
+                noteSectionFailure("row:iptv:trending", e)
+                content.addView(sectionErrorTile("Trending on your IPTV"))
             }
         }
         if (layout.isRowVisible("favorites")) {
             try {
                 content.addView(buildFavoritesSection())
-            } catch (e: Exception) {
-                Prefs.noteError(this, "row:iptv:favorites", e)
+            } catch (e: Throwable) {
+                noteSectionFailure("row:iptv:favorites", e)
+                content.addView(sectionErrorTile("Favorites"))
             }
         }
         if (layout.isRowVisible("apps")) {
             try {
                 content.addView(buildAppsSection())
-            } catch (e: Exception) {
-                Prefs.noteError(this, "row:iptv:apps", e)
+            } catch (e: Throwable) {
+                noteSectionFailure("row:iptv:apps", e)
+                content.addView(sectionErrorTile("Apps"))
             }
         }
     }
@@ -3074,8 +3389,11 @@ class MainActivity : Activity() {
                     TrackerSections.ALLAPPS ->
                         content.addView(buildAppsSection())
                 }
-            } catch (e: Exception) {
-                Prefs.noteError(this, "row:tracker:$key", e)
+            } catch (e: Throwable) {
+                // v3.0 (core/SectionGuard): was Exception + silent
+                // drop — the section now renders its error tile.
+                noteSectionFailure("row:tracker:$key", e)
+                content.addView(sectionErrorTile(trackerTileLabel(key)))
             }
         }
         startHeroRotation()

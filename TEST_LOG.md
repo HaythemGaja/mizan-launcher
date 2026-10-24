@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-23 23:59 UTC
+Date: 2026-10-24 02:10 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -169,6 +169,32 @@ computeForYou ported to core/Discovery — seeds, affinity,
 recommendations + discover, pick codec), tracker snapshots
 remain the fallback, and diagnostics gains a discovery:
 line. New section 45. All other checks carry over.
+
+Note (v3.0): the crash-hardening redo (spec S30). New section
+48: the startup-health state machine (two consecutive
+uncleared starts -> safe shell on the third launch; a clean
+render + 10s survival clears), the section-guard policy
+(a throwing section — Error included — yields its error
+tile; reporting throttled to one per section per minute;
+tracker/watch/iptv fall back to the TV render, TV to the
+emergency root), JSON depth caps (JsonMini + the streaming
+parser refuse nesting past 64 — a 5000-deep hostile payload
+now reads as malformed instead of overflowing the stack),
+malformed-input fixtures for the discovery / season-episode
+/ store-index / short-EPG parsers, and source checks for the
+prefs funnel (every read through PrefsSafe; a wrong-typed
+stored value evicts itself and reads as its default), the
+guarded rebuilds in every activity, the main-thread-only
+crash-handler chain, the bounded image decodes and the
+rename-first store swap. One re-pin: the version check now
+expects 3.0 / code 23 (intentional bump for the redo). All
+794 v2.9 checks carry over. Section 49 adds the crash-on-
+open fixtures: truncated / garbled / half-migrated startup
+state (layout document, row + section orders, home style,
+tracker snapshots, match cache, discovery cache, store
+index) all fail open — and a whole-home fallback on the
+first build now HOLDS the startup-health clear, so a
+deterministic composition crash still arms the safe shell.
 
 ```
 PASS  neverlist: gms is never
@@ -805,7 +831,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 2.9 / code 22 (bumped by v2.9)
+PASS  v25src: the app version is 3.0 / code 23 (bumped by v3.0)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -967,5 +993,70 @@ PASS  v29src: landscape cards take the fit decision from core/Artwork
 PASS  v29src: the settings app pickers no longer scan on the main thread
 PASS  v29src: persisted error lines pass through the scrub
 PASS  v29src: the details header fits a poster complete (no banner crop)
-RESULT: 794 passed, 0 failed, 794 total
+-- section 48: v3.0 crash hardening (startup health, section guards, depth caps, prefs funnel)
+PASS  health: threshold is two consecutive uncleared starts
+PASS  health: modeFor ? 0/1 uncleared is NORMAL, 2+ is SAFE_SHELL, negatives coerce to NORMAL
+PASS  health: [die, die] -> the THIRD launch is the safe shell
+PASS  health: one clean render breaks the run ? [die, clear, die, die] stays NORMAL throughout
+PASS  health: the launch after two consecutive deaths is SAFE_SHELL, and its clean render clears
+PASS  health: after a cleared safe-shell launch the next launch is NORMAL again
+PASS  health: the notice names safe mode and points at Diagnostics
+PASS  health: the diagnostics line carries the count and the shell state
+PASS  guard: the error tile names the section and points at Diagnostics
+PASS  guard: reporting is throttled to one per section per 60s window
+PASS  fallback: tracker/watch/iptv homes fall back to the TV render; tv/unknown to the emergency root
+PASS  guard: a throwing section (Error included) yields its tile; the others still render
+PASS  json: the depth cap is 64
+PASS  json: a 5000-deep document parses to null instead of overflowing the stack
+PASS  json: nesting inside the cap parses (60 levels), past it reads as malformed (100 levels)
+PASS  json: a wide shallow document (200 siblings at depth 3) parses ? depth is per-branch, not cumulative
+PASS  json: malformed documents read as null (truncated, bad token, trailing garbage, empty)
+PASS  stream: a small array still streams element by element
+PASS  stream: a hostile deeply-nested element fails as IllegalArgumentException, not StackOverflowError
+PASS  stream: malformed input throws (the ingest keeps the previous store)
+PASS  fixtures: discovery parsers fail open on garbage (trending empty, facts null)
+PASS  fixtures: series-episodes parser fails open on garbage
+PASS  fixtures: the IPTV store index decoder rejects garbage
+PASS  fixtures: the short-EPG parser fails open on garbage
+PASS  v30src: Prefs reads carry no raw typed getters any more
+PASS  v30src: Prefs routes its reads through PrefsSafe
+PASS  v30src: PrefsSafe is the ClassCastException funnel (catch + evict + default)
+PASS  v30src: the data clients read prefs through PrefsSafe too (no raw p.getString survives)
+PASS  v30src: the health counter lives in its own tiny prefs file, committed synchronously
+PASS  v30src: App.onCreate begins the startup AFTER the diagnostics install
+PASS  v30src: MainActivity reads the shell decision and forces TV in the shell
+PASS  v30src: the shell renders its notice and the TV-style row gate uses the shell gate
+PASS  v30src: a completed render arms the survival clear (10s, main looper)
+PASS  v30src: diagnostics carries the startup-health line
+PASS  v30src: the tracker home carries the whole-home Throwable guard (was unguarded)
+PASS  v30src: rebuild() itself is Throwable-guarded and renders the emergency root
+PASS  v30src: failed home sections render the SectionGuard error tile in all three homes
+PASS  v30src: every secondary activity's build is guarded (its noteError tag is present)
+PASS  v30src: a single settings page is contained (page tag) without killing Settings
+PASS  v30src: the crash handler chains to the system handler ONLY for the main thread
+PASS  v30src: the watchdog's judge block is Throwable-guarded (it cannot die silently)
+PASS  v30src: artwork decodes are bounded through DecodeBounds (no raw decode left)
+PASS  v30src: wallpaper decodes sample from measured bounds, not a fixed factor
+PASS  v30src: the weather-art render is size-capped and DecodeBounds does the two-pass decode
+PASS  v30src: swapFile renames over the destination first and never deletes it first
+PASS  v30src: the ingest loop's per-endpoint catch is Throwable (callbacks still drain in finally)
+-- section 49: v3.0 corrupt/partial startup state (the app still opens)
+PASS  startup-state: a truncated layout document still decodes (good lines survive)
+PASS  startup-state: a garbled layout document decodes to a usable layout, never throws
+PASS  startup-state: empty/absent layout documents decode to defaults
+PASS  startup-state: a partial row order with an unknown key normalizes without throwing
+PASS  startup-state: insertion rows splice after their anchors in a partial order
+PASS  startup-state: the half-migrated section order migrates without losing sections
+PASS  startup-state: a garbled section order composes canonically (no dupes, no unknowns)
+PASS  startup-state: a truncated section order (cut mid-token) still composes
+PASS  startup-state: stored home styles normalize (retired ipad -> tv, garbage -> tv)
+PASS  startup-state: truncated tracker snapshot documents parse to empty, never throw
+PASS  startup-state: a half-corrupt match cache keeps its good lines and skips the rest
+PASS  startup-state: an absent match cache decodes empty
+PASS  startup-state: empty/truncated discovery cache documents read as no data
+PASS  startup-state: a truncated store index decodes to null (the store re-derives, the open survives)
+PASS  startup-state: a wrong-typed store index count degrades to 0 in a valid index, never throws
+PASS  v30src: a whole-home fallback holds the startup clear (degraded gate wired)
+PASS  v30src: the open-path workers record Errors too (Throwable catches, finally-reset flags)
+RESULT: 857 passed, 0 failed, 857 total
 ```

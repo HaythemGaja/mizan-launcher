@@ -55,7 +55,19 @@ class TmdbSearchActivity : Activity() {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         refreshAddedKeys()
-        setContentView(buildRoot())
+        // v3.0: a root build failure renders the worded fallback,
+        // never a black screen (the guarded-rebuilds rule).
+        try {
+            setContentView(buildRoot())
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "tmdbSearchRoot", e)
+            val line = TextView(this)
+            line.text = "Search hit a snag — press Back and try again."
+            line.setTextColor(0xFFFFFFFF.toInt())
+            line.textSize = 17f
+            line.setPadding(Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48))
+            setContentView(line)
+        }
         keyboardRows.firstOrNull()?.firstOrNull()?.post {
             keyboardRows.firstOrNull()?.firstOrNull()?.requestFocus()
         }
@@ -244,7 +256,27 @@ class TmdbSearchActivity : Activity() {
         }
     }
 
+    /** v3.0: results rebuilds run behind this guard (never a black screen). */
     private fun rebuildResults() {
+        try {
+            rebuildResultsInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "tmdbSearchResults", e)
+            val box = resultsBox ?: return
+            try {
+                box.removeAllViews()
+                val line = TextView(this)
+                line.text = "Results hit a snag — the error is noted in the launcher's diagnostics."
+                line.setTextColor(0xFFB3B3B3.toInt())
+                line.textSize = 16f
+                box.addView(line)
+            } catch (ignored: Throwable) {
+                // Leave whatever is on screen rather than crash.
+            }
+        }
+    }
+
+    private fun rebuildResultsInner() {
         val box = resultsBox ?: return
         box.removeAllViews()
         val rows = ArrayList<List<View>>()

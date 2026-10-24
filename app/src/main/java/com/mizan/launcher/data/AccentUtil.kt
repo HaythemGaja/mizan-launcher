@@ -19,6 +19,9 @@ import com.mizan.launcher.core.WeatherLogic
  */
 object AccentUtil {
 
+    /** Longest-side ceiling for decoded wallpaper images (v3.0, DecodeBounds). */
+    private const val WALLPAPER_MAX_DIM = 2048
+
     @Volatile
     private var recomputeInFlight = false
 
@@ -110,16 +113,34 @@ object AccentUtil {
         }
     }
 
-    /** Decode a user image wallpaper, downscaled; null on any failure. */
+    /**
+     * Decode a user image wallpaper, downscaled; null on any failure.
+     * v3.0: the fixed inSampleSize=4 became a bounds-based sample via
+     * DecodeBounds — a 4 was not a bound (a 20000px source still
+     * decoded to 5000px ≈ 100 MB). The stream is opened twice
+     * (bounds pass, then the sampled decode).
+     */
     fun loadImage(ctx: Context, uriString: String): Bitmap? {
         if (uriString.isBlank()) return null
         return try {
             val uri = Uri.parse(uriString)
-            val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             ctx.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input, null, opts)
+                BitmapFactory.decodeStream(input, null, bounds)
             }
-        } catch (e: Exception) {
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                null
+            } else {
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = DecodeBounds.sampleSize(
+                        bounds.outWidth, bounds.outHeight, WALLPAPER_MAX_DIM
+                    )
+                }
+                ctx.contentResolver.openInputStream(uri)?.use { input ->
+                    BitmapFactory.decodeStream(input, null, opts)
+                }
+            }
+        } catch (e: Throwable) {
             Prefs.noteError(ctx, "loadWallpaperImage", e)
             null
         }
@@ -128,12 +149,7 @@ object AccentUtil {
     /** Decode a wallpaper from a plain file path, downscaled; null on failure. */
     fun loadImageFile(path: String): Bitmap? {
         if (path.isBlank()) return null
-        return try {
-            val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
-            BitmapFactory.decodeFile(path, opts)
-        } catch (e: Exception) {
-            null
-        }
+        return DecodeBounds.decodeFileBounded(path, WALLPAPER_MAX_DIM)
     }
 
     private fun renderGradient(top: Int, bottom: Int): Bitmap {

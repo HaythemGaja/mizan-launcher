@@ -88,7 +88,19 @@ class SearchActivity : Activity() {
         ).toSet()
         visibleApps = all.filter { it.pkg in visiblePkgs }
 
-        setContentView(buildRoot(preset.bgTop, preset.bgBottom))
+        // v3.0: a root build failure renders the worded fallback,
+        // never a black screen (the guarded-rebuilds rule).
+        try {
+            setContentView(buildRoot(preset.bgTop, preset.bgBottom))
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "searchRoot", e)
+            val line = TextView(this)
+            line.text = "Search hit a snag — press Back and try again."
+            line.setTextColor(0xFFFFFFFF.toInt())
+            line.textSize = 17f
+            line.setPadding(Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48))
+            setContentView(line)
+        }
         keyboardRows.firstOrNull()?.firstOrNull()?.post {
             keyboardRows.firstOrNull()?.firstOrNull()?.requestFocus()
         }
@@ -303,7 +315,27 @@ class SearchActivity : Activity() {
 
     // -------------------------------------------------------------- results
 
+    /** v3.0: results rebuilds run behind this guard (never a black screen). */
     private fun rebuildResults() {
+        try {
+            rebuildResultsInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "searchResults", e)
+            val box = resultsBox ?: return
+            try {
+                box.removeAllViews()
+                val line = TextView(this)
+                line.text = "Results hit a snag — the error is noted in the launcher's diagnostics."
+                line.setTextColor(subColour)
+                line.textSize = 16f
+                box.addView(line)
+            } catch (ignored: Throwable) {
+                // Leave whatever is on screen rather than crash.
+            }
+        }
+    }
+
+    private fun rebuildResultsInner() {
         val box = resultsBox ?: return
         box.removeAllViews()
         artworkByPkg = prefs.artworkMap()

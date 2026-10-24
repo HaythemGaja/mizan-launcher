@@ -13,6 +13,12 @@ import com.mizan.launcher.core.WeatherUnits
  * under a `p<profile>.` prefix so profiles can never bleed into each other;
  * a few values (current profile, PIN, safe mode, weather location, last
  * error) are global.
+ *
+ * v3.0: EVERY read in this class goes through [PrefsSafe] — a stored
+ * value whose type no longer matches its getter (planted by a backup
+ * restore or a cross-version type change) used to throw
+ * ClassCastException on hot paths on every launch; now it evicts
+ * itself and reads as the default (spec §30).
  */
 class Prefs(ctx: Context) {
 
@@ -28,7 +34,7 @@ class Prefs(ctx: Context) {
             val editor = sp.edit()
             var dirty = false
             if (sp.contains("pin")) { editor.remove("pin"); dirty = true }
-            val raw = sp.getString("arrow_pin", null)
+            val raw = PrefsSafe.strOrNull(sp, "arrow_pin")
             if (raw != null && raw.isNotEmpty() && !ArrowPinCodec.isValidEncoded(raw)) {
                 editor.remove("arrow_pin"); dirty = true
             }
@@ -40,33 +46,33 @@ class Prefs(ctx: Context) {
     }
 
     var currentProfile: Int
-        get() = sp.getInt("current_profile", 1).coerceIn(1, 2)
+        get() = PrefsSafe.int(sp, "current_profile", 1).coerceIn(1, 2)
         set(v) { sp.edit().putInt("current_profile", v.coerceIn(1, 2)).apply() }
 
     private fun k(name: String) = "p$currentProfile.$name"
 
     // ---- per-profile appearance ----
     var themeId: String
-        get() = sp.getString(k("theme"), "apple_black") ?: "apple_black"
+        get() = PrefsSafe.str(sp, k("theme"), "apple_black")
         set(v) { sp.edit().putString(k("theme"), v).apply() }
 
     /** Wallpaper source: "theme" (use theme bg), "gradient", "solid", "image". */
     var wallpaperKind: String
-        get() = sp.getString(k("wall_kind"), "theme") ?: "theme"
+        get() = PrefsSafe.str(sp, k("wall_kind"), "theme")
         set(v) { sp.edit().putString(k("wall_kind"), v).apply() }
 
     /** Gradient name, colour int (as string), or image content URI, per [wallpaperKind]. */
     var wallpaperValue: String
-        get() = sp.getString(k("wall_value"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("wall_value"), "")
         set(v) { sp.edit().putString(k("wall_value"), v).apply() }
 
     /** Dominant colour extracted from the current wallpaper (0 = not computed). */
     var accentOverride: Int
-        get() = sp.getInt(k("accent_override"), 0)
+        get() = PrefsSafe.int(sp, k("accent_override"), 0)
         set(v) { sp.edit().putInt(k("accent_override"), v).apply() }
 
     var iconShape: String
-        get() = sp.getString(k("icon_shape"), "rounded") ?: "rounded"
+        get() = PrefsSafe.str(sp, k("icon_shape"), "rounded")
         set(v) { sp.edit().putString(k("icon_shape"), v).apply() }
 
     /**
@@ -77,7 +83,7 @@ class Prefs(ctx: Context) {
      */
     var playerAspect: String
         get() = com.mizan.launcher.core.PlayerLogic.normalizeAspect(
-            sp.getString(k("player_aspect"), null)
+            PrefsSafe.strOrNull(sp, k("player_aspect"))
         )
         set(v) {
             sp.edit().putString(
@@ -88,11 +94,11 @@ class Prefs(ctx: Context) {
 
     /** compact | standard | large */
     var appSize: String
-        get() = sp.getString(k("app_size"), "standard") ?: "standard"
+        get() = PrefsSafe.str(sp, k("app_size"), "standard")
         set(v) { sp.edit().putString(k("app_size"), v).apply() }
 
     var columns: Int
-        get() = sp.getInt(k("columns"), 6).coerceIn(3, 10)
+        get() = PrefsSafe.int(sp, k("columns"), 6).coerceIn(3, 10)
         set(v) { sp.edit().putInt(k("columns"), v.coerceIn(3, 10)).apply() }
 
     /**
@@ -104,7 +110,7 @@ class Prefs(ctx: Context) {
      * "ipad" decodes to TV (see core/HomeStyle).
      */
     var homeStyle: String
-        get() = com.mizan.launcher.core.HomeStyle.normalize(sp.getString(k("home_style"), null))
+        get() = com.mizan.launcher.core.HomeStyle.normalize(PrefsSafe.strOrNull(sp, k("home_style")))
         set(v) {
             sp.edit().putString(k("home_style"),
                 com.mizan.launcher.core.HomeStyle.normalize(v)).apply()
@@ -119,12 +125,12 @@ class Prefs(ctx: Context) {
      * (TrackerLogic.pruneMarked). Not part of backups.
      */
     var trackerMarked: String
-        get() = sp.getString(k("tracker_marked"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("tracker_marked"), "")
         set(v) { sp.edit().putString(k("tracker_marked"), v).apply() }
 
     /** The Tracker hero cycle position for this profile. */
     var trackerHeroIndex: Int
-        get() = sp.getInt(k("tracker_hero_index"), 0)
+        get() = PrefsSafe.int(sp, k("tracker_hero_index"), 0)
         set(v) { sp.edit().putInt(k("tracker_hero_index"), v).apply() }
 
     /**
@@ -133,7 +139,7 @@ class Prefs(ctx: Context) {
      * ever shows while NO IPTV source is configured at all).
      */
     var watchHintDismissed: Boolean
-        get() = sp.getBoolean(k("watch_hint_dismissed"), false)
+        get() = PrefsSafe.bool(sp, k("watch_hint_dismissed"), false)
         set(v) { sp.edit().putBoolean(k("watch_hint_dismissed"), v).apply() }
 
     // ---- per-profile v2.0 state ----
@@ -143,7 +149,7 @@ class Prefs(ctx: Context) {
      * core/TrackerSections ("order-csv|hidden-csv"). Part of backups.
      */
     var trackerSections: String
-        get() = sp.getString(k("tracker_sections"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("tracker_sections"), "")
         set(v) { sp.edit().putString(k("tracker_sections"), v).apply() }
 
     fun trackerSectionsConfig(): com.mizan.launcher.core.TrackerSections.Config {
@@ -156,15 +162,16 @@ class Prefs(ctx: Context) {
         // — later deliberate reorders (even back to the end) are
         // the user's and are never re-migrated.
         try {
-            if (!sp.getBoolean(k("tracker_sections_migrated_28"), false)) {
+            if (!PrefsSafe.bool(sp, k("tracker_sections_migrated_28"), false)) {
                 val migrated = com.mizan.launcher.core.TrackerSections.migrateOrder(cfg)
                 if (migrated != cfg) trackerSections =
                     com.mizan.launcher.core.TrackerSections.encode(migrated)
                 sp.edit().putBoolean(k("tracker_sections_migrated_28"), true).apply()
                 return migrated
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // Migration must never break a read — the raw config serves.
+            // (Throwable since v3.0: this runs on the cold-open path.)
         }
         return cfg
     }
@@ -180,7 +187,7 @@ class Prefs(ctx: Context) {
      * the marked-set, this is optimistic local state — not in backups.
      */
     var forYouOverlay: String
-        get() = sp.getString(k("foryou_overlay"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("foryou_overlay"), "")
         set(v) { sp.edit().putString(k("foryou_overlay"), v).apply() }
 
     /**
@@ -193,7 +200,7 @@ class Prefs(ctx: Context) {
      * optimistic local state — not part of backups.
      */
     var pendingOverlay: String
-        get() = sp.getString(k("pending_overlay"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("pending_overlay"), "")
         set(v) { sp.edit().putString(k("pending_overlay"), v).apply() }
 
     // ---- TMDB API key (GLOBAL, v2.6) ----
@@ -207,7 +214,7 @@ class Prefs(ctx: Context) {
      * breadcrumbs; Settings shows set/not-set only.
      */
     var tmdbKey: String
-        get() = sp.getString("launcher_tmdb_key", "") ?: ""
+        get() = PrefsSafe.str(sp, "launcher_tmdb_key", "")
         set(v) { sp.edit().putString("launcher_tmdb_key", v).apply() }
 
     // ---- IPTV account (GLOBAL, v2.2) ----
@@ -223,23 +230,23 @@ class Prefs(ctx: Context) {
      * same treatment. The diagnostics line shows counts + state only.
      */
     var iptvServer: String
-        get() = sp.getString("iptv_server", "") ?: ""
+        get() = PrefsSafe.str(sp, "iptv_server", "")
         set(v) { sp.edit().putString("iptv_server", v).apply() }
 
     var iptvUser: String
-        get() = sp.getString("iptv_user", "") ?: ""
+        get() = PrefsSafe.str(sp, "iptv_user", "")
         set(v) { sp.edit().putString("iptv_user", v).apply() }
 
     var iptvPass: String
-        get() = sp.getString("iptv_pass", "") ?: ""
+        get() = PrefsSafe.str(sp, "iptv_pass", "")
         set(v) { sp.edit().putString("iptv_pass", v).apply() }
 
     var iptvM3uUrl: String
-        get() = sp.getString("iptv_m3u_url", "") ?: ""
+        get() = PrefsSafe.str(sp, "iptv_m3u_url", "")
         set(v) { sp.edit().putString("iptv_m3u_url", v).apply() }
 
     var iptvEpgUrl: String
-        get() = sp.getString("iptv_epg_url", "") ?: ""
+        get() = PrefsSafe.str(sp, "iptv_epg_url", "")
         set(v) { sp.edit().putString("iptv_epg_url", v).apply() }
 
     /** The Xtream account, normalized (core/IptvLogic owns the rules). */
@@ -265,7 +272,7 @@ class Prefs(ctx: Context) {
      * part of backups (entries can carry stream URLs).
      */
     var iptvFavorites: String
-        get() = sp.getString(k("iptv_favorites"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("iptv_favorites"), "")
         set(v) { sp.edit().putString(k("iptv_favorites"), v).apply() }
 
     fun iptvFavoriteList(): List<com.mizan.launcher.core.IptvLogic.FavEntry> =
@@ -277,7 +284,7 @@ class Prefs(ctx: Context) {
 
     /** IPTV resume positions, encoded by core/IptvLogic. Per profile, not in backups. */
     var iptvResume: String
-        get() = sp.getString(k("iptv_resume"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("iptv_resume"), "")
         set(v) { sp.edit().putString(k("iptv_resume"), v).apply() }
 
     fun iptvResumeList(): List<com.mizan.launcher.core.IptvLogic.ResumeEntry> =
@@ -289,12 +296,12 @@ class Prefs(ctx: Context) {
 
     /** Explicitly pattern-locked IPTV categories, encoded by core/IptvLocks. Per profile. */
     var iptvLockedCats: String
-        get() = sp.getString(k("iptv_locked_cats"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("iptv_locked_cats"), "")
         set(v) { sp.edit().putString(k("iptv_locked_cats"), v).apply() }
 
     /** Per-category unlock stamps (epoch ms), encoded by core/IptvLocks. Per profile. */
     var iptvCatUnlockStamps: String
-        get() = sp.getString(k("iptv_cat_unlock_stamps"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("iptv_cat_unlock_stamps"), "")
         set(v) { sp.edit().putString(k("iptv_cat_unlock_stamps"), v).apply() }
 
     /**
@@ -302,7 +309,7 @@ class Prefs(ctx: Context) {
      * (per package: PRESET index or image URL). Part of backups.
      */
     var artwork: String
-        get() = sp.getString(k("artwork"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("artwork"), "")
         set(v) { sp.edit().putString(k("artwork"), v).apply() }
 
     fun artworkMap(): Map<String, com.mizan.launcher.core.ArtworkStore.Entry> =
@@ -315,28 +322,28 @@ class Prefs(ctx: Context) {
     }
 
     var layout: LayoutData
-        get() = LayoutCodec.decode(sp.getString(k("layout"), null))
+        get() = LayoutCodec.decode(PrefsSafe.strOrNull(sp, k("layout")))
         set(v) { sp.edit().putString(k("layout"), LayoutCodec.encode(v)).apply() }
 
     var lockedApps: Set<String>
-        get() = sp.getStringSet(k("locked"), emptySet()) ?: emptySet()
+        get() = PrefsSafe.stringSet(sp, k("locked"))
         set(v) { sp.edit().putStringSet(k("locked"), v).apply() }
 
     // ---- per-profile Reddit wallpaper source (v1.1) ----
     /** Comma-separated subreddit names (no "r/" prefix). */
     var redditSubs: String
-        get() = sp.getString(k("reddit_subs"), null)
+        get() = PrefsSafe.strOrNull(sp, k("reddit_subs"))
             ?: com.mizan.launcher.core.RedditWallpapers.DEFAULT_SUBREDDITS.joinToString(",")
         set(v) { sp.edit().putString(k("reddit_subs"), v).apply() }
 
     /** Settings toggle, default OFF: include over_18 posts in results. */
     var redditAllowNsfw: Boolean
-        get() = sp.getBoolean(k("reddit_nsfw"), false)
+        get() = PrefsSafe.bool(sp, k("reddit_nsfw"), false)
         set(v) { sp.edit().putBoolean(k("reddit_nsfw"), v).apply() }
 
     /** Encoded cache of the last fetched candidate list (offline picker). */
     var redditCache: String
-        get() = sp.getString(k("reddit_cache"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("reddit_cache"), "")
         set(v) { sp.edit().putString(k("reddit_cache"), v).apply() }
 
     /**
@@ -347,45 +354,46 @@ class Prefs(ctx: Context) {
      * fetch failures are visible now, not silent.
      */
     var redditLastStatus: String
-        get() = sp.getString(k("reddit_last_status"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("reddit_last_status"), "")
         set(v) { sp.edit().putString(k("reddit_last_status"), v).apply() }
 
     /** "Mizan isn't your home screen yet" hint bar dismissed for this profile. */
     var homeHintDismissed: Boolean
-        get() = sp.getBoolean(k("home_hint_dismissed"), false)
+        get() = PrefsSafe.bool(sp, k("home_hint_dismissed"), false)
         set(v) { sp.edit().putBoolean(k("home_hint_dismissed"), v).apply() }
 
     // ---- per-profile wallpaper rotation + Bing (v1.4) ----
     /** Rotation interval key (core/RotationLogic): off | 15m | 1h | 6h | daily. */
     var redditRotation: String
-        get() = sp.getString(k("reddit_rotation"), com.mizan.launcher.core.RotationLogic.OFF)
-            ?: com.mizan.launcher.core.RotationLogic.OFF
+        get() = PrefsSafe.str(
+            sp, k("reddit_rotation"), com.mizan.launcher.core.RotationLogic.OFF
+        )
         set(v) { sp.edit().putString(k("reddit_rotation"), v).apply() }
 
     /** When the wallpaper last auto-rotated (epoch ms; 0 = never). */
     var redditRotationLast: Long
-        get() = sp.getLong(k("reddit_rotation_last"), 0)
+        get() = PrefsSafe.long(sp, k("reddit_rotation_last"), 0)
         set(v) { sp.edit().putLong(k("reddit_rotation_last"), v).apply() }
 
     /** Index into the cached candidate list of the currently-shown Reddit wallpaper. */
     var redditRotationIndex: Int
-        get() = sp.getInt(k("reddit_rotation_index"), -1)
+        get() = PrefsSafe.int(sp, k("reddit_rotation_index"), -1)
         set(v) { sp.edit().putInt(k("reddit_rotation_index"), v).apply() }
 
     /** Calendar day (core/BingWallpaper.dayKey) the cached Bing image belongs to. */
     var bingCacheDate: String
-        get() = sp.getString(k("bing_cache_date"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("bing_cache_date"), "")
         set(v) { sp.edit().putString(k("bing_cache_date"), v).apply() }
 
     /** Absolute path of the downloaded Bing image for [bingCacheDate]. */
     var bingCachePath: String
-        get() = sp.getString(k("bing_cache_path"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("bing_cache_path"), "")
         set(v) { sp.edit().putString(k("bing_cache_path"), v).apply() }
 
     // ---- per-profile Recently Used (v1.4) ----
     /** Encoded MRU launch list (core/RecentsStore). Not part of backups. */
     var recents: String
-        get() = sp.getString(k("recents"), "") ?: ""
+        get() = PrefsSafe.str(sp, k("recents"), "")
         set(v) { sp.edit().putString(k("recents"), v).apply() }
 
     /** Record a launch made from Mizan into this profile's MRU store. */
@@ -404,12 +412,12 @@ class Prefs(ctx: Context) {
     // ---- guest profile (global, v1.4) ----
     /** Which profile is the Guest profile: 0 = none, 1 or 2. */
     var guestProfile: Int
-        get() = sp.getInt("guest_profile", 0).coerceIn(0, 2)
+        get() = PrefsSafe.int(sp, "guest_profile", 0).coerceIn(0, 2)
         set(v) { sp.edit().putInt("guest_profile", v.coerceIn(0, 2)).apply() }
 
     /** iOS-switch in Lock & profiles, default ON: gate Settings entry + switch-away while Guest is active. */
     var guestLockSettings: Boolean
-        get() = sp.getBoolean("guest_lock_settings", true)
+        get() = PrefsSafe.bool(sp, "guest_lock_settings", true)
         set(v) { sp.edit().putBoolean("guest_lock_settings", v).apply() }
 
     // ---- per-profile custom name (v1.9) ----
@@ -420,7 +428,7 @@ class Prefs(ctx: Context) {
      * core/ProfileNames — this is storage only.
      */
     fun profileName(profile: Int): String =
-        sp.getString("p$profile.profile_name", "") ?: ""
+        PrefsSafe.str(sp, "p$profile.profile_name", "")
 
     fun setProfileName(profile: Int, raw: String) {
         sp.edit().putString(
@@ -457,7 +465,7 @@ class Prefs(ctx: Context) {
      * away with it. Default OFF = the pre-v1.9 behaviour.
      */
     var stickyStatusBar: Boolean
-        get() = sp.getBoolean(k("sticky_status_bar"), false)
+        get() = PrefsSafe.bool(sp, k("sticky_status_bar"), false)
         set(v) { sp.edit().putBoolean(k("sticky_status_bar"), v).apply() }
 
     // ---- unlock grace (per profile window + global stamp, v1.9) ----
@@ -469,7 +477,7 @@ class Prefs(ctx: Context) {
      */
     var unlockGraceMinutes: Int
         get() = com.mizan.launcher.core.UnlockGrace.normalize(
-            sp.getInt(k("unlock_grace_min"), 0)
+            PrefsSafe.int(sp, k("unlock_grace_min"), 0)
         )
         set(v) {
             sp.edit().putInt(k("unlock_grace_min"),
@@ -478,7 +486,7 @@ class Prefs(ctx: Context) {
 
     /** When the arrow pattern was last verified successfully (epoch ms; 0 = never). */
     var lastUnlockAt: Long
-        get() = sp.getLong("last_unlock_at", 0L)
+        get() = PrefsSafe.long(sp, "last_unlock_at", 0L)
         set(v) { sp.edit().putLong("last_unlock_at", v).apply() }
 
     /** Stamp a successful pattern verification (the grace clock). */
@@ -499,7 +507,7 @@ class Prefs(ctx: Context) {
 
     /** Last "⚡ Speed up now" result line (Settings → Home & launcher, shown in diagnostics). */
     var speedupLastResult: String
-        get() = sp.getString("speedup_last_result", "") ?: ""
+        get() = PrefsSafe.str(sp, "speedup_last_result", "")
         set(v) { sp.edit().putString("speedup_last_result", v).apply() }
 
     /**
@@ -513,7 +521,7 @@ class Prefs(ctx: Context) {
      * explicit stored value wins.
      */
     var lockSettings: Boolean
-        get() = if (sp.contains("lock_settings")) sp.getBoolean("lock_settings", false)
+        get() = if (sp.contains("lock_settings")) PrefsSafe.bool(sp, "lock_settings", false)
         else arrowPin.isNotEmpty()
         set(v) { sp.edit().putBoolean("lock_settings", v).apply() }
 
@@ -526,7 +534,7 @@ class Prefs(ctx: Context) {
      */
     var arrowPin: String
         get() {
-            val raw = sp.getString("arrow_pin", "") ?: ""
+            val raw = PrefsSafe.str(sp, "arrow_pin", "")
             return if (ArrowPinCodec.isValidEncoded(raw)) raw else ""
         }
         set(v) {
@@ -535,27 +543,27 @@ class Prefs(ctx: Context) {
 
     /** Wrong arrow-unlock attempts, for diagnostics. */
     var arrowAttempts: Int
-        get() = sp.getInt("arrow_attempts", 0)
+        get() = PrefsSafe.int(sp, "arrow_attempts", 0)
         set(v) { sp.edit().putInt("arrow_attempts", v).apply() }
 
     var safeMode: Boolean
-        get() = sp.getBoolean("safe_mode", false)
+        get() = PrefsSafe.bool(sp, "safe_mode", false)
         set(v) { sp.edit().putBoolean("safe_mode", v).apply() }
 
     var weatherLat: String
-        get() = sp.getString("weather_lat", "39.1653") ?: "39.1653"
+        get() = PrefsSafe.str(sp, "weather_lat", "39.1653")
         set(v) { sp.edit().putString("weather_lat", v).apply() }
 
     var weatherLon: String
-        get() = sp.getString("weather_lon", "-86.5264") ?: "-86.5264"
+        get() = PrefsSafe.str(sp, "weather_lon", "-86.5264")
         set(v) { sp.edit().putString("weather_lon", v).apply() }
 
     var lastWeatherFetch: Long
-        get() = sp.getLong("weather_last_fetch", 0)
+        get() = PrefsSafe.long(sp, "weather_last_fetch", 0)
         set(v) { sp.edit().putLong("weather_last_fetch", v).apply() }
 
     var cachedWeather: String
-        get() = sp.getString("weather_cached", "") ?: ""
+        get() = PrefsSafe.str(sp, "weather_cached", "")
         set(v) { sp.edit().putString("weather_cached", v).apply() }
 
     /**
@@ -564,18 +572,18 @@ class Prefs(ctx: Context) {
      * even when the status-bar widget is hidden. "" = never fetched.
      */
     var weatherData: String
-        get() = sp.getString("weather_data", "") ?: ""
+        get() = PrefsSafe.str(sp, "weather_data", "")
         set(v) { sp.edit().putString("weather_data", v).apply() }
 
     /** Weather background state for diagnostics: "active: rain" / "fallback: ..." / "off". */
     var weatherBgStatus: String
-        get() = sp.getString("weather_bg_status", "off") ?: "off"
+        get() = PrefsSafe.str(sp, "weather_bg_status", "off")
         set(v) { sp.edit().putString("weather_bg_status", v).apply() }
 
     // ---- per-profile weather units (v1.2) ----
     /** Stored key of the WeatherUnits enum; invalid values read as Fahrenheit. */
     var weatherUnitsKey: String
-        get() = WeatherUnits.fromKey(sp.getString(k("weather_units"), null)).key
+        get() = WeatherUnits.fromKey(PrefsSafe.strOrNull(sp, k("weather_units"))).key
         set(v) { sp.edit().putString(k("weather_units"), WeatherUnits.fromKey(v).key).apply() }
 
     val weatherUnits: WeatherUnits get() = WeatherUnits.fromKey(weatherUnitsKey)
@@ -600,8 +608,10 @@ class Prefs(ctx: Context) {
         }
 
         fun lastError(ctx: Context): String =
-            ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
-                .getString("last_error", "") ?: ""
+            PrefsSafe.str(
+                ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE),
+                "last_error", ""
+            )
 
         // ---- Reddit attempt log (global, v1.6) ----
 
@@ -615,7 +625,7 @@ class Prefs(ctx: Context) {
         fun noteRedditAttempt(ctx: Context, line: String) {
             try {
                 val p = sp(ctx)
-                val lines = (p.getString("reddit_attempt_log", "") ?: "")
+                val lines = PrefsSafe.str(p, "reddit_attempt_log", "")
                     .lines().filter { it.isNotBlank() }
                 val kept = (lines + line).takeLast(REDDIT_LOG_MAX)
                 p.edit().putString("reddit_attempt_log", kept.joinToString("\n")).apply()
@@ -627,7 +637,7 @@ class Prefs(ctx: Context) {
         /** The recorded Reddit attempt lines, oldest first. */
         fun redditAttemptLog(ctx: Context): List<String> =
             try {
-                (sp(ctx).getString("reddit_attempt_log", "") ?: "")
+                PrefsSafe.str(sp(ctx), "reddit_attempt_log", "")
                     .lines().filter { it.isNotBlank() }
             } catch (e: Throwable) { emptyList() }
 
@@ -640,7 +650,7 @@ class Prefs(ctx: Context) {
             try {
                 val p = sp(ctx)
                 p.edit()
-                    .putInt("watcher_relaunches", p.getInt("watcher_relaunches", 0) + 1)
+                    .putInt("watcher_relaunches", PrefsSafe.int(p, "watcher_relaunches", 0) + 1)
                     .putLong("watcher_last_at", System.currentTimeMillis())
                     .apply()
             } catch (ignored: Throwable) {
@@ -649,10 +659,10 @@ class Prefs(ctx: Context) {
         }
 
         fun watcherRelaunches(ctx: Context): Int =
-            try { sp(ctx).getInt("watcher_relaunches", 0) } catch (e: Throwable) { 0 }
+            try { PrefsSafe.int(sp(ctx), "watcher_relaunches", 0) } catch (e: Throwable) { 0 }
 
         fun watcherLastAt(ctx: Context): Long =
-            try { sp(ctx).getLong("watcher_last_at", 0) } catch (e: Throwable) { 0 }
+            try { PrefsSafe.long(sp(ctx), "watcher_last_at", 0) } catch (e: Throwable) { 0 }
 
         /** Timestamp of the last USER_PRESENT / SCREEN_ON recovery nudge. */
         fun noteScreenOnRecovery(ctx: Context) {

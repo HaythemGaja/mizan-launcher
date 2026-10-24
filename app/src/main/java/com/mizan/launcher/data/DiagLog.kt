@@ -150,7 +150,7 @@ object DiagLog {
     fun startupFirstMs(ctx: Context): Long {
         if (firstFrameMs >= 0L) return firstFrameMs
         return try {
-            startupPrefs(ctx).getLong(K_STARTUP_FIRST, -1L)
+            PrefsSafe.long(startupPrefs(ctx), K_STARTUP_FIRST, -1L)
         } catch (e: Exception) {
             -1L
         }
@@ -160,7 +160,7 @@ object DiagLog {
     fun startupFullMs(ctx: Context): Long {
         if (fullMs >= 0L) return fullMs
         return try {
-            startupPrefs(ctx).getLong(K_STARTUP_FULL, -1L)
+            PrefsSafe.long(startupPrefs(ctx), K_STARTUP_FULL, -1L)
         } catch (e: Exception) {
             -1L
         }
@@ -233,7 +233,25 @@ object DiagLog {
             } catch (ignored: Throwable) {
                 // The handler must never throw before chaining.
             }
-            prev?.uncaughtException(t, e)
+            // v3.0: chain to the system handler (which kills the
+            // process) ONLY for the main thread. Before this, ANY
+            // worker's uncaught throwable — a fetch thread, the
+            // artwork decoder — took the whole launcher down with
+            // it. Every worker's state is finally-reset or
+            // disk-atomic (ingest flags, kick in-flight flags,
+            // executor self-replacement), so a dead worker degrades
+            // its feature and is already logged above; a main-thread
+            // death keeps the platform behavior (the process is
+            // unusable anyway, and the startup-health counter +
+            // safe shell handle a repeat).
+            val isMain = try {
+                t === Looper.getMainLooper().thread
+            } catch (ignored: Throwable) {
+                true
+            }
+            if (isMain) {
+                prev?.uncaughtException(t, e)
+            }
         }
     }
 
@@ -249,21 +267,29 @@ object DiagLog {
                 } catch (e: InterruptedException) {
                     return@thread
                 }
-                mainHandler.post { lastBeatMs = System.currentTimeMillis() }
-                // Give the posted beat a beat to land before judging.
+                // v3.0: the judge block is Throwable-guarded — an
+                // unguarded post/judge failure used to kill the
+                // watchdog thread silently, and with it all stall
+                // evidence for the rest of the process's life.
                 try {
-                    Thread.sleep(250L)
-                } catch (e: InterruptedException) {
-                    return@thread
-                }
-                val now = System.currentTimeMillis()
-                if (DiagWatchdog.isStale(lastBeatMs, now)) {
-                    if (!stallDumped) {
-                        stallDumped = true
-                        dumpStall(now)
+                    mainHandler.post { lastBeatMs = System.currentTimeMillis() }
+                    // Give the posted beat a beat to land before judging.
+                    try {
+                        Thread.sleep(250L)
+                    } catch (e: InterruptedException) {
+                        return@thread
                     }
-                } else {
-                    stallDumped = false
+                    val now = System.currentTimeMillis()
+                    if (DiagWatchdog.isStale(lastBeatMs, now)) {
+                        if (!stallDumped) {
+                            stallDumped = true
+                            dumpStall(now)
+                        }
+                    } else {
+                        stallDumped = false
+                    }
+                } catch (ignored: Throwable) {
+                    // Keep watching.
                 }
             }
         }

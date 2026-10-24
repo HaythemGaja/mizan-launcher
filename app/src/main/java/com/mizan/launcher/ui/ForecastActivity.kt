@@ -81,7 +81,32 @@ class ForecastActivity : Activity() {
         }
     }
 
+    /**
+     * v3.0: every forecast render runs behind this guard (the
+     * IptvActivity rule): an escape is recorded and replaced by a
+     * worded line, never a black screen.
+     */
     private fun render() {
+        try {
+            renderInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "forecastRender", e)
+            try {
+                val line = TextView(this)
+                line.text = "The forecast hit a snag — press Back and try again."
+                line.setTextColor(0xFFFFFFFF.toInt())
+                line.textSize = 17f
+                line.setPadding(
+                    Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48)
+                )
+                setContentView(line)
+            } catch (ignored: Throwable) {
+                // Leave whatever is on screen rather than crash.
+            }
+        }
+    }
+
+    private fun renderInner() {
         val preset = Themes.preset(prefs.themeId)
         val textColour = preset.text
         val subColour = preset.subText

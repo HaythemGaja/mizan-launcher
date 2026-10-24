@@ -17,9 +17,26 @@ import com.mizan.launcher.core.WeatherPalette
  */
 object WeatherArt {
 
+    /**
+     * Longest-side ceiling for the rendered bitmap (v3.0): callers
+     * pass the raw display size, and at 4K an ARGB canvas is
+     * 3840×2160×4 B ≈ 33 MB allocated on the wallpaper path. The
+     * art is a gradient + soft motif — the wallpaper view scales
+     * it to the display, so capping the render at 1920 on the
+     * longest side (aspect preserved) is visually identical and
+     * bounds the allocation at ~8 MB.
+     */
+    private const val MAX_DIM = 1920
+
     fun render(palette: WeatherPalette, width: Int, height: Int): Bitmap {
-        val w = width.coerceAtLeast(2)
-        val h = height.coerceAtLeast(2)
+        var w = width.coerceAtLeast(2)
+        var h = height.coerceAtLeast(2)
+        val longest = maxOf(w, h)
+        if (longest > MAX_DIM) {
+            val scale = MAX_DIM.toFloat() / longest
+            w = (w * scale).toInt().coerceAtLeast(2)
+            h = (h * scale).toInt().coerceAtLeast(2)
+        }
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)

@@ -74,7 +74,7 @@ object WatchPlay {
     fun cachedMatches(ctx: Context): Map<String, WatchMatch.Match> {
         val p = prefs(ctx)
         val decoded = WatchMatch.decodeMatches(
-            try { p.getString(K_MATCH_CACHE, null) } catch (e: Exception) { null }
+            try { PrefsSafe.strOrNull(p, K_MATCH_CACHE) } catch (e: Exception) { null }
         )
         return decoded.associateBy { "${it.type}|${it.tmdbId}" }
     }
@@ -121,7 +121,10 @@ object WatchPlay {
             var changed = false
             try {
                 changed = recomputeOnWorker(appCtx)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable since v3.0: an Error here (a hostile
+                // catalogue during matching) degrades to the stale
+                // table and is recorded — never a silent thread death.
                 Prefs.noteError(appCtx, "watchMatch", e)
             } finally {
                 synchronized(this) { recomputeInFlight = false }
@@ -155,10 +158,10 @@ object WatchPlay {
             IptvClient.fetchedAt(appCtx), snap.updated, keyHash
         )
         val p = prefs(appCtx)
-        val storedFp = try { p.getString(K_MATCH_FP, null) } catch (e: Exception) { null }
+        val storedFp = try { PrefsSafe.strOrNull(p, K_MATCH_FP) } catch (e: Exception) { null }
         if (storedFp == fp) {
             val decoded = WatchMatch.decodeMatches(
-                try { p.getString(K_MATCH_CACHE, null) } catch (e: Exception) { null }
+                try { PrefsSafe.strOrNull(p, K_MATCH_CACHE) } catch (e: Exception) { null }
             )
             if (decoded.isNotEmpty() || titles.isEmpty()) return false
             // Fingerprint claims fresh but the cache is empty while

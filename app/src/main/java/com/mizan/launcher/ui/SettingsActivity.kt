@@ -318,7 +318,36 @@ class SettingsActivity : Activity() {
 
     // ---------------------------------------------------------------- layout
 
+    /**
+     * v3.0: every Settings build runs behind this guard (the
+     * IptvActivity rule, generalized): a throw anywhere in the
+     * composition — including an inflation OOM — is recorded and
+     * replaced by a worded screen, never a black one. The detail
+     * page dispatch carries its own finer guard inside
+     * [rebuildInner], so one broken page degrades alone.
+     */
     private fun rebuild() {
+        try {
+            rebuildInner()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "settingsRebuild", e)
+            try {
+                val line = TextView(this)
+                line.text = "Settings hit a snag — press Back and try again. " +
+                    "The error is noted in the launcher's diagnostics."
+                line.setTextColor(0xFFFFFFFF.toInt())
+                line.textSize = 17f
+                line.setPadding(
+                    Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48), Ui.dp(this, 48)
+                )
+                setContentView(line)
+            } catch (ignored: Throwable) {
+                // Leave whatever is on screen rather than crash.
+            }
+        }
+    }
+
+    private fun rebuildInner() {
         iptvProgressView = null
         layout = prefs.layout
         val preset = Themes.preset(prefs.themeId)
@@ -376,7 +405,19 @@ class SettingsActivity : Activity() {
         detail.addView(detailHeader(nav.selectedId))
         buildingDetail = true
         detailFocusable = emptyList()
-        buildDetail(detail, nav.selectedId)
+        // v3.0: the page dispatch is contained — one broken
+        // settings page renders an error line in the detail pane
+        // while the nav and every other page keep working.
+        try {
+            buildDetail(detail, nav.selectedId)
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "settingsPage:${nav.selectedId}", e)
+            val line = TextView(this)
+            line.text = "This settings page hit a snag — the error is noted in Diagnostics."
+            line.setTextColor(subColour)
+            line.textSize = 16f
+            detail.addView(line)
+        }
         buildingDetail = false
         groupDetailIntoCards(detail, firstContentIndex = 1)
 
@@ -1485,6 +1526,15 @@ class SettingsActivity : Activity() {
                     com.mizan.launcher.data.DiagLog.startupFirstMs(this@SettingsActivity),
                     com.mizan.launcher.data.DiagLog.startupFullMs(this@SettingsActivity)
                 )
+            )
+            // v3.0: the startup-health line — the uncleared-start
+            // counter + safe-shell state (core/StartupHealth via
+            // data/StartupHealthStore). Two uncleared starts in a
+            // row arm the shell; a shell that's ON here is the
+            // named signal for a repeating startup crash.
+            append(
+                "\n" + com.mizan.launcher.data.StartupHealthStore
+                    .diagnosticsLine(this@SettingsActivity)
             )
             // v1.7: the profile's home style (safe mode renders TV
             // regardless — noted so a report isn't misread).

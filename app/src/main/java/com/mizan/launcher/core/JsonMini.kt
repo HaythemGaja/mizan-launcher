@@ -12,8 +12,20 @@ package com.mizan.launcher.core
  * Values come back as: Map<String, Any?> / List<Any?> / String /
  * Double / Boolean / null. Any malformed input returns null from
  * [parse] instead of throwing (fail-open).
+ *
+ * v3.0: nesting is capped at [MAX_DEPTH]. The reader recurses per
+ * container, and every document this parser touches is network-fed
+ * (TMDB, IPTV panels, tracker snapshots) — a hostile deeply-nested
+ * payload recursed until StackOverflowError, an Error that escapes
+ * every `catch (e: Exception)` in the parse paths and kills the
+ * thread (on the main thread: the process). Past the cap the reader
+ * throws IllegalArgumentException, which [parse] converts to null
+ * like any malformed input. Real documents nest well under 20.
  */
 object JsonMini {
+
+    /** Maximum container nesting depth accepted (see class doc). */
+    const val MAX_DEPTH = 64
 
     fun parse(text: String?): Any? {
         if (text.isNullOrBlank()) return null
@@ -30,6 +42,7 @@ object JsonMini {
 
     private class Reader(private val s: String) {
         private var i = 0
+        private var depth = 0
 
         fun atEnd(): Boolean = i >= s.length
 
@@ -56,6 +69,15 @@ object JsonMini {
         }
 
         private fun readObject(): Map<String, Any?> {
+            if (++depth > MAX_DEPTH) throw IllegalArgumentException("nesting")
+            try {
+                return readObjectInner()
+            } finally {
+                depth--
+            }
+        }
+
+        private fun readObjectInner(): Map<String, Any?> {
             val out = LinkedHashMap<String, Any?>()
             i++ // '{'
             skipWs()
@@ -79,6 +101,15 @@ object JsonMini {
         }
 
         private fun readArray(): List<Any?> {
+            if (++depth > MAX_DEPTH) throw IllegalArgumentException("nesting")
+            try {
+                return readArrayInner()
+            } finally {
+                depth--
+            }
+        }
+
+        private fun readArrayInner(): List<Any?> {
             val out = ArrayList<Any?>()
             i++ // '['
             skipWs()

@@ -112,7 +112,7 @@ object TrackerClient {
     fun status(ctx: Context): Status {
         val installed = isInstalled(ctx)
         val stored = try {
-            prefs(ctx).getString(K_STATE, null)
+            PrefsSafe.strOrNull(prefs(ctx), K_STATE)
         } catch (e: Exception) {
             null
         }
@@ -166,14 +166,14 @@ object TrackerClient {
     fun cached(ctx: Context): Snapshots {
         return try {
             val p = prefs(ctx)
-            val rawUp = p.getString(K_UPNEXT, null)
-            val rawCont = p.getString(K_CONTINUE, null)
-            val rawMovies = p.getString(K_MOVIES, null)
-            val rawTracked = p.getString(K_TRACKED, null)
-            val rawForYou = p.getString(K_FORYOU, null)
-            val updated = p.getLong(K_UPDATED, 0L)
-            val forYouUpdated = p.getLong(K_FORYOU_UPDATED, 0L)
-            val fetchedAt = p.getLong(K_FETCHED, 0L)
+            val rawUp = PrefsSafe.strOrNull(p, K_UPNEXT)
+            val rawCont = PrefsSafe.strOrNull(p, K_CONTINUE)
+            val rawMovies = PrefsSafe.strOrNull(p, K_MOVIES)
+            val rawTracked = PrefsSafe.strOrNull(p, K_TRACKED)
+            val rawForYou = PrefsSafe.strOrNull(p, K_FORYOU)
+            val updated = PrefsSafe.long(p, K_UPDATED, 0L)
+            val forYouUpdated = PrefsSafe.long(p, K_FORYOU_UPDATED, 0L)
+            val fetchedAt = PrefsSafe.long(p, K_FETCHED, 0L)
             val key = listOf<Any?>(
                 rawUp, rawCont, rawMovies, rawTracked, rawForYou,
                 updated, forYouUpdated, fetchedAt
@@ -226,16 +226,16 @@ object TrackerClient {
         val before = try {
             val p = prefs(appCtx)
             listOf(
-                p.getString(K_UPNEXT, null), p.getString(K_CONTINUE, null),
-                p.getString(K_MOVIES, null), p.getString(K_TRACKED, null),
-                p.getString(K_FORYOU, null)
+                PrefsSafe.strOrNull(p, K_UPNEXT), PrefsSafe.strOrNull(p, K_CONTINUE),
+                PrefsSafe.strOrNull(p, K_MOVIES), PrefsSafe.strOrNull(p, K_TRACKED),
+                PrefsSafe.strOrNull(p, K_FORYOU)
             )
         } catch (e: Exception) {
             null
         }
         if (inFlight) return
         val lastOk = try {
-            prefs(appCtx).getLong(K_LAST_OK, 0L)
+            PrefsSafe.long(prefs(appCtx), K_LAST_OK, 0L)
         } catch (e: Exception) {
             0L
         }
@@ -459,7 +459,7 @@ object TrackerClient {
     /** The last tmdb_get outcome for the diagnostics `tmdb:` line. */
     fun lastTmdbOutcome(ctx: Context): String? {
         return try {
-            prefs(ctx).getString(K_TMDB_LAST, null)
+            PrefsSafe.strOrNull(prefs(ctx), K_TMDB_LAST)
         } catch (e: Exception) {
             null
         }
@@ -468,7 +468,7 @@ object TrackerClient {
     /** v2.6: the direct (launcher-key) path's note for the `tmdb:` line. */
     fun lastTmdbDirect(ctx: Context): String? {
         return try {
-            prefs(ctx).getString(K_TMDB_DIRECT, null)
+            PrefsSafe.strOrNull(prefs(ctx), K_TMDB_DIRECT)
         } catch (e: Exception) {
             null
         }
@@ -489,7 +489,7 @@ object TrackerClient {
     fun posterCache(ctx: Context): Map<String, String> {
         return try {
             com.mizan.launcher.core.LibraryLogic.decodePosterCache(
-                prefs(ctx).getString(K_POSTER_CACHE, null)
+                PrefsSafe.strOrNull(prefs(ctx), K_POSTER_CACHE)
             )
         } catch (e: Exception) {
             emptyMap()
@@ -513,7 +513,7 @@ object TrackerClient {
     fun backdropCache(ctx: Context): Map<String, String> {
         return try {
             com.mizan.launcher.core.LibraryLogic.decodePathCache(
-                prefs(ctx).getString(K_BACKDROP_CACHE, null)
+                PrefsSafe.strOrNull(prefs(ctx), K_BACKDROP_CACHE)
             )
         } catch (e: Exception) {
             emptyMap()

@@ -3,6 +3,7 @@ package com.mizan.launcher
 import android.app.Application
 import com.mizan.launcher.data.DiagLog
 import com.mizan.launcher.data.IptvClient
+import com.mizan.launcher.data.StartupHealthStore
 
 /**
  * Process entry (v2.5, spec §25). Runs before ANY activity,
@@ -27,6 +28,15 @@ class App : Application() {
         // `startup:` line) is a delta from this moment.
         DiagLog.markStartupStart()
         DiagLog.install(this)
+        // v3.0: begin this process's startup for the startup-
+        // health machine (core/StartupHealth): the persisted
+        // uncleared counter increments NOW (commit(), before any
+        // composition can die), and the safe-shell decision for
+        // this launch is fixed here — MainActivity reads it via
+        // StartupHealthStore.safeShellArmed. Runs AFTER the crash
+        // handler installs so a failure inside beginLaunch itself
+        // is still evidence, never a silent death.
+        StartupHealthStore.beginLaunch(this)
         // v2.8: start the SharedPreferences file load NOW. The
         // framework loads the (large — it carries the tracker
         // snapshot documents) prefs file on a background thread

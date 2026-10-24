@@ -208,7 +208,20 @@ class PlayerActivity : Activity() {
         super.onCreate(savedInstanceState)
         com.mizan.launcher.data.DiagLog.note("player opened")
         prefs = Prefs(this)
+        // v3.0: the whole player build runs behind this guard — a
+        // failure (bad launch data, view construction, a hostile
+        // stream URL) closes the player back to the launcher with
+        // the error noted, instead of killing the process from a
+        // secondary screen.
+        try {
+            buildPlayer()
+        } catch (e: Throwable) {
+            Prefs.noteError(this, "playerCreate", e)
+            finish()
+        }
+    }
 
+    private fun buildPlayer() {
         val root = FrameLayout(this)
         root.setBackgroundColor(0xFF000000.toInt())
 

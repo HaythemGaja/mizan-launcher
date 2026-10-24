@@ -174,7 +174,7 @@ object IptvClient {
             try {
                 val p = prefs(appCtx)
                 val done = try {
-                    p.getBoolean(K_STORE_V2, false)
+                    PrefsSafe.bool(p, K_STORE_V2, false)
                 } catch (e: Exception) {
                     false
                 }
@@ -502,7 +502,7 @@ object IptvClient {
 
     /** The persisted fetch classification (derived before the first ingest completes). */
     fun status(ctx: Context): IptvStatus.Kind {
-        val stored = try { prefs(ctx).getString(K_STATE, null) } catch (e: Exception) { null }
+        val stored = try { PrefsSafe.strOrNull(prefs(ctx), K_STATE) } catch (e: Exception) { null }
         if (stored != null) {
             try {
                 return IptvStatus.Kind.valueOf(stored)
@@ -549,7 +549,7 @@ object IptvClient {
     /** The recorded failure class for the diagnostics line; "" when none. */
     fun lastErrorClass(ctx: Context): String {
         val stored = try {
-            prefs(ctx).getString(K_LAST_ERROR, null)
+            PrefsSafe.strOrNull(prefs(ctx), K_LAST_ERROR)
         } catch (e: Exception) {
             null
         }
@@ -670,7 +670,7 @@ object IptvClient {
     }
 
     /** Sanitized error for diagnostics: the exception TYPE only — messages can carry URLs. */
-    private fun sanitized(e: Exception): Exception =
+    private fun sanitized(e: Throwable): Exception =
         RuntimeException(e.javaClass.simpleName)
 
     // ------------------------------------------------------------ ingest (refresh on request)
@@ -760,7 +760,12 @@ object IptvClient {
             while (true) {
                 try {
                     ingestOnce(appCtx)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
+                    // Throwable, not Exception (v3.0): an Error from
+                    // a hostile payload (post-depth-cap this should
+                    // not happen) must degrade the refresh, not kill
+                    // the ingest thread — the finally below still
+                    // drains the callbacks either way.
                     lastHttpErrorClass = e.javaClass.simpleName
                     saveLastError(appCtx)
                     Prefs.noteError(appCtx, "iptvIngest", sanitized(e))
@@ -787,7 +792,13 @@ object IptvClient {
     /** Rename tmp over dest (same directory); fall back to copy+delete. */
     private fun swapFile(tmp: File, dest: File): Boolean {
         return try {
-            if (dest.exists()) dest.delete()
+            // v3.0: rename FIRST. renameTo over an existing file
+            // atomically replaces it on POSIX filesystems, so there
+            // is no window where the destination is missing. The
+            // pre-v3.0 order deleted the destination first — a
+            // process death between the delete and the rename lost
+            // the whole catalogue file until the next refresh. The
+            // copy fallback (cross-volume) keeps delete-last too.
             if (tmp.renameTo(dest)) {
                 true
             } else {
@@ -1253,7 +1264,7 @@ object IptvClient {
     fun cachedSeriesInfo(ctx: Context, seriesId: Long): IptvLogic.SeriesInfo? {
         val key = seriesInfoKey(ctx, seriesId)
         val raw = try {
-            prefs(ctx).getString(key, null)
+            PrefsSafe.strOrNull(prefs(ctx), key)
         } catch (e: Exception) {
             null
         } ?: return null
