@@ -1938,28 +1938,26 @@ class SettingsActivity : Activity() {
             // regardless — noted so a report isn't misread).
             append("\nhome style: ${prefs.homeStyle}" +
                 if (prefs.safeMode) " (safe mode: tv)" else "")
-            // v1.9: the tracker: line — ALWAYS present, worded by
-            // core/TrackerStatus from the last classified fetch, so
-            // an empty Tracker view explains itself instead of
-            // failing silently (the v1.8 behaviour on Haythem's TV).
-            val tSnap = com.mizan.launcher.data.TrackerClient.cached(this@SettingsActivity)
-            val tState = com.mizan.launcher.data.TrackerClient.status(this@SettingsActivity)
-            val tTime = if (tSnap.updated > 0) {
-                java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
-                    .format(java.util.Date(tSnap.updated))
-            } else ""
+            // v3.7: the library: line replaces the v1.9
+            // tracker: line — the launcher IS the tracker
+            // now, so there is no fetch classification to
+            // word it from. Counts only (titles, episode
+            // files, missed items, last local change),
+            // plus whether the one-time import is still
+            // pending. A missing tracker app is never
+            // reported here at all — it is a normal state.
+            // (The memo parse the old line needed is gone
+            // too: libraryDiag reads only the small index.)
             append(
-                "\ntracker: " + com.mizan.launcher.core.TrackerStatus.diagText(
-                    tState.kind, tSnap.hasData, tSnap.upNext.size,
-                    tSnap.cont.size, tSnap.movies.size, tSnap.tracked.size,
-                    tSnap.forYou.size, tTime
-                )
+                "\nlibrary: " + com.mizan.launcher.data.TrackerClient.libraryDiag(this@SettingsActivity)
             )
             // v2.1: the tmdb: line — the last TMDB outcome, so a
             // details/search failure is diagnosable, incl. bad_path.
-            // v2.6: it also names WHICH path answered (tracker
-            // proxy vs the launcher's own key) and, on failure, the
-            // direct path's own token / that no launcher key is set.
+            // v3.7: direct TMDB with the launcher's own key is
+            // the ONLY path now (the tracker proxy is gone) —
+            // the line names the direct outcome and, on
+            // failure, the direct token / that no launcher
+            // key is set.
             append(
                 "\ntmdb: " + com.mizan.launcher.core.LibraryLogic.tmdbDiagText(
                     com.mizan.launcher.data.TrackerClient.lastTmdbOutcome(this@SettingsActivity),

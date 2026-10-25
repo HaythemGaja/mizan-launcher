@@ -586,14 +586,18 @@ object Discovery {
      * - "tracker" — nothing launcher-computed is live; the
      *   tracker snapshots are the source.
      */
+    // v3.7: the "tracker" source word is retired — the
+    // /foryou section is the launcher library's imported
+    // section now, not a tracker app's mirror. Diagnostics
+    // only (no shaping key depends on this word).
     fun diagSource(
         forYouComputed: Boolean,
         forYouFromTracker: Boolean,
         launcherSetsLive: Boolean
     ): String = when {
         forYouComputed -> "launcher"
-        launcherSetsLive && forYouFromTracker -> "launcher+tracker"
+        launcherSetsLive && forYouFromTracker -> "launcher+library"
         launcherSetsLive -> "launcher"
-        else -> "tracker"
+        else -> "library"
     }
 }

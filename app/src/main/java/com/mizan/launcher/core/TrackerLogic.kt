@@ -769,6 +769,97 @@ object TrackerLogic {
     }
 
     /**
+     * v3.7 (ask: missed row): the Missed row's filter over the
+     * missed worker's items (data/LibraryLocal writes
+     * filesDir/tracker/missed.txt; the home reads it through
+     * the store memo). Definition, implemented exactly:
+     * passed episodes that aired in the past and are NOT
+     * marked watched — for each tracked TV show, its next
+     * unwatched episode whose air date is strictly before
+     * today (device local date) — most overdue first
+     * (earliest air date first), one card per show per
+     * episode coordinate (episode-precise dedupe, the same
+     * rule as merged Up Next). Future airings, today
+     * airings, already-watched episodes, movies, and
+     * coordinate-less items are all excluded. A title with
+     * no usable air date does NOT enter this row (it stays
+     * in Up Next's unknown-date tier). [isWatched] is the
+     * caller-supplied watched predicate (home: marked set +
+     * pending-overlay adds − overlay removes, because the
+     * episode file is never opened on the home path; sim:
+     * the episode-file set) — the worker already filtered
+     * watched episodes when it wrote the file, so this is
+     * the defense-in-depth pass for marks that landed
+     * after the worker ran.
+     */
+    fun missedRow(
+        items: List<UpNextItem>,
+        isWatched: (UpNextItem) -> Boolean,
+        todayIso: String
+    ): List<UpNextItem> {
+        val todayDay = isoDays(todayIso.trim()) ?: return emptyList()
+        val seen = HashSet<String>()
+        return items.filter { item ->
+            if (item.type != "tv") return@filter false
+            if (item.season <= 0 || item.episode <= 0) return@filter false
+            val d = isoDays(item.dateIso.trim()) ?: return@filter false
+            if (d >= todayDay) return@filter false
+            if (isWatched(item)) return@filter false
+            seen.add("${item.tmdbId}|${item.season}|${item.episode}")
+        }.sortedWith(
+            compareBy<UpNextItem> { isoDays(it.dateIso.trim()) ?: Long.MAX_VALUE }
+                .thenBy { it.title.lowercase() }
+        )
+    }
+
+    /**
+     * v3.7: one season's episode air dates, as the missed
+     * worker reads them (TMDB season payloads, cached
+     * per-title in filesDir/tracker/missed_cache/).
+     */
+    data class SeasonAirDates(
+        val season: Int,
+        /** (episode number, air date yyyy-MM-dd or "") in episode order. */
+        val episodes: List<Pair<Int, String>>
+    )
+
+    /**
+     * v3.7: the missed worker's per-show computation — the
+     * first unwatched episode (in season, then episode
+     * order) whose air date is strictly before today, or
+     * null when the show has no passed unwatched episode.
+     * Seasons scan ascending; specials (season 0) never
+     * enter (the worker skips them at fetch time, same as
+     * the tracker's continue computation). An unwatched
+     * episode with a blank/unparseable date is skipped —
+     * a date is never invented — and scanning continues
+     * to the next unwatched episode, so one missing date
+     * cannot hide a later passed episode. When the first
+     * unwatched episode is future-dated, later episodes
+     * of the same show cannot be past (airing is
+     * sequential), so the scan still returns null for
+     * that show in practice — the loop simply proves it
+     * instead of assuming it.
+     */
+    fun firstMissedEpisode(
+        watched: Set<String>,
+        seasons: List<SeasonAirDates>,
+        todayIso: String
+    ): Triple<Int, Int, String>? {
+        val todayDay = isoDays(todayIso.trim()) ?: return null
+        for (season in seasons.sortedBy { it.season }) {
+            if (season.season < 1) continue
+            for ((episode, airDate) in season.episodes.sortedBy { it.first }) {
+                if (episode < 1) continue
+                if (LibraryLogic.epKey(season.season, episode) in watched) continue
+                val d = isoDays(airDate.trim()) ?: continue
+                if (d < todayDay) return Triple(season.season, episode, airDate.trim())
+            }
+        }
+        return null
+    }
+
+    /**
      * Continue minus shows with a locally-marked episode. Continue
      * items carry no episode coordinates, so any marked entry for the
      * show hides its (now stale) card until the snapshot converges.

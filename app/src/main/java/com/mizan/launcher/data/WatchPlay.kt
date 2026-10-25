@@ -437,10 +437,10 @@ object WatchPlay {
 
     /**
      * The player's completion handler: a token-carrying play ended
-     * (or crossed ≥90%) — queue the mark through the SAME funnel a
-     * manual Mark watched uses (TrackerActions: tracker queue +
-     * generalized overlay + marked-set), so home, Library and
-     * details all render it at once.
+     * (or crossed ≥90%) — mark through the SAME funnel a
+     * manual Mark watched uses (TrackerActions: local store
+     * write + generalized overlay + marked-set), so home,
+     * Library and details all render it at once.
      */
     val completionHandler: (Activity, PlayItem) -> Unit = { activity, item ->
         try {
@@ -455,7 +455,7 @@ object WatchPlay {
                     )
                 }
                 Toast.makeText(
-                    activity, "✓ Marked watched — syncs when the tracker opens",
+                    activity, "✓ Marked watched",
                     Toast.LENGTH_SHORT
                 ).show()
             }

@@ -23,6 +23,11 @@ import kotlin.concurrent.thread
  *   heavy data there could kill it again; the next normal launch
  *   runs the chain instead).
  * - kickAfterFetch: a tracker fetch landing (TrackerClient).
+ *   v3.7: NO fetch landings any more — refreshAsync
+ *   installs the store memo directly and posts onChanged,
+ *   so the chain is never kicked from a fetch. The entry
+ *   point stays (harmless) for the survival trigger's
+ *   shape; nothing calls it from a fetch path.
  *   Steps re-check cheaply when inputs did not move (memo-hit
  *   parse, fingerprint-hit match with NO catalogue stream,
  *   discovery re-shape only when kicked).
@@ -172,6 +177,15 @@ object ColdChainRunner {
         }
         diagState = chain.diag()
         if (chain.isDone()) {
+            // v3.7: the missed row's full recompute rides
+            // the chain's tail (stamp-gated: a no-op when
+            // its input fingerprint and age are unchanged).
+            // It runs on its own worker, never on the chain
+            // thread's critical path, and its landing
+            // rebuilds the home via onMissedChanged.
+            try { LibraryLocal.kickMissedAll(appCtx) } catch (e: Exception) {
+                try { Prefs.noteError(appCtx, "coldChain:missed", e) } catch (_: Exception) { }
+            }
             try { onLanded?.invoke() } catch (e: Exception) {
                 // The listener's rebuild guard handles dead activities.
             }

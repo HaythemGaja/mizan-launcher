@@ -47,11 +47,27 @@ package com.mizan.launcher.core
  * TV home's row builder, is sortable/hideable here like every
  * other row, and profiles whose stored order predates it gain
  * it at the end (normalize's missing-keys rule).
+ *
+ * v3.7 (ask: missed row): MISSED joins after Up Next — passed
+ * episodes that aired in the past and are NOT marked watched,
+ * most overdue first, one card per show per episode
+ * coordinate. It is NOT merged Up Next's missed tier (that
+ * tier reads the /upnext snapshot, which the tracker built
+ * from next_episode_to_air — future airings by construction —
+ * so it could almost never contain a passed episode). The
+ * Missed row is computed from watch progress + season air
+ * dates instead (data/LibraryLocal's missed worker writes
+ * filesDir/tracker/missed.txt; core/TrackerLogic.missedRow
+ * filters it). Profiles whose stored order predates it gain
+ * it right after Up Next (normalize's splice below), not
+ * appended at the end, so the row is visible without a
+ * manual reorder.
  */
 object TrackerSections {
 
     const val HERO = "hero"
     const val UPNEXT = "upnext"
+    const val MISSED = "missed"
     const val CONTINUE = "continue"
     const val TRENDINGTV = "trendingtv"
     const val TRENDINGMOVIES = "trendingmovies"
@@ -60,9 +76,9 @@ object TrackerSections {
     const val FOLDERS = "folders"
     const val ALLAPPS = "allapps"
 
-    /** Every section, in the order a fresh profile sees them (v3.3: Coming Soon merged into Up Next; v3.4: Folders joins). */
+    /** Every section, in the order a fresh profile sees them (v3.7: Missed joins after Up Next). */
     val CANONICAL: List<String> = listOf(
-        HERO, UPNEXT, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
+        HERO, UPNEXT, MISSED, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
         FORYOU, FAVORITES, FOLDERS, ALLAPPS
     )
 
@@ -77,6 +93,7 @@ object TrackerSections {
     fun label(key: String): String = when (key) {
         HERO -> "Hero"
         UPNEXT -> "Up Next"
+        MISSED -> "Missed"
         CONTINUE -> "Continue Watching"
         TRENDINGTV -> "Trending TV"
         TRENDINGMOVIES -> "Trending Movies"
@@ -95,7 +112,17 @@ object TrackerSections {
         for (key in order) {
             if (key in ROWS && seen.add(key)) cleanOrder.add(key)
         }
+        val missedWasStored = MISSED in seen
         for (key in ROWS) if (key !in seen) cleanOrder.add(key)
+        // v3.7: a profile whose stored order predates Missed
+        // gains it right after Up Next (its canonical slot),
+        // not appended at the end — otherwise the new row
+        // would land below everything and look absent.
+        if (!missedWasStored) {
+            cleanOrder.remove(MISSED)
+            val at = cleanOrder.indexOf(UPNEXT)
+            if (at >= 0) cleanOrder.add(at + 1, MISSED) else cleanOrder.add(0, MISSED)
+        }
         return Config(cleanHidden, cleanOrder)
     }
 
@@ -181,6 +208,11 @@ object TrackerSections {
             order.add(order.indexOf(TRENDINGTV) + 1, TRENDINGMOVIES)
             changed = true
         }
+        // v3.7: Missed needs no migrateOrder splice —
+        // normalize() already puts a pre-v3.7 profile's
+        // Missed right after Up Next on decode, and a
+        // deliberate move after that is stored (so
+        // normalize leaves it alone). No tail case remains.
         return if (changed) normalize(config.hidden, order) else config
     }
 

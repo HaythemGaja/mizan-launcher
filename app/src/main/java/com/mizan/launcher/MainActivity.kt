@@ -128,6 +128,8 @@ class MainActivity : Activity() {
     private var tSnap: TrackerClient.Snapshots = TrackerClient.Snapshots.EMPTY
     private var tMarked: List<TrackerLogic.MarkedEntry> = emptyList()
     private var tUpNext: List<TrackerLogic.UpNextItem> = emptyList()
+    /** v3.7: the Missed row's filtered items (passed, unmarked episodes, most overdue first). */
+    private var tMissed: List<TrackerLogic.UpNextItem> = emptyList()
     private var tCont: List<TrackerLogic.ContinueItem> = emptyList()
     private var tPicks: List<TrackerLogic.ForYouPick> = emptyList()
     private var tHeroCandidates: List<TrackerLogic.HeroItem> = emptyList()
@@ -1093,10 +1095,12 @@ class MainActivity : Activity() {
 
     /**
      * v3.1 (ask 39): a section's own Retry — re-runs ONLY that
-     * section's loader. Tracker → forced provider fetch (lands
-     * one rebuild); discovery → TTL-ignoring worker run (lands
-     * one rebuild via onChanged); IPTV rows → forced slice reload;
-     * apps/favorites/unknown → plain re-render (in-memory data).
+     * section's loader. Library → forced local store re-read
+     * (lands one rebuild); discovery → TTL-ignoring worker run
+     * (lands one rebuild via onChanged); IPTV rows → forced slice
+     * reload; apps/favorites/unknown → plain re-render (in-memory
+     * data). v3.7: "Tracker" below means the launcher library,
+     * not a tracker app — there is no provider fetch any more.
      */
     private fun retrySection(key: String) {
         // v3.2 (ask 43): a per-section Retry is an explicit
@@ -1114,6 +1118,17 @@ class MainActivity : Activity() {
                 if (isTrackerFamily()) rebuild()
             }
             DiscoveryData.refreshNow(this)
+            return
+        }
+        // v3.7: the Missed row's loader is the missed worker —
+        // Retry forces a full recompute (stamp-gate ignored, so
+        // a show whose earlier fetch failed gets retried) and
+        // re-reads the store into the memo.
+        if (key == TrackerSections.MISSED) {
+            com.mizan.launcher.data.LibraryLocal.kickMissedAll(this, force = true)
+            TrackerClient.refreshAsync(this, force = true) {
+                if (isTrackerFamily()) rebuild()
+            }
             return
         }
         when (com.mizan.launcher.core.SectionModule.retrySource(key)) {
@@ -1149,6 +1164,7 @@ class MainActivity : Activity() {
     private fun trackerTileLabel(key: String): String = when (key) {
         TrackerSections.HERO -> "Hero"
         TrackerSections.UPNEXT -> "Up Next"
+        TrackerSections.MISSED -> "Missed"
         TrackerSections.CONTINUE -> "Continue"
         TrackerSections.TRENDINGTV -> "Trending TV"
         TrackerSections.TRENDINGMOVIES -> "Trending Movies"
@@ -1248,7 +1264,19 @@ class MainActivity : Activity() {
         }
         tSnap = snap
         var marked = TrackerLogic.decodeMarked(prefs.trackerMarked)
-        val pruned = TrackerLogic.pruneMarked(marked, snap.upNext, snap.movies, snap.updated)
+        // v3.7: the store path prunes against the STORE
+        // (current by construction), not the import stamp
+        // — the import stamp predates every local action,
+        // so the old stamp gate would keep every local
+        // mark pending forever (and filterContinue would
+        // hide the show's Continue card forever with it).
+        // A store-backed memo (non-blank fingerprint) is
+        // the signal; the legacy prefs path keeps the
+        // stamp gate. The prune itself is unchanged:
+        // a TV entry retires when its episode leaves
+        // Up Next (the local write removed the line).
+        val pruneStamp = if (snap.storeFingerprint.isNotBlank()) Long.MAX_VALUE else snap.updated
+        val pruned = TrackerLogic.pruneMarked(marked, snap.upNext, snap.movies, pruneStamp)
         if (pruned != marked) {
             prefs.trackerMarked = TrackerLogic.encodeMarked(pruned)
             marked = pruned
@@ -1256,6 +1284,38 @@ class MainActivity : Activity() {
         tMarked = marked
         tUpNext = TrackerLogic.filterUpNext(snap.upNext, marked)
         tCont = TrackerLogic.filterContinue(snap.cont, marked)
+        // v3.7: the Missed row — the store's missed.txt
+        // items, filtered by the same watched signals the
+        // home already holds (marked set + pending-overlay
+        // adds − overlay removes). The episode file is
+        // never opened on the home path; the missed
+        // worker already filtered watched episodes when
+        // it wrote the file, so this pass only covers
+        // marks that landed after the worker ran.
+        val markedKeys = marked.map { it.key() }.toHashSet()
+        val pending = com.mizan.launcher.core.LibraryLogic.decodePending(prefs.pendingOverlay)
+        val overlayAdds = HashSet<String>()
+        val overlayRemoves = HashSet<String>()
+        for (entry in pending) {
+            if (entry.type != "tv") continue
+            overlayAdds.addAll(entry.watchedAdd)
+            overlayRemoves.addAll(entry.watchedRemove)
+        }
+        tMissed = TrackerLogic.missedRow(
+            snap.missed,
+            { item ->
+                val key = TrackerLogic.markedKey(item.tmdbId, item.type, item.season, item.episode)
+                val epKey = com.mizan.launcher.core.LibraryLogic.epKey(item.season, item.episode)
+                (key in markedKeys || epKey in overlayAdds) && epKey !in overlayRemoves
+            },
+            todayIso()
+        )
+        // v3.7: a missed landing (worker thread) rebuilds
+        // the home once — the Missed row appears when its
+        // worker finishes, not only on the next navigation.
+        com.mizan.launcher.data.LibraryLocal.onMissedChanged = {
+            runOnUiThread { if (isTrackerFamily() && !isFinishing && !isDestroyed) rebuild() }
+        }
         var overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
         val prunedOverlay = TrackerLogic.pruneForYouOverlay(
             overlay, snap.forYou, snap.tracked, snap.movies, snap.forYouUpdated
@@ -1336,6 +1396,11 @@ class MainActivity : Activity() {
         for (item in tUpNext.take(window)) {
             visibleTitles.add(WatchMatch.TrackerTitle(item.tmdbId, "tv", item.title, 0))
         }
+        // v3.7: Missed cards play like Up Next cards, so
+        // their first window joins the visible-first set.
+        for (item in tMissed.take(window)) {
+            visibleTitles.add(WatchMatch.TrackerTitle(item.tmdbId, "tv", item.title, 0))
+        }
         for (item in tCont.take(window)) {
             visibleTitles.add(WatchMatch.TrackerTitle(item.tmdbId, "tv", item.title, 0))
         }
@@ -1366,6 +1431,8 @@ class MainActivity : Activity() {
         // note above) — the old shape warmed every matched
         // series in the full Up Next + Continue rows.
         for (item in tUpNext.take(window)) displayShow(item.tmdbId)
+        // v3.7: Missed first window warms with Up Next.
+        for (item in tMissed.take(window)) displayShow(item.tmdbId)
         for (item in tCont.take(window)) displayShow(item.tmdbId)
         WatchPlay.warmUpDisplayed(this, displayed) {
             // The warm-up reports from its own thread; rebuilds are UI work.
@@ -1876,7 +1943,7 @@ class MainActivity : Activity() {
                 glyph = if (item.type == "movie") "🎬" else "📺",
                 onClick = { playTrendPlay(tp) },
                 onLong = {
-                    openTrackerCardMenu(
+                    cardMenu(
                         item.title,
                         onMark = null,
                         onDetails = {
@@ -3662,11 +3729,16 @@ class MainActivity : Activity() {
         // v3.2 (ask 43): NO refresh on open/resume any more — the
         // old unconditional call re-fetched the provider on
         // nearly every open (the 60 s throttle lapses between
-        // opens). The only automatic fetch left is first-run
+        // opens). The only automatic refresh left is first-run
         // seeding: nothing stored yet, so there is no cache to
-        // render. Every later update is explicit (Refresh home
-        // data, or a section Retry) or a fetch landing from
-        // another screen (Library/Details), which warms the memo.
+        // render. v3.7: refreshAsync is LOCAL-ONLY now (store
+        // re-read + memo install) except for the one-time
+        // import while its flag is unset — so first-run
+        // seeding is exactly the import's chance to run.
+        // Every later update is explicit (Refresh home
+        // data, or a section Retry) or a local write landing
+        // from another screen (Library/Details), which
+        // installs the memo.
         if (!TrackerClient.hasStoredData(this)) {
             TrackerClient.refreshAsync(this) { if (isTrackerFamily()) rebuild() }
         }
@@ -3710,6 +3782,10 @@ class MainActivity : Activity() {
         val available = mapOf(
             TrackerSections.HERO to (hero != null),
             TrackerSections.UPNEXT to mergedUpNext.isNotEmpty(),
+            // v3.7: the Missed row (passed, unmarked
+            // episodes) — Tracker + Watch only, via the
+            // same compose() path as every other row.
+            TrackerSections.MISSED to tMissed.isNotEmpty(),
             // v2.7 focus rows: Trending rides the discovery state
             // (empty until the worker first lands).
             TrackerSections.CONTINUE to continueCards.isNotEmpty(),
@@ -3754,18 +3830,17 @@ class MainActivity : Activity() {
                 // (it parses the snapshots) — just the loading line.
                 content.addView(trackerInfoLine("Loading your library…"))
             } else if (!tSnap.hasData) {
-                // v1.9: the no-data line is worded by the CLASSIFIED
-                // fetch state (core/TrackerStatus) — v1.8 showed one
-                // generic line for every cause, and the permission-
-                // blocked state (the prime suspect for an empty view)
-                // was indistinguishable from "no data yet". Not
-                // installed → no line at all, as before.
-                val tStatus = TrackerClient.status(this)
-                val lineText = com.mizan.launcher.core.TrackerStatus.emptyLine(
-                    tStatus.kind,
-                    tStatus.installed || appsByPkg.containsKey(TrackerClient.TRACKER_PKG)
+                // v3.7: no tracker app any more, so no
+                // classified fetch state to word this from —
+                // an empty library is just an empty library
+                // (fresh install, or the import found nothing).
+                // The fix is the same either way: add titles
+                // from Search or Trending.
+                content.addView(
+                    trackerInfoLine(
+                        "Your library is empty — add titles from Search, Trending, or For You."
+                    )
                 )
-                if (lineText != null) content.addView(trackerInfoLine(lineText))
             } else {
                 content.addView(
                     trackerInfoLine(
@@ -3798,6 +3873,8 @@ class MainActivity : Activity() {
                         hero?.let { content.addView(buildHeroZone(it)) }
                     TrackerSections.UPNEXT ->
                         content.addView(buildMergedUpNextSection(mergedUpNext))
+                    TrackerSections.MISSED ->
+                        content.addView(buildMissedSection(tMissed))
                     TrackerSections.CONTINUE ->
                         buildTrackerContinueSection(continueCards, system)
                             ?.let { content.addView(it) }
@@ -3993,8 +4070,14 @@ class MainActivity : Activity() {
         val btnLp = LinearLayout.LayoutParams(-2, -2)
         btnLp.setMargins(0, Ui.dp(this, 12), 0, 0)
         buttons.layoutParams = btnLp
-        val trackerHere = TrackerClient.isInstalled(this) ||
-            appsByPkg.containsKey(TrackerClient.TRACKER_PKG)
+        // v3.7: the hero's action buttons used to be gated on
+        // the TRACKER APP being installed (trackerHere) — after
+        // the user deletes the tracker app, that gate would
+        // strip every hero button (Play/Details/Mark) even
+        // though the hero data now comes from the local
+        // library. The gate is the library itself: heroes
+        // only exist when the local store has data.
+        val libraryHere = tSnap.hasData
         if (hero.source == TrackerLogic.SOURCE_FOR_YOU) {
             // v2.1 For You hero: a pick has nothing to mark watched —
             // primary opens its in-launcher details, secondary adds
@@ -4038,7 +4121,7 @@ class MainActivity : Activity() {
                     )
                 }
             )
-        } else if (trackerHere) {
+        } else if (libraryHere) {
             // Mark watched needs episode coordinates: Up Next heroes
             // carry their own; a Continue hero borrows them from the
             // same show's Up Next item; a movie hero uses the
@@ -4088,12 +4171,11 @@ class MainActivity : Activity() {
                 )
             }
             // v2.9: NO "Open Tracker" hero button at all (ask
-            // F.25 — never a hero action; the tracker app remains
-            // reachable from the hold-OK card menus and its own
-            // launcher icon; Sreeb's hero carries Sreeb's actions).
+            // F.25 — never a hero action; v3.7: the tracker app
+            // is gone entirely, so there is nothing to open).
             // v2.1: the My Library entry — the whole tracked library
-            // (details, episode checklists, add/remove) now lives in
-            // the launcher; the tracker app is only for its Settings.
+            // (details, episode checklists, add/remove) lives in
+            // the launcher.
             buttons.addView(
                 heroButton("▦ My Library", "library", primary = false) {
                     startActivity(
@@ -4246,54 +4328,48 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Open the tracker app through the shared arrow-lock gate. */
-    private fun openTracker() {
-        val label = appsByPkg[TrackerClient.TRACKER_PKG]?.label ?: TrackerClient.TRACKER_LABEL
-        gateLockedApp(TrackerClient.TRACKER_PKG, label) {
-            try {
-                val intent = AppLoader.launchIntent(packageManager, TrackerClient.TRACKER_PKG)
-                if (intent == null) {
-                    Toast.makeText(
-                        this, "TV Shows & Movies Tracker isn't installed",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    return@gateLockedApp
-                }
-                startActivity(intent)
-                prefs.recordLaunch(TrackerClient.TRACKER_PKG)
-            } catch (e: Exception) {
-                Prefs.noteError(this, "openTracker", e)
-                Toast.makeText(this, "Couldn't open the tracker", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
     /**
-     * "Mark watched" from any tracker surface: queue the action with
-     * the tracker AND hide the item locally (marked-set) right away.
-     * The tracker's own data converges at its next boot + refresh,
-     * and pruneMarked then retires the local entry.
+     * "Mark watched" from any library surface (v3.7): the
+     * marked set hides the item locally right away AND
+     * the local store write lands (data/LibraryLocal via
+     * TrackerActions.markWatchedHome) — the upnext line
+     * is removed and the show's next episode refreshes,
+     * so pruneMarked retires the entry on the next home
+     * build. No tracker queue any more: the local store
+     * IS the record.
      */
     private fun markWatched(tmdbId: Long, type: String, season: Int, episode: Int) {
-        val entry = TrackerLogic.MarkedEntry(
-            tmdbId, if (type == "movie") "movie" else "tv",
-            season, episode, System.currentTimeMillis()
+        TrackerActions.markWatchedHome(
+            this, prefs, tmdbId, if (type == "movie") "movie" else "tv", season, episode
         )
-        val current = TrackerLogic.decodeMarked(prefs.trackerMarked)
-        prefs.trackerMarked = TrackerLogic.encodeMarked(
-            TrackerLogic.withMarked(current, entry)
-        )
-        TrackerClient.markWatched(this, tmdbId, entry.type, season, episode)
-        Toast.makeText(
-            this, "Marked watched — applies next time the tracker opens",
-            Toast.LENGTH_SHORT
-        ).show()
+        Toast.makeText(this, "Marked watched", Toast.LENGTH_SHORT).show()
         rebuild()
     }
 
     /**
-     * Hold-OK menu for a tracker card: Details (v2.1, in-launcher) /
-     * Open Tracker (+ Mark watched when offered).
+     * The Missed section (v3.7): passed, unmarked episodes
+     * render as Up Next cards — same Play-where-matched
+     * and mark-watched menu as Up Next, same paged row.
+     * The row is SEPARATE from merged Up Next (which
+     * keeps its missed → watchable → future order
+     * untouched); a show with several passed unwatched
+     * episodes shows its earliest one here, and the next
+     * surfaces as each is marked watched, one at a time
+     * (the next-episode refresh repopulates the missed
+     * worker's input after every mark).
+     */
+    private fun buildMissedSection(items: List<TrackerLogic.UpNextItem>): View {
+        val box = section("Missed")
+        val row = pagedRow(items) { item -> upNextCard(item) }
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    /**
+     * Hold-OK menu for a library card: Details (v2.1, in-launcher)
+     * (+ Mark watched when offered). v3.7: the "Open Tracker"
+     * entry is DELETED with the tracker app — there is no
+     * tracker to open; Details and Play are in-launcher.
      */
     /**
      * v3.1 (ask 40): [onPlayIn] appends a "Play in…" entry LAST
@@ -4301,7 +4377,7 @@ class MainActivity : Activity() {
      * playable IPTV match pass it — unmatched cards get no entry,
      * because Sreeb has no stream to hand over for them.
      */
-    private fun openTrackerCardMenu(
+    private fun cardMenu(
         title: String,
         onMark: (() -> Unit)?,
         onDetails: (() -> Unit)? = null,
@@ -4313,8 +4389,6 @@ class MainActivity : Activity() {
             labels.add("Details")
             actions.add(onDetails)
         }
-        labels.add("Open Tracker")
-        actions.add { openTracker() }
         if (onMark != null) {
             labels.add("Mark watched")
             actions.add(onMark)
@@ -4336,11 +4410,20 @@ class MainActivity : Activity() {
 
     /**
      * A portrait poster card (v2.0, the "posters are not full" fix):
-     * a dedicated 2:3 card (core/TileLayout.posterMetrics) whose
-     * poster fills it EDGE-TO-EDGE — CENTER_CROP, no padding, no
-     * letterbox, rounded corners — with the title and meta BELOW the
-     * card, never overlaid on the art. Focus lifts the poster frame
-     * (Netflix-style scale + ring via Ui.focusLift).
+     * a dedicated 2:3 card (core/TileLayout.posterMetrics) with the
+     * title and meta BELOW the card, never overlaid on the art.
+     * Focus lifts the poster frame (Netflix-style scale + ring
+     * via Ui.focusLift).
+     * v3.7 (poster fix): FIT_CENTER, not CENTER_CROP. A true
+     * 2:3 TMDB poster fills this 2:3 frame exactly either way,
+     * so nothing changes for correct posters — but any art
+     * that ISN'T 2:3 (a landscape still passed as a poster, a
+     * panel image, a slightly-off poster) used to be
+     * centre-cropped with no fallback, which is exactly the
+     * "wrong poster" class of complaint. FIT_CENTER renders
+     * every poster COMPLETE, never cropped, never stretched
+     * (the standing v2.9 complete-poster rule); at most a
+     * hair of letterbox appears on off-ratio art.
      */
     private fun portraitCard(
         posterPath: String,
@@ -4370,7 +4453,7 @@ class MainActivity : Activity() {
         if (firstTile == null) firstTile = frame
         if (posterPath.isNotBlank()) {
             val iv = ImageView(this)
-            iv.scaleType = ImageView.ScaleType.CENTER_CROP
+            iv.scaleType = ImageView.ScaleType.FIT_CENTER
             Ui.roundClip(iv, 16, this)
             frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
             TmdbImages.load(TmdbImages.url("w342", posterPath), iv)
@@ -4638,12 +4721,22 @@ class MainActivity : Activity() {
         // v2.9: an unmatched card opens the in-launcher Details
         // (it used to open the tracker app) — ask F.25.
         val wMatch = watchMatch("tv", item.tmdbId)
-        // v2.8: Up Next rides the landscape rail (backdrop,
-        // "Sx Ey" pill chip) — the Google-TV card language.
+        // v2.8: Up Next rides the landscape rail ("Sx Ey"
+        // pill chip) — the Google-TV card language.
+        // v3.7 (poster fix): the POSTER leads, complete
+        // over its blurred fill (landscapeCard's
+        // FIT_COMPLETE branch), with the backdrop only
+        // when no poster exists. The old shape led with
+        // the backdrop whenever one existed, so Up Next
+        // cards read as landscape stills, not as the
+        // title's poster — the "poster is wired for Up
+        // Next" complaint in his 2026-10-24 report. A
+        // poster in a 16:9 frame is never centre-cropped
+        // (standing v2.9 rule); the hero keeps backdrops.
         val card = landscapeCard(
-            imagePath = item.backdrop.ifBlank { item.poster },
-            imageSize = if (item.backdrop.isNotBlank()) "w780" else "w342",
-            imageLandscape = item.backdrop.isNotBlank(),
+            imagePath = item.poster.ifBlank { item.backdrop },
+            imageSize = if (item.poster.isNotBlank()) "w342" else "w780",
+            imageLandscape = item.poster.isBlank() && item.backdrop.isNotBlank(),
             title = item.title,
             meta = countdown.ifBlank { item.sub },
             chip = if (item.season > 0 && item.episode > 0) {
@@ -4660,7 +4753,7 @@ class MainActivity : Activity() {
                 else openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
             },
             onLong = {
-                openTrackerCardMenu(
+                cardMenu(
                     item.title,
                     onMark = {
                         markWatched(item.tmdbId, item.type, item.season, item.episode)
@@ -4738,9 +4831,9 @@ class MainActivity : Activity() {
                     -1f
                 }
                 val view = landscapeCard(
-                    imagePath = trackerItem.backdrop.ifBlank { trackerItem.poster },
-                    imageSize = if (trackerItem.backdrop.isNotBlank()) "w780" else "w342",
-                    imageLandscape = trackerItem.backdrop.isNotBlank(),
+                    imagePath = trackerItem.poster.ifBlank { trackerItem.backdrop },
+                    imageSize = if (trackerItem.poster.isNotBlank()) "w342" else "w780",
+                    imageLandscape = trackerItem.poster.isBlank() && trackerItem.backdrop.isNotBlank(),
                     title = trackerItem.title,
                     meta = trackerItem.sub,
                     chip = if (progress >= 0f) {
@@ -4763,7 +4856,7 @@ class MainActivity : Activity() {
                         }
                     },
                     onLong = {
-                        openTrackerCardMenu(
+                        cardMenu(
                             trackerItem.title,
                             onMark = null,
                             onDetails = {
@@ -4786,12 +4879,15 @@ class MainActivity : Activity() {
     }
 
     /**
-     * For You (v2.0): the tracker's personalised picks (≥ 1.14.4),
-     * already filtered in core (tracked + local overlay removed,
-     * capped at 20). Portrait poster; below it the title, the ★
-     * rating, the reason line and the genre-names line. OK opens the
-     * tracker; hold-OK adds or dismisses (queued actions + the local
-     * overlay hides the card at once).
+     * For You (v2.0): the personalised picks — the launcher's
+     * own computed set when a TMDB key is set, else the
+     * imported /foryou section (v3.7: both are local now).
+     * Already filtered in core (tracked + local overlay
+     * removed, capped at 20). Portrait poster; below it the
+     * title, the ★ rating, the reason line and the
+     * genre-names line. OK opens Details; hold-OK adds or
+     * dismisses (local writes + the local overlay hides
+     * the card at once).
      */
     private fun buildForYouSection(picks: List<TrackerLogic.ForYouPick>): View {
         val box = section("For You")
@@ -4859,7 +4955,7 @@ class MainActivity : Activity() {
                 openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
             },
             onLong = {
-                openTrackerCardMenu(
+                cardMenu(
                     item.title,
                     onMark = null,
                     onDetails = {
@@ -4939,8 +5035,6 @@ class MainActivity : Activity() {
             labels.add("Not interested")
             actions.add { dismissDiscovery(item.id, item.type) }
         }
-        labels.add("Open Tracker")
-        actions.add { openTracker() }
         AlertDialog.Builder(this)
             .setTitle(item.title)
             .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }
@@ -4965,7 +5059,7 @@ class MainActivity : Activity() {
         )
         TrackerActions.addTitle(this, prefs, tmdbId, type, title, poster, "")
         Toast.makeText(
-            this, "Added to your list — applies next time the tracker opens",
+            this, "Added to your list",
             Toast.LENGTH_SHORT
         ).show()
         rebuild()
@@ -4974,7 +5068,7 @@ class MainActivity : Activity() {
     /**
      * "Not interested" (Trending, v2.7): the overlay dismissal —
      * the title leaves Trending AND For You at once — plus the
-     * queued dismiss_foryou for the tracker.
+     * local foryou-section write.
      */
     private fun dismissDiscovery(tmdbId: Long, type: String) {
         val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
@@ -4986,7 +5080,7 @@ class MainActivity : Activity() {
                 )
             )
         )
-        TrackerClient.dismissForYou(this, tmdbId, type)
+        TrackerActions.dismissForYou(this, tmdbId, type)
         Toast.makeText(
             this, "Got it — that won't be suggested again",
             Toast.LENGTH_SHORT
@@ -4997,9 +5091,9 @@ class MainActivity : Activity() {
     /**
      * "Add to my list" from a For You HERO (v2.1): the same writes
      * as the row menu's add — the For You overlay hides the pick
-     * everywhere (hero pool included) and TrackerActions queues the
-     * add + mirrors it into the generalized pending overlay, so the
-     * title appears in My Library as Pending at once.
+     * everywhere (hero pool included) and TrackerActions writes
+     * the add locally + mirrors it into the generalized pending
+     * overlay, so the title appears in My Library as Pending at once.
      */
     private fun addForYouHero(hero: TrackerLogic.HeroItem) {
         val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
@@ -5013,7 +5107,7 @@ class MainActivity : Activity() {
         )
         TrackerActions.addTitle(this, prefs, hero.tmdbId, hero.type, hero.title, hero.poster, "")
         Toast.makeText(
-            this, "Added to your list — applies next time the tracker opens",
+            this, "Added to your list",
             Toast.LENGTH_SHORT
         ).show()
         rebuild()
@@ -5042,7 +5136,7 @@ class MainActivity : Activity() {
                 )
             }
         }
-        labels.addAll(listOf("Open Tracker", "Add to my list", "Not interested"))
+        labels.addAll(listOf("Add to my list", "Not interested"))
         val base = prefix.size
         AlertDialog.Builder(this)
             .setTitle(pick.title)
@@ -5052,8 +5146,7 @@ class MainActivity : Activity() {
                     return@setItems
                 }
                 when (which - base) {
-                    0 -> openTracker()
-                    1 -> {
+                    0 -> {
                         val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
                         prefs.forYouOverlay = TrackerLogic.encodeForYouOverlay(
                             TrackerLogic.withForYouMark(
@@ -5072,12 +5165,12 @@ class MainActivity : Activity() {
                             this, prefs, pick.id, pick.type, pick.title, pick.poster, ""
                         )
                         Toast.makeText(
-                            this, "Added to your list — applies next time the tracker opens",
+                            this, "Added to your list",
                             Toast.LENGTH_SHORT
                         ).show()
                         rebuild()
                     }
-                    2 -> {
+                    1 -> {
                         val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
                         prefs.forYouOverlay = TrackerLogic.encodeForYouOverlay(
                             TrackerLogic.withForYouMark(
@@ -5088,7 +5181,7 @@ class MainActivity : Activity() {
                                 )
                             )
                         )
-                        TrackerClient.dismissForYou(this, pick.id, pick.type)
+                        TrackerActions.dismissForYou(this, pick.id, pick.type)
                         Toast.makeText(
                             this, "Got it — that won't be suggested again",
                             Toast.LENGTH_SHORT

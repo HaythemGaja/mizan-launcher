@@ -29,21 +29,24 @@ import com.mizan.launcher.data.WatchPlay
  * Title details (v2.1) — one tracked title, in-launcher: backdrop
  * header, ★ rating, overview, and for shows a seasons → episodes
  * checklist. Episode/season data comes from TMDB through the
- * tracker's `tmdb_get` proxy (the tracker's own key; it never
- * leaves the tracker — LAUNCHER_SYNC.md). This is the first build
- * to exercise tmdb_get: its error strings drive the states —
- * no_key → a friendly "add your TMDB key in the tracker app"
- * state, http_/io → a retry-able error line, bad_path → surfaced
- * in Diagnostics (tmdb: line).
+ * launcher's OWN direct key (data/TmdbDirect; v3.7 — the
+ * tracker-proxy tmdb_get path died with the tracker app).
+ * Its error strings drive the states — no_key → a friendly
+ * "add your TMDB key in Sreeb Settings" state, http_/io → a
+ * retry-able error line, bad_path → surfaced in Diagnostics
+ * (tmdb: line).
  *
- * Every write is QUEUED (data/TrackerActions) and mirrored in the
- * pending overlay, so toggles render instantly and converge when
- * the tracker applies the queue at its next boot. A title that was
- * added from Sreeb but hasn't reached the tracker yet ("pending")
- * is READ-ONLY here: the drain drops progress actions for titles
- * not yet in the watchlist, so episode toggles would be lost —
- * the screen says so. (v2.8: the tracker app is reachable only
- * from the ⋯ More overflow — never a primary button here.)
+ * v3.7: every write is LOCAL (data/TrackerActions →
+ * data/LibraryLocal) and mirrored in the pending overlay,
+ * so toggles render instantly and converge when the store
+ * worker lands. The launcher IS the tracker now, so the
+ * old "episode tools unlock once this title is in the
+ * tracker" gate is dead: tools are available for tracked
+ * titles, and an untracked title gets an "Add to my list"
+ * action that adds it locally — then the tools unlock
+ * (the add's landing rebuild flips the screen into the
+ * tracked state). A title added but whose store write
+ * hasn't landed yet ("pending") still shows its note.
  *
  * Fail-open: with TMDB unreachable the screen still shows what the
  * snapshots know (title, poster, progress) plus the error line.
@@ -173,7 +176,7 @@ class DetailsActivity : Activity() {
             LibraryLogic.decodePending(prefs.pendingOverlay), type, tmdbId
         )
 
-    /** True while the title is launcher-added but not yet in the tracker. */
+    /** True while the title is launcher-added but its store write hasn't landed yet. */
     private fun isPending(): Boolean =
         !inSnapshot && overlayEntry()?.addedTitle != null
 
@@ -561,8 +564,7 @@ class DetailsActivity : Activity() {
         if (isPending()) {
             box.addView(
                 noteLine(
-                    "Pending — added from Sreeb. It joins your library when the " +
-                        "tracker app next opens; episode tools unlock then."
+                    "Pending — adding to your library… episode tools unlock when it lands."
                 )
             )
         }
@@ -606,10 +608,33 @@ class DetailsActivity : Activity() {
             buttons.add(
                 actionButton(if (watched) "↩ Mark unwatched" else "✓ Mark watched", "movie_toggle") {
                     TrackerActions.toggleMovie(this, prefs, tmdbId, !watched)
-                    Toast.makeText(
-                        this, "Saved — applies next time the tracker opens",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this, "Saved to your library", Toast.LENGTH_SHORT).show()
+                    rebuild()
+                }
+            )
+        }
+        // v3.7: untracked titles get "Add to my list" (the
+        // launcher IS the tracker now — no gate, no
+        // tracker app to wait for). The add lands on a
+        // worker; its landing callback re-reads the store
+        // and rebuilds, which flips the screen into the
+        // tracked state and unlocks the episode tools.
+        // Pending titles (added, write in flight) show
+        // their note above instead of a second Add button.
+        if (!inSnapshot && !isPending()) {
+            buttons.add(
+                actionButton("＋ Add to my list", "add_to_list") {
+                    TrackerActions.addTitle(
+                        this, prefs, tmdbId, type, displayTitle(), displayPoster(), ""
+                    ) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                readSnapshotState()
+                                rebuild()
+                            }
+                        }
+                    }
+                    Toast.makeText(this, "Added to your list", Toast.LENGTH_SHORT).show()
                     rebuild()
                 }
             )
@@ -644,21 +669,11 @@ class DetailsActivity : Activity() {
                 }
             )
         }
-        // v2.8: "Open in Tracker" is no longer a primary action
-        // button — it lives in the ⋯ More overflow menu only.
-        // This screen IS the tracker's replacement for title work;
-        // the tracker app stays reachable for its own Settings.
-        buttons.add(
-            actionButton("⋯ More", "more") {
-                AlertDialog.Builder(this)
-                    .setTitle(displayTitle())
-                    .setItems(arrayOf("Open in Tracker")) { _, _ ->
-                        TrackerActions.openTrackerGated(this, prefs, accent)
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
-        )
+        // v3.7: the More overflow menu held only the
+        // tracker-open entry — deleted with the tracker
+        // app. Mute / Remove live as their own buttons
+        // below (when tracked); nothing else lived in
+        // that menu.
         if (inSnapshot) {
             val muted = effectiveMuted()
             buttons.add(
@@ -837,8 +852,7 @@ class DetailsActivity : Activity() {
                                             this, prefs, tmdbId, season, episodes
                                         )
                                         Toast.makeText(
-                                            this,
-                                            "Season marked — applies next time the tracker opens",
+                                            this, "Season marked",
                                             Toast.LENGTH_SHORT
                                         ).show()
                                         rebuild()
@@ -956,7 +970,7 @@ class DetailsActivity : Activity() {
             if (!inSnapshot) {
                 Toast.makeText(
                     this,
-                    "Episode tools unlock once this title is in the tracker",
+                    "Add this title to your list to use episode tools",
                     Toast.LENGTH_SHORT
                 ).show()
                 return@setOnClickListener
@@ -966,8 +980,7 @@ class DetailsActivity : Activity() {
             )
             Toast.makeText(
                 this,
-                if (!isWatched) "Marked watched — syncs when the tracker opens"
-                else "Marked unwatched — syncs when the tracker opens",
+                if (!isWatched) "Marked watched" else "Marked unwatched",
                 Toast.LENGTH_SHORT
             ).show()
             rebuild()

@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-25 02:46 UTC
+Date: 2026-10-25 04:26 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.6 / code 29 (bumped by v3.6)
+PASS  v25src: the app version is 3.7 / code 30 (bumped by v3.7)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -896,7 +896,7 @@ PASS  v26src: Settings has the masked TMDB API key row (set/not-set only)
 PASS  v26src: the backup export never touches the TMDB key (redaction)
 PASS  v26src: the direct client targets TMDB with the contract allowlist + class-name tokens
 PASS  v26src: the direct client never logs (no Log import, no key echo)
-PASS  v26src: the funnel composes proxy -> direct via resolveTmdb and records both notes
+PASS  v26src: the funnel is direct-only via TmdbDirect and records both notes
 PASS  repo: exact-after-squash ('Grey's Anatomy' vs 'Greys Anatomy')
 PASS  repo: catalogue suffix noise matches via contains ('The Office' vs 'The Office (US)')
 PASS  repo: quality-tag noise matches via contains ('Show Name 2023 1080p')
@@ -959,7 +959,7 @@ PASS  v28src: both media homes build the pill bar from the pure model
 PASS  v28src: the landscape rail + circular All Apps builders exist and are used
 PASS  v28src: the hero primary routes through the pinned decision; Open Tracker is never a hero button
 PASS  v28src: cold start is staged (warm worker + deferred prepares + shell lines)
-PASS  v28src: Details has no primary Open in Tracker ? it lives in the More overflow
+PASS  v28src: Details has no Open in Tracker anywhere ? the More overflow is gone with it
 PASS  v28src: IPTV cards carry the LIVE pill + in-frame progress + focus border
 PASS  v28src: settings nav fixes are in (no selectable dead stop, index memory, focus net, startup line)
 PASS  v28src: the window background is the brand splash, not a black void
@@ -993,12 +993,12 @@ PASS  scrub: an api_key parameter value is redacted
 PASS  scrub: a plain message passes through untouched
 PASS  scrub: null and blank become empty; long text is capped
 PASS  discovery: launcher-computed For You reads launcher
-PASS  discovery: tracker For You + live launcher sets reads launcher+tracker
-PASS  discovery: tracker-only reads tracker
-PASS  discovery: nothing supplied still reads tracker (the fallback word)
+PASS  discovery: library For You + live launcher sets reads launcher+library
+PASS  discovery: library-only reads library
+PASS  discovery: nothing supplied still reads library (the fallback word)
 PASS  v29src: the warm-up is display-driven (no session cap survives)
 PASS  v29src: WatchPlay resolves on demand and warms what is displayed
-PASS  v29src: openTracker survives ONLY as its definition + the three hold-OK menu entries
+PASS  v29src: openTracker is gone; cardMenu replaces the old menu fn
 PASS  v29src: the unified bar replaced the stacked bars in both media homes
 PASS  v29src: the forecast opens from the bar's info cluster in every style
 PASS  v29src: landscape cards take the fit decision from core/Artwork
@@ -1095,12 +1095,12 @@ PASS  v31: the Sort sections popover entry survives a resolves-nothing filter (i
 PASS  v31src: tracker home renders loading placeholders at configured positions + retry tiles
 PASS  v31src: Play-in entries exist in card menus and the hero/menu paths use the shared resolvers
 PASS  v31src: quick-settings routes the internal Sort sections target to Settings by category
-PASS  v31src: tracker snapshots mirror to the home cache on the fetch worker
+PASS  v31src: the indexed store replaces the home-cache mirror (legacy read only)
 PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app packages
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.6 / code 29
+PASS  v31src: the version bump is 3.7 / code 30
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1249,7 +1249,7 @@ PASS  src55: parallel colddwarm threads are gone; the chain kick replaces them
 PASS  src55: home build reads the cached match table, never kicks a recompute
 PASS  src55: home tracker kick is slim-only
 PASS  src55: chain landing + destroy wiring in MainActivity
-PASS  src55: TrackerClient slim warm exists, full-parse warm is gone, fetch kicks the chain
+PASS  src55: TrackerClient slim warm exists, full-parse warm is gone, local re-read replaces the chain kick
 PASS  src55: tracker mirror fallback reads disk on demand with a context
 PASS  src55: tuples memo + blocking read are gone; key-only stream + counts replace them
 PASS  src55: match recompute is fingerprint-first, then key-only
@@ -1290,6 +1290,34 @@ PASS  src56: home rows page, not inflate-all (pagedRow on Up Next, Continue, Tre
 PASS  src56: series-info bodies live in per-series files, fetches never write prefs
 PASS  src56: diagnostics gains the tracker store line; slim line kept until eviction
 PASS  src56: hero rule untouched by the store migration (missed first, today stays out)
-PASS  src56: no-refresh rule untouched (fetch landings still re-run the chain; home build never fetches)
-RESULT: 1075 passed, 0 failed, 1075 total
+PASS  src56: no-refresh rule untouched (local re-read only; home build never fetches)
+PASS  missed57: row contains ONLY past-unwatched, most-overdue first, episode-precise
+PASS  missed57: today, future, watched, movie, coordless, dateless all excluded
+PASS  missed57: first missed is the earliest unwatched past episode
+PASS  missed57: marking advances one at a time (next passed episode surfaces)
+PASS  missed57: caught-up show has no missed episode
+PASS  missed57: future-only unwatched show has no missed episode
+PASS  missed57: blank date skipped, specials skipped, no date invented
+PASS  missed57: MISSED sits right after UPNEXT in CANONICAL
+PASS  missed57: pre-v3.7 order gains Missed after Up Next (not appended at the end)
+PASS  missed57: Missed label + compose gating (shown, available, hideable)
+PASS  missed57: deliberate Missed position is preserved (normalize never re-splices a stored Missed)
+PASS  missed57: missed fingerprint distinguishes same-shape different-count libraries
+PASS  missed57: missed fingerprint ignores movies (TV-only input)
+PASS  missed57: missed item survives the UpNext line codec (poster, backdrop, coords, date)
+PASS  missed57: prunePendingLocal retires a store-proven episode add (no stamp needed)
+PASS  missed57: prunePendingLocal keeps an unproven episode add (fail-open)
+PASS  src57: provider action queue is gone; writes go through LibraryLocal
+PASS  src57: one-time import is the sole provider contact (flag-gated, marked as the exception)
+PASS  src57: no live provider read outside TrackerClient (no launcherdata string in any screen/action/local file)
+PASS  src57: TMDB is direct-only (no proxy, no proxy-first resolution)
+PASS  src57: Details unlock ? Add to my list for untracked titles, old gate toast gone
+PASS  src57: no Open Tracker entry in any card menu (menus only, bodies scoped)
+PASS  src57: hero buttons no longer gated on the tracker app being installed
+PASS  src57: missed row wired end to end (section, filter, worker, chain tail, retry)
+PASS  src57: local writes are serialized + atomic (one lock, index rewrite, memo install)
+PASS  src57: poster fix ? portrait cards FIT_CENTER, landscape cards poster-first, hero stays backdrop
+PASS  src57: diagnostics library line replaces the tracker line
+PASS  src57: hero rule untouched (missed first, today stays out) + no-refresh untouched (local re-read only)
+RESULT: 1103 passed, 0 failed, 1103 total
 ```

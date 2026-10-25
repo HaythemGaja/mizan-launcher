@@ -550,6 +550,35 @@ class Prefs(ctx: Context) {
         get() = PrefsSafe.bool(sp, "safe_mode", false)
         set(v) { sp.edit().putBoolean("safe_mode", v).apply() }
 
+    // ---- Launcher-owned library (GLOBAL, v3.7) ----
+    /**
+     * v3.7: the one-time tracker import is CLOSED once this
+     * is true — set when (a) the import wrote the store,
+     * (b) the store was already newer than the provider,
+     * (c) the provider is absent (nothing to import), or
+     * (d) the store was built from local prefs/mirror
+     * (provider already gone). While false, the cold
+     * chain and explicit refreshes may still query the
+     * provider — that is the import's sole exception to
+     * the no-provider-read rule. After true, NO code path
+     * queries the tracker provider again, and a missing
+     * tracker app reads as normal. GLOBAL (the store is
+     * household data, not per-profile), like tmdbKey.
+     */
+    var libraryImported: Boolean
+        get() = PrefsSafe.bool(sp, "library_imported", false)
+        set(v) { sp.edit().putBoolean("library_imported", v).apply() }
+
+    /**
+     * v3.7: when the launcher library last changed by a
+     * local user action (mark/add/remove/mute), epoch ms,
+     * 0 = never. Shown in the diagnostics `library:` line
+     * (counts only, never titles). GLOBAL, like the store.
+     */
+    var libraryLastChange: Long
+        get() = PrefsSafe.long(sp, "library_last_change", 0L)
+        set(v) { sp.edit().putLong("library_last_change", v).apply() }
+
     var weatherLat: String
         get() = PrefsSafe.str(sp, "weather_lat", "39.1653")
         set(v) { sp.edit().putString("weather_lat", v).apply() }

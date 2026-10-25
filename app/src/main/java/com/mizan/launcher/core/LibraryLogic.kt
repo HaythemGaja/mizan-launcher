@@ -12,6 +12,15 @@ package com.mizan.launcher.core
  * (contract: tvshows-movies-tracker/LAUNCHER_SYNC.md) and applied
  * by the tracker at its next boot.
  *
+ * v3.7: the tracker app is GONE from this story — the
+ * launcher IS the tracker now (data/LibraryLocal writes
+ * the launcher-owned store directly; the pending overlay
+ * is still the instant-render layer, but the store, not
+ * a tracker drain, is what it converges against — see
+ * prunePendingLocal). The paragraph above is history,
+ * kept so the v2.1 reasoning stays readable; every live
+ * write path below is local.
+ *
  * This object owns everything testable about that:
  * - the FULL /tracked parse (watched episode SETS + muted — the
  *   v1.8 TrackedShow keeps only a count, for search),
@@ -197,8 +206,10 @@ object LibraryLogic {
                 ?: c?.let { parseNextFromSub(it.sub) }
                 ?: (0 to 0)
             // The known next episode was marked watched right here
-            // (pending overlay) — the true next is the tracker's to
-            // compute at convergence; claim none until then.
+            // (pending overlay) — the true next is the
+            // next-episode refresh's to compute at
+            // convergence (data/LibraryLocal); claim none
+            // until then.
             if (next.first > 0 && epKey(next.first, next.second) in watched) {
                 next = 0 to 0
             }
@@ -261,7 +272,7 @@ object LibraryLogic {
                 )
             )
         }
-        // Overlay-added titles the tracker hasn't mirrored yet.
+        // Overlay-added titles the store hasn't landed yet.
         for (entry in overlay) {
             if (entry.removed || entry.addedTitle == null) continue
             if (entry.key() in seen) continue
@@ -318,7 +329,7 @@ object LibraryLogic {
 
     /** The line under a library card's title. */
     fun progressLine(item: LibItem): String {
-        if (item.pending) return "Pending — adds when the tracker next opens"
+        if (item.pending) return "Pending — adding to your library…"
         if (item.type == "movie") {
             return when {
                 item.movieWatched -> "✓ Watched"
@@ -574,11 +585,14 @@ object LibraryLogic {
      * Convergence, mirroring pruneMarked: only a snapshot with
      * [snapshotUpdated] NEWER than an entry's [PendingTitle.at] may
      * retire anything, and each part retires independently when the
-     * snapshot proves the tracker applied it:
+     * snapshot proves the write landed (v3.7: the "snapshot" is
+     * the launcher-owned store — see prunePendingLocal for the
+     * store path, which passes Long.MAX_VALUE because the store
+     * is current by construction):
      *  - add: the title appears in tracked/movies;
      *  - remove: the title is gone from tracked/movies (an entry
      *    holding both add+remove settles whole — the remove
-     *    cancelled the add before either reached the tracker);
+     *    cancelled the add before either reached the store);
      *  - episode add: the episode is in the snapshot's watched set;
      *  - episode remove: the episode is NOT in the watched set;
      *  - mute / movie-watched: the snapshot flag equals the desire.
@@ -650,6 +664,30 @@ object LibraryLogic {
             }
         }
     }
+
+    /**
+     * v3.7: the store-aware prune — the same convergence
+     * as [prunePending], but against the launcher-owned
+     * store, which IS current by construction (local
+     * writes land in the store within seconds). The old
+     * prune's stamp gate (`snapshotUpdated > at`) can
+     * never fire on the store path: the store's import
+     * stamp predates every local action, so passing it
+     * would keep every local write pending forever (and
+     * the marked-set analogue would hide Continue cards
+     * forever). Passing Long.MAX_VALUE forces the else
+     * branch: a part retires exactly when the store
+     * proves it (episode in the episode file, movie flag
+     * equal, title present/absent, muted equal). Callers
+     * use this ONLY with store-backed shows/movies
+     * (data/TrackerStoreDisk.libraryShows + readMovies);
+     * the fallback path keeps the stamp-gated prune.
+     */
+    fun prunePendingLocal(
+        overlay: List<PendingTitle>,
+        shows: List<LibShow>,
+        movies: List<TrackerLogic.MovieItem>
+    ): List<PendingTitle> = prunePending(overlay, shows, movies, Long.MAX_VALUE)
 
     // ------------------------------------------------------------ poster cache
 
@@ -957,7 +995,7 @@ object LibraryLogic {
         val line = when (tmdbErrorKind(raw)) {
             TmdbError.NONE -> ""
             TmdbError.NO_KEY ->
-                "No TMDB key yet — add your TMDB key in the tracker app, then try again."
+                "No TMDB key yet — add it in Sreeb Settings › Data & about, then try again."
             TmdbError.BAD_PATH ->
                 "Something's wrong on our side (bad request path) — it's noted in Diagnostics."
             TmdbError.HTTP ->
@@ -991,7 +1029,7 @@ object LibraryLogic {
             stored == "ok" -> "OK via tracker"
             stored == "ok_direct" -> "OK via launcher key"
             else -> when (tmdbErrorKind(stored)) {
-                TmdbError.NO_KEY -> "no key in tracker (no_key)"
+                TmdbError.NO_KEY -> "no launcher key set (no_key)"
                 TmdbError.BAD_PATH -> "bad path (bad_path)"
                 TmdbError.HTTP -> "http ${tmdbHttpCode(stored)} (${tmdbErrorToken(stored)})"
                 TmdbError.IO -> "network error (${tmdbErrorToken(stored)})"

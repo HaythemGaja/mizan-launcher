@@ -13,8 +13,9 @@ import kotlin.concurrent.thread
 /**
  * Discovery data (v2.7) — the data-layer half of core/Discovery:
  * Coming Soon, Trending and (with a launcher TMDB key) For You,
- * computed IN THE LAUNCHER from TMDB, with the tracker snapshots
- * as the standing fallback.
+ * computed IN THE LAUNCHER from TMDB, with the launcher
+ * library's snapshots as the standing fallback (v3.7: the
+ * snapshots are local store lines, not a tracker app's).
  *
  * Discipline (the v2.4/v2.5 rules, applied to a new surface):
  * - NOTHING here runs on the main thread. [snapshot] returns the
@@ -28,13 +29,13 @@ import kotlin.concurrent.thread
  *   TTL 12 h, details TTL 24 h, computed For You 24 h
  *   (core/Discovery) — stale-while-revalidate throughout: the
  *   stale set renders while the worker refreshes behind it.
- * - Every TMDB read goes through the v2.6 funnel
- *   (TrackerClient.tmdbGetBlocking: tracker proxy → launcher-key
- *   direct), so the key hygiene and error tokens of §26 apply
- *   unchanged. The For You COMPUTE additionally requires the
- *   launcher key (its discover step is direct-only — the proxy
- *   allowlist has no discover/ prefix); without one, the
- *   tracker's /foryou snapshot serves, exactly as in v2.6.
+ * - Every TMDB read goes through TrackerClient.tmdbGetBlocking
+ *   (v3.7: direct TMDB with the launcher's own key ONLY —
+ *   the tracker proxy is gone), so the key hygiene and
+ *   error tokens of §26 apply unchanged. The For You COMPUTE
+ *   requires the launcher key (its discover step is
+ *   direct-only); without one, the library's /foryou
+ *   section serves, exactly as the tracker snapshot did.
  */
 object DiscoveryData {
 
@@ -540,12 +541,13 @@ object DiscoveryData {
         // --- diagnostics bookkeeping (counts only; read-cheap) ---
         // v2.9 (ask H.30): the source word reflects what this pass
         // ACTUALLY supplied — the rendered For You is the
-        // launcher's compute (forYouComputed) or the tracker's
-        // mirror, and the Soon/Trending sets are launcher-shaped
-        // only when they hold anything. (Pre-v2.9 the word came
-        // from whether a launcher key was SET, so it claimed
-        // "launcher" even when every fetch had failed and the
-        // tracker snapshots were all that rendered.)
+        // launcher's compute (forYouComputed) or the library's
+        // /foryou section, and the Soon/Trending sets are
+        // launcher-shaped only when they hold anything.
+        // (Pre-v2.9 the word came from whether a launcher key
+        // was SET, so it claimed "launcher" even when every
+        // fetch had failed and the library snapshots were all
+        // that rendered.)
         val source = Discovery.diagSource(
             forYouComputed = next.forYouComputed,
             forYouFromTracker = !next.forYouComputed && snap.forYou.isNotEmpty(),
@@ -720,12 +722,12 @@ object DiscoveryData {
         return try {
             val p = prefs(ctx)
             Triple(
-                PrefsSafe.str(p, K_SOURCE, "tracker"),
+                PrefsSafe.str(p, K_SOURCE, "library"),
                 PrefsSafe.int(p, K_SOON_N, 0) to PrefsSafe.int(p, K_TREND_N, 0),
                 PrefsSafe.int(p, K_FORYOU_N, 0)
             )
         } catch (e: Exception) {
-            Triple("tracker", 0 to 0, 0)
+            Triple("library", 0 to 0, 0)
         }
     }
 }

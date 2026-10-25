@@ -15,7 +15,11 @@ import com.mizan.launcher.data.TmdbImages
 /**
  * The portrait 2:3 poster card for the v2.1 screens (Library, TMDB
  * search) — the same visual language as the Tracker view's cards
- * (§18.4): poster fills the card edge-to-edge (CENTER_CROP, rounded
+ * (§18.4): poster renders COMPLETE (v3.7: fit-complete, never
+ * cropped — a true 2:3 poster fills this 2:3 frame
+ * exactly either way, but off-ratio art is never cropped
+ * any more; see MainActivity.portraitCard's v3.7 note),
+ * rounded
  * corners, focus lift), title + meta BELOW the card, never overlaid.
  * An optional progress bar sits under the meta line ([progress] in
  * 0..1; negative = no bar). The focusable frame carries [tag] so
@@ -66,7 +70,7 @@ object PosterCards {
         frame.background = Ui.tileBackground(accent, false, 16, activity)
         if (posterPath.isNotBlank()) {
             val iv = ImageView(activity)
-            iv.scaleType = ImageView.ScaleType.CENTER_CROP
+            iv.scaleType = ImageView.ScaleType.FIT_CENTER
             Ui.roundClip(iv, 16, activity)
             frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
             TmdbImages.load(TmdbImages.url("w342", posterPath), iv)

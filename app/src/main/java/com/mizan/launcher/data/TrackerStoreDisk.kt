@@ -5,6 +5,8 @@ import com.mizan.launcher.core.HomeCache
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.TrackerStore
+import com.mizan.launcher.core.asObj
+import com.mizan.launcher.core.asStr
 import java.io.File
 
 /**
@@ -43,8 +45,14 @@ object TrackerStoreDisk {
     private const val F_CONTINUE = "continue.txt"
     private const val F_MOVIES = "movies.txt"
     private const val F_FORYOU = "foryou.txt"
+    /** v3.7: the missed row's items (UpNext line codec, one per passed unwatched episode). */
+    private const val F_MISSED = "missed.txt"
+    /** v3.7: the missed worker's stamp (updated, count, input fingerprint) — small JSON. */
+    private const val F_MISSED_META = "missed.json"
     private const val F_INDEX = "index.json"
     private const val EPISODE_DIR = "episodes"
+    /** v3.7: per-show season air-date cache (one small line file per show). */
+    private const val MISSED_CACHE_DIR = "missed_cache"
 
     /** Max bytes for one episode file (one show's watched set is hundreds of keys at most). */
     private const val MAX_EPISODE_BYTES = 256L * 1024L
@@ -218,6 +226,218 @@ object TrackerStoreDisk {
         }
     }
 
+    // ------------------------------------------------------------ v3.7 local writes (worker only)
+
+    /**
+     * v3.7: read one section's decoded items (small lists —
+     * upnext/continue/movies/foryou/missed are tens of lines;
+     * titles is one line per tracked title). Local writes
+     * read-modify-write through these, never through the
+     * memo (the memo is the reader's cache, not the record).
+     */
+    fun readUpNext(ctx: Context): List<TrackerLogic.UpNextItem> =
+        readSectionLines(ctx, F_UPNEXT).mapNotNull(TrackerStore::decodeUpNext)
+
+    fun readContinue(ctx: Context): List<TrackerLogic.ContinueItem> =
+        readSectionLines(ctx, F_CONTINUE).mapNotNull(TrackerStore::decodeContinue)
+
+    fun readMovies(ctx: Context): List<TrackerLogic.MovieItem> =
+        readSectionLines(ctx, F_MOVIES).mapNotNull(TrackerStore::decodeMovie)
+
+    fun readForYou(ctx: Context): List<TrackerLogic.ForYouPick> =
+        readSectionLines(ctx, F_FORYOU).mapNotNull(TrackerStore::decodeForYou)
+
+    fun readMissed(ctx: Context): List<TrackerLogic.UpNextItem> =
+        readSectionLines(ctx, F_MISSED).mapNotNull(TrackerStore::decodeUpNext)
+
+    /** Write one section's lines atomically; false when a line trips the tripwire or the write fails. */
+    fun writeUpNext(ctx: Context, items: List<TrackerLogic.UpNextItem>): Boolean {
+        val lines = ArrayList<String>()
+        for (i in items) lines.add(TrackerStore.encodeUpNext(i) ?: return false)
+        return writeAtomic(fileFor(ctx, F_UPNEXT), lines.joinToString("\n"))
+    }
+
+    fun writeContinue(ctx: Context, items: List<TrackerLogic.ContinueItem>): Boolean {
+        val lines = ArrayList<String>()
+        for (i in items) lines.add(TrackerStore.encodeContinue(i) ?: return false)
+        return writeAtomic(fileFor(ctx, F_CONTINUE), lines.joinToString("\n"))
+    }
+
+    fun writeMovies(ctx: Context, items: List<TrackerLogic.MovieItem>): Boolean {
+        val lines = ArrayList<String>()
+        for (i in items) lines.add(TrackerStore.encodeMovie(i) ?: return false)
+        return writeAtomic(fileFor(ctx, F_MOVIES), lines.joinToString("\n"))
+    }
+
+    fun writeForYou(ctx: Context, items: List<TrackerLogic.ForYouPick>): Boolean {
+        val lines = ArrayList<String>()
+        for (i in items) lines.add(TrackerStore.encodeForYou(i) ?: return false)
+        return writeAtomic(fileFor(ctx, F_FORYOU), lines.joinToString("\n"))
+    }
+
+    fun writeMissed(ctx: Context, items: List<TrackerLogic.UpNextItem>): Boolean {
+        val lines = ArrayList<String>()
+        for (i in items) lines.add(TrackerStore.encodeUpNext(i) ?: return false)
+        return writeAtomic(fileFor(ctx, F_MISSED), lines.joinToString("\n"))
+    }
+
+    /** Write the title lines atomically (titles.jsonl). */
+    fun writeTitles(ctx: Context, titles: List<TrackerStore.Title>): Boolean {
+        val lines = ArrayList<String>()
+        for (t in titles) lines.add(TrackerStore.encodeTitle(t) ?: return false)
+        return writeAtomic(fileFor(ctx, F_TITLES), lines.joinToString("\n"))
+    }
+
+    /** Write one show's episode file atomically. */
+    fun writeEpisode(ctx: Context, tmdbId: Long, file: TrackerStore.EpisodeFile): Boolean {
+        val json = TrackerStore.encodeEpisode(file) ?: return false
+        return writeAtomic(episodeFile(ctx, tmdbId), json)
+    }
+
+    /** Delete one show's episode file (remove-title path; a missing file is already deleted). */
+    fun deleteEpisode(ctx: Context, tmdbId: Long): Boolean {
+        return try {
+            val f = episodeFile(ctx, tmdbId)
+            if (!f.isFile) true else f.delete()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * v3.7: refresh the index after a local write — counts
+     * and content fingerprint recomputed from the files
+     * now on disk, keeping the import's `updated` /
+     * `fetchedAt` stamps (local writes are user actions,
+     * not fetches, and must not fake a provider stamp).
+     * Returns the new index, or null when a count file
+     * cannot be read (the old index stays honoured then;
+     * the memo refresh re-reads it, so a failed index
+     * refresh never empties the home — it just leaves
+     * the previous fingerprint in place until the next
+     * successful write).
+     */
+    fun rewriteIndex(ctx: Context): TrackerStore.Index? {
+        return try {
+            val old = readIndex(ctx)
+            val titles = readTitles(ctx)
+            val up = readUpNext(ctx)
+            val cont = readContinue(ctx)
+            val movies = readMovies(ctx)
+            val forYou = readForYou(ctx)
+            val episodeFiles = try {
+                episodesDir(ctx).listFiles()?.count { it.isFile && it.name.startsWith("tv_") } ?: 0
+            } catch (e: Exception) {
+                0
+            }
+            val index = TrackerStore.Index(
+                titles = titles.size, upnext = up.size,
+                continueCount = cont.size, movies = movies.size,
+                foryou = forYou.size, updated = old?.updated ?: 0L,
+                fetchedAt = old?.fetchedAt ?: 0L,
+                fingerprint = TrackerStore.fingerprint(
+                    old?.updated ?: 0L, titles, up, cont, movies, forYou
+                ),
+                episodeFiles = episodeFiles
+            )
+            if (!writeAtomic(fileFor(ctx, F_INDEX), TrackerStore.encodeIndex(index))) null else index
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ------------------------------------------------------------ v3.7 missed worker files
+
+    /** The missed worker's stamp, or null when never run / corrupt (worker re-runs, never empties the row). */
+    data class MissedMeta(val updated: Long, val count: Int, val inputFingerprint: String)
+
+    fun readMissedMeta(ctx: Context): MissedMeta? {
+        return try {
+            val json = readBounded(fileFor(ctx, F_MISSED_META), MAX_INDEX_BYTES) ?: return null
+            val o = com.mizan.launcher.core.JsonMini.parse(json).asObj() ?: return null
+            val fp = o["inputFingerprint"].asStr() ?: return null
+            MissedMeta(
+                updated = (o["updated"] as? Number)?.toLong() ?: 0L,
+                count = (o["count"] as? Number)?.toInt() ?: 0,
+                inputFingerprint = fp
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun writeMissedMeta(ctx: Context, meta: MissedMeta): Boolean {
+        val json = "{\"updated\":${meta.updated},\"count\":${meta.count}," +
+            "\"inputFingerprint\":\"${meta.inputFingerprint}\"}"
+        if (HomeCache.containsCredentialPattern(json)) return false
+        return writeAtomic(fileFor(ctx, F_MISSED_META), json)
+    }
+
+    private fun missedCacheDir(ctx: Context): File {
+        val d = File(dir(ctx), MISSED_CACHE_DIR)
+        if (!d.isDirectory) d.mkdirs()
+        return d
+    }
+
+    private fun seasonDatesFile(ctx: Context, tmdbId: Long): File =
+        File(missedCacheDir(ctx), "tv_$tmdbId.txt")
+
+    /**
+     * v3.7: one show's cached season air dates (season →
+     * episodes), or null when never cached. Lines are
+     * `season|episode|airDate` (pipe codec, air dates are
+     * plain yyyy-MM-dd strings — no credentials, but the
+     * writer still tripwires them like every store write).
+     * The cache is a fetch accelerator, never the record:
+     * a missing/corrupt cache just re-fetches from TMDB.
+     */
+    fun readSeasonDates(ctx: Context, tmdbId: Long): List<TrackerLogic.SeasonAirDates>? {
+        return try {
+            val f = seasonDatesFile(ctx, tmdbId)
+            if (!f.isFile) return null
+            val bySeason = LinkedHashMap<Int, ArrayList<Pair<Int, String>>>()
+            for (line in f.readLines()) {
+                if (line.isBlank()) continue
+                val parts = line.split('|')
+                if (parts.size < 3) continue
+                val s = parts[0].toIntOrNull() ?: continue
+                val e = parts[1].toIntOrNull() ?: continue
+                if (s < 1 || e < 1) continue
+                bySeason.getOrPut(s) { ArrayList() }.add(e to com.mizan.launcher.core.IptvLogic.unesc(parts[2]))
+            }
+            if (bySeason.isEmpty()) null else bySeason.entries.sortedBy { it.key }.map { (s, eps) ->
+                TrackerLogic.SeasonAirDates(s, eps.sortedBy { it.first })
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun seasonDatesAgeMs(ctx: Context, tmdbId: Long): Long {
+        return try {
+            val f = seasonDatesFile(ctx, tmdbId)
+            if (!f.isFile) Long.MAX_VALUE else System.currentTimeMillis() - f.lastModified()
+        } catch (e: Exception) {
+            Long.MAX_VALUE
+        }
+    }
+
+    fun writeSeasonDates(ctx: Context, tmdbId: Long, seasons: List<TrackerLogic.SeasonAirDates>): Boolean {
+        return try {
+            val lines = ArrayList<String>()
+            for (season in seasons.sortedBy { it.season }) {
+                for ((ep, date) in season.episodes.sortedBy { it.first }) {
+                    lines.add("${season.season}|$ep|${com.mizan.launcher.core.IptvLogic.esc(date)}")
+                }
+            }
+            val content = lines.joinToString("\n")
+            if (HomeCache.containsCredentialPattern(content)) return false
+            writeAtomic(seasonDatesFile(ctx, tmdbId), content)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     /** All title lines (small: one per tracked title, counts only — no episode data). */
     fun readTitles(ctx: Context): List<TrackerStore.Title> {
         return try {
@@ -246,7 +466,8 @@ object TrackerStoreDisk {
      * from the title lines. trackedJson is EMPTY by
      * design — no raw multi-megabyte string is retained
      * anywhere on this path; episode sets live only in
-     * per-title files (see [readEpisode]).
+     * per-title files (see [readEpisode]). v3.7: the
+     * missed row rides along (missed.txt, same codec).
      */
     fun snapshotsFromStore(ctx: Context): TrackerClient.Snapshots? {
         return try {
@@ -255,12 +476,13 @@ object TrackerStoreDisk {
             val cont = readSectionLines(ctx, F_CONTINUE).mapNotNull(TrackerStore::decodeContinue)
             val movies = readSectionLines(ctx, F_MOVIES).mapNotNull(TrackerStore::decodeMovie)
             val forYou = readSectionLines(ctx, F_FORYOU).mapNotNull(TrackerStore::decodeForYou)
+            val missed = readSectionLines(ctx, F_MISSED).mapNotNull(TrackerStore::decodeUpNext)
             val tracked = readTitles(ctx).map {
                 TrackerLogic.TrackedShow(it.tmdbId, it.title, it.watchedCount, it.planned)
             }
             TrackerClient.Snapshots(
                 upNext = upNext, cont = cont, movies = movies, tracked = tracked,
-                forYou = forYou, trackedJson = "",
+                forYou = forYou, missed = missed, trackedJson = "",
                 updated = idx.updated, forYouUpdated = idx.updated,
                 fetchedAt = idx.fetchedAt, storeFingerprint = idx.fingerprint
             )

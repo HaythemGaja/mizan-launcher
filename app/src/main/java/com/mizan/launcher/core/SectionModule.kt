@@ -58,6 +58,7 @@ object SectionModule {
     fun retrySource(sectionKey: String): Source = when (sectionKey) {
         TrackerSections.HERO,
         TrackerSections.UPNEXT,
+        TrackerSections.MISSED,
         TrackerSections.CONTINUE,
         TrackerSections.FORYOU -> Source.TRACKER
         TrackerSections.TRENDINGTV,

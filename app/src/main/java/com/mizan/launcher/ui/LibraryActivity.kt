@@ -67,8 +67,8 @@ class LibraryActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        // Returning from Details (writes happened there) or from the
-        // tracker: re-read snapshots + overlay and re-render.
+        // Returning from Details (writes happened there):
+        // re-read snapshots + overlay and re-render.
         rebuild()
         TrackerClient.refreshAsync(this) { rebuild() }
     }
@@ -127,7 +127,15 @@ class LibraryActivity : Activity() {
                     LibraryLogic.LibShow(it.tmdbId, it.name, false, it.planned, emptySet(), watchedCount = it.watchedCount)
                 }
             }
-        val pruned = LibraryLogic.prunePending(overlay, shows, snap.movies, snap.updated)
+        val pruned = if (snap.storeFingerprint.isNotBlank()) {
+            // v3.7: store-backed memo — the store IS current,
+            // so prune against it directly (the import stamp
+            // predates every local action and would keep
+            // every local write pending forever).
+            LibraryLogic.prunePendingLocal(overlay, shows, snap.movies)
+        } else {
+            LibraryLogic.prunePending(overlay, shows, snap.movies, snap.updated)
+        }
         if (pruned != overlay) {
             prefs.pendingOverlay = LibraryLogic.encodePending(pruned)
             overlay = pruned
@@ -305,7 +313,7 @@ class LibraryActivity : Activity() {
         )
     }
 
-    /** Hold-OK management menu for one library card (queued writes). */
+    /** Hold-OK management menu for one library card (local writes). */
     private fun openItemMenu(item: LibraryLogic.LibItem) {
         val labels = ArrayList<String>()
         val actions = ArrayList<() -> Unit>()
@@ -318,10 +326,7 @@ class LibraryActivity : Activity() {
                     this, prefs, item.tmdbId, item.nextSeason, item.nextEpisode,
                     watched = true
                 )
-                Toast.makeText(
-                    this, "Marked watched — applies next time the tracker opens",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(this, "Marked watched", Toast.LENGTH_SHORT).show()
                 rebuild()
             }
         }
@@ -329,10 +334,7 @@ class LibraryActivity : Activity() {
             labels.add(if (item.movieWatched) "Mark unwatched" else "Mark watched")
             actions.add {
                 TrackerActions.toggleMovie(this, prefs, item.tmdbId, !item.movieWatched)
-                Toast.makeText(
-                    this, "Saved — applies next time the tracker opens",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(this, "Saved to your library", Toast.LENGTH_SHORT).show()
                 rebuild()
             }
         }
@@ -354,8 +356,6 @@ class LibraryActivity : Activity() {
                 rebuild()
             }
         }
-        labels.add("Open in Tracker")
-        actions.add { TrackerActions.openTrackerGated(this, prefs, accent) }
         AlertDialog.Builder(this)
             .setTitle(item.title)
             .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }

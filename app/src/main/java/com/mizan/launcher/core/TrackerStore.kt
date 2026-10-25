@@ -307,6 +307,32 @@ object TrackerStore {
         return h.toString(16).padStart(16, '0')
     }
 
+    /**
+     * v3.7: the missed worker's input fingerprint — TV
+     * title ids + watched counts + muted/planned flags, in
+     * writer order. When this moves, the missed row's input
+     * moved (a mark landed, a title joined/left), so the
+     * stamp-gated full missed recompute must re-run; when
+     * it matches and the missed file is fresh, the worker
+     * skips the TMDB season fetches entirely. Same FNV-1a
+     * shape as [fingerprint]; fetchedAt is not an input.
+     */
+    fun missedFingerprint(titles: List<Title>): String {
+        val sb = StringBuilder()
+        for (t in titles) {
+            if (t.type != "tv") continue
+            sb.append("t:").append(t.tmdbId).append(':').append(t.watchedCount)
+                .append(':').append(if (t.planned) 1 else 0).append(':')
+                .append(if (t.muted) 1 else 0).append(';')
+        }
+        var h = -3750763034362895579L
+        for (c in sb.toString()) {
+            h = h xor c.code.toLong()
+            h *= 1099511628211L
+        }
+        return h.toString(16).padStart(16, '0')
+    }
+
     // ------------------------------------------------------------ paged line reading
 
     /**

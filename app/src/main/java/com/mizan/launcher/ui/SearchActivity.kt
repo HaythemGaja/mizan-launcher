@@ -105,7 +105,7 @@ class SearchActivity : Activity() {
             keyboardRows.firstOrNull()?.firstOrNull()?.requestFocus()
         }
         // v1.8: warm the tracker snapshot cache (read-only, fail-open);
-        // the "In your tracker" section reads the cache per keystroke.
+        // the "In your library" section reads the cache per keystroke.
         TrackerClient.refreshAsync(this) {}
     }
 
@@ -239,7 +239,7 @@ class SearchActivity : Activity() {
      * v2.0 voice search: hand recognition to the system's recognizer
      * activity (no permission of ours — it is another app's screen).
      * The top result becomes the query and the existing search runs
-     * (apps + "In your tracker"). No recognizer / a refused launch →
+     * (apps + "In your library"). No recognizer / a refused launch →
      * toast + the mic key hides for the session.
      */
     private fun startVoiceSearch() {
@@ -341,14 +341,14 @@ class SearchActivity : Activity() {
         artworkByPkg = prefs.artworkMap()
         val rows = mutableListOf<List<View>>()
 
-        // v1.8: "In your tracker" — above the app results, present
+        // v1.8: "In your library" — above the app results, present
         // only when tracker snapshots exist and titles match. The
         // cache is read per keystroke; no data → no section.
         val snap = TrackerClient.cached(this)
         val hits = TrackerLogic.searchTracked(snap.tracked, snap.movies, query)
         if (hits.isNotEmpty()) {
             val header = TextView(this)
-            header.text = "In your tracker"
+            header.text = "In your library"
             header.setTextColor(accent); header.textSize = 20f
             header.setTypeface(header.typeface, android.graphics.Typeface.BOLD)
             header.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 6))
@@ -401,10 +401,12 @@ class SearchActivity : Activity() {
     }
 
     /**
-     * One "In your tracker" result row: title + tracker detail.
-     * v2.1: OK opens the title's in-launcher DETAILS (which carries
-     * its own gated "Open in Tracker") instead of jumping straight
-     * to the tracker app — the §16 behaviour, upgraded.
+     * One "In your library" result row: title + library detail.
+     * v2.1: OK opens the title's in-launcher DETAILS instead of
+     * jumping straight to another app. v3.7: the gated
+     * "Open in Tracker" this comment used to mention is
+     * deleted with the tracker app — Details IS the
+     * library screen now.
      */
     private fun trackerHitRow(hit: TrackerLogic.TrackerHit): View {
         val row = LinearLayout(this)
@@ -439,58 +441,6 @@ class SearchActivity : Activity() {
             )
         }
         return row
-    }
-
-    /**
-     * Open the tracker from a search hit, through the same arrow-lock
-     * gate as an app launch (the tracker is a launchable app; if it
-     * is locked, its lock applies). Absent tracker → toast.
-     */
-    private fun openTrackerGated() {
-        val doOpen: () -> Unit = {
-            try {
-                val intent = AppLoader.launchIntent(packageManager, TrackerClient.TRACKER_PKG)
-                if (intent == null) {
-                    Toast.makeText(
-                        this, "TV Shows & Movies Tracker isn't installed",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    prefs.recordLaunch(TrackerClient.TRACKER_PKG)
-                    startActivity(intent)
-                    finish()
-                }
-            } catch (e: Exception) {
-                Prefs.noteError(this, "searchOpenTracker", e)
-                Toast.makeText(this, "Couldn't open the tracker", Toast.LENGTH_SHORT).show()
-            }
-        }
-        if (!prefs.lockedApps.contains(TrackerClient.TRACKER_PKG)) {
-            doOpen()
-            return
-        }
-        val stored = prefs.arrowPin
-        if (stored.isEmpty()) {
-            ArrowPinDialog.showSetup(
-                activity = this,
-                title = "Set an arrow pattern to lock TV Shows & Movies Tracker",
-                accent = accent,
-                onDone = { seq ->
-                    prefs.arrowPin = seq
-                    Toast.makeText(this, "Arrow lock set", Toast.LENGTH_SHORT).show()
-                    doOpen()
-                }
-            )
-            return
-        }
-        ArrowPinDialog.showUnlock(
-            activity = this,
-            title = "TV Shows & Movies Tracker is locked",
-            accent = accent,
-            storedEncoded = stored,
-            onSuccess = { doOpen() },
-            onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
-        )
     }
 
     /** A result tile: the home screen's uniform tile + focus-name overlay. */

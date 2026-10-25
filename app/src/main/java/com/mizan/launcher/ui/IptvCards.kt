@@ -88,7 +88,12 @@ object IptvCards {
         frame.background = Ui.tileBackground(accent, false, 16, activity)
         if (imageUrl.isNotBlank()) {
             val iv = ImageView(activity)
-            iv.scaleType = if (wide) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
+            // v3.7 (poster fix): FIT_CENTER on BOTH frames — the
+            // wide frame already fit complete; the narrow
+            // (poster) frame centre-cropped panel art of
+            // any other aspect. A true 2:3 poster fills
+            // the narrow frame exactly either way.
+            iv.scaleType = ImageView.ScaleType.FIT_CENTER
             if (!wide) Ui.roundClip(iv, 16, activity)
             frame.addView(iv, FrameLayout.LayoutParams(-1, -1))
             TmdbImages.load(imageUrl, iv)

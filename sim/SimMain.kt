@@ -1854,8 +1854,11 @@ fun main() {
         // merged into upnext in v3.3), so the swap lands there.
         // v3.4 RE-PINNED (ask 51): folders joins the canonical
         // tail (after favorites, before allapps).
+        // v3.7 RE-PINNED (Missed row): Missed joins ROWS right
+        // after Up Next, so the foryou swap happens over the
+        // longer list.
         check("sections: move up swaps with the previous row",
-            moved.order == listOf("upnext", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "folders", "allapps"))
+            moved.order == listOf("upnext", "missed", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: moves at the edges and for the hero are no-ops",
             ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
                 ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
@@ -1866,14 +1869,16 @@ fun main() {
             ts.compose(reordered) { true } ==
                 // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext.
                 // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
-                listOf("hero", "allapps", "upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders"))
+                // v3.7 RE-PINNED (Missed row): Missed composes after Up Next.
+                listOf("hero", "allapps", "upnext", "missed", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders"))
         // RE-PINNED in v2.7 (new sections compose when available).
         // v3.1 RE-PINNED (ask 37): MOVIENIGHT is gone, so the data-empty
         // gate uses foryou; hidden upnext + gated foryou both drop.
         check("sections: hidden + data-empty sections are both skipped",
             ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.FORYOU } ==
                 // v3.4 RE-PINNED (ask 51): folders composes in its canonical slot.
-                listOf("hero", "continue", "trendingtv", "trendingmovies", "favorites", "folders", "allapps"))
+                // v3.7 RE-PINNED (Missed row): Missed composes after the hero.
+                listOf("hero", "missed", "continue", "trendingtv", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: unknown keys are dropped by normalize",
             ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
                 ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
@@ -2323,16 +2328,19 @@ fun main() {
             ll.tmdbRetryable("http_500") && ll.tmdbRetryable("io") &&
                 ll.tmdbRetryable("weird") && !ll.tmdbRetryable("no_key") &&
                 !ll.tmdbRetryable("bad_path") && !ll.tmdbRetryable(null))
+        // v3.7 RE-PINNED (launcher IS the tracker): the no_key
+        // fix names Sreeb Settings, not the tracker app.
         check("tmdb: user lines (no_key names the fix; http carries the code)",
             ll.tmdbUserLine("no_key").contains("TMDB key") &&
-                ll.tmdbUserLine("no_key").contains("tracker app") &&
+                ll.tmdbUserLine("no_key").contains("Sreeb Settings") &&
                 ll.tmdbUserLine("http_404").contains("404") &&
                 ll.tmdbUserLine("io").contains("reach TMDB") &&
                 ll.tmdbUserLine(null) == "")
         check("tmdb: diagnostics wording (v2.6: path + human text + raw token in parens)",
             ll.tmdbDiagText(null, null) == "not used yet" &&
                 ll.tmdbDiagText("ok", null) == "OK via tracker" &&
-                ll.tmdbDiagText("no_key", null) == "no key in tracker (no_key)" &&
+                // v3.7 RE-PINNED: the key lives in the launcher now.
+                ll.tmdbDiagText("no_key", null) == "no launcher key set (no_key)" &&
                 ll.tmdbDiagText("bad_path", null) == "bad path (bad_path)" &&
                 ll.tmdbDiagText("http_500", null) == "http 500 (http_500)" &&
                 ll.tmdbDiagText("io", null) == "network error (io)" &&
@@ -3263,6 +3271,9 @@ fun main() {
     // ---------- (56) v3.6: indexed tracker store + paged/visible-first (ask 53) ----------
     section56()
 
+    // ---------- (57) v3.7: launcher IS the tracker + Missed row + poster fix ----------
+    section57()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3533,8 +3544,11 @@ fun section44() {
             directSrc.isNotEmpty() && !directSrc.contains("android.util.Log") &&
                 !directSrc.contains("println"))
         val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
-        check("v26src: the funnel composes proxy -> direct via resolveTmdb and records both notes",
-            clientSrc.contains("resolveTmdb") && clientSrc.contains("ok_direct") &&
+        // v3.7 RE-PINNED (launcher IS the tracker): the proxy
+        // is gone — the funnel is direct-only, same notes.
+        check("v26src: the funnel is direct-only via TmdbDirect and records both notes",
+            !clientSrc.contains("resolveTmdb") && !clientSrc.contains("tmdbGetViaProxy") &&
+                clientSrc.contains("ok_direct") &&
                 clientSrc.contains("lastTmdbDirect") && clientSrc.contains("TmdbDirect.getBlocking"))
     }
 }
@@ -3763,9 +3777,10 @@ fun section45() {
         // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext
         // (v3.1 had already removed movienight from this order).
         // v3.4 RE-PINNED (ask 51): folders joins after favorites.
+        // v3.7 RE-PINNED (Missed row): Missed joins after Up Next.
         check("sections: v2.7 canonical order is the directive's focus order",
             tsx.CANONICAL == listOf(
-                "hero", "upnext", "continue", "trendingtv",
+                "hero", "upnext", "missed", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "folders", "allapps"
             ))
         check("sections: v2.7 labels",
@@ -3777,8 +3792,9 @@ fun section45() {
         check("sections: a pre-v2.7 stored order keeps its order; the new rows append",
             tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|").order ==
                 // v3.4 RE-PINNED (ask 51): folders appends after the trending rows.
+                // v3.7 RE-PINNED (Missed row): Missed splices after Up Next.
                 listOf(
-                    "upnext", "continue", "foryou", "favorites",
+                    "upnext", "missed", "continue", "foryou", "favorites",
                     "allapps", "trendingtv", "trendingmovies", "folders"
                 ))
 
@@ -3977,9 +3993,11 @@ fun section42() {
         // sequential cold chain + key-only match + last-death capture, spec §35).
         // Re-pinned in v3.6 (intentional version bump 3.5/28 → 3.6/29 —
         // indexed tracker store + paged/visible-first, spec §36).
-        check("v25src: the app version is 3.6 / code 29 (bumped by v3.6)",
-            gradleSrc.contains("versionName = \"3.6\"") &&
-                gradleSrc.contains("versionCode = 29"))
+        // Re-pinned in v3.7 (intentional version bump 3.6/29 → 3.7/30 —
+        // launcher IS the tracker + Missed row + poster fix, spec §37).
+        check("v25src: the app version is 3.7 / code 30 (bumped by v3.7)",
+            gradleSrc.contains("versionName = \"3.7\"") &&
+                gradleSrc.contains("versionCode = 30"))
     }
 }
 
@@ -3999,9 +4017,10 @@ fun section46() {
         check("migrate: a pre-v2.7 stored order has the focus rows appended at the end",
             preV27.order.takeLast(3) == listOf("trendingtv", "trendingmovies", "folders"))
         val migrated = tsx.migrateOrder(preV27)
+        // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
         check("migrate: the appended rows splice into their canonical slots",
             migrated.order == listOf(
-                "upnext", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         check("migrate: idempotent — a second pass changes nothing",
@@ -4015,8 +4034,9 @@ fun section46() {
         // only the still-appended trending rows splice.
         check("migrate: only the still-appended rows move (comingsoon drops on decode)",
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
+            // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(partial).order == listOf(
-                "upnext", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         val parked = tsx.decode(
@@ -4024,8 +4044,9 @@ fun section46() {
         )
         check("migrate: a focus row parked mid-list (before foryou) is never itself moved",
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
+            // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(parked).order == listOf(
-                "upnext", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         val custom = tsx.decode(
@@ -4033,8 +4054,9 @@ fun section46() {
         )
         check("migrate: the user's other rows keep their relative order exactly",
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
+            // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(custom).order == listOf(
-                "upnext", "continue", "trendingtv",
+                "upnext", "missed", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "allapps", "folders"
             ))
         val hiddenCfg = tsx.decode(
@@ -4045,8 +4067,9 @@ fun section46() {
         check("migrate: the hidden set drops removed keys; the splice still applies",
             tsx.migrateOrder(hiddenCfg).hidden.isEmpty() &&
                 // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
+                // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
                 tsx.migrateOrder(hiddenCfg).order == listOf(
-                    "upnext", "continue", "trendingtv", "trendingmovies",
+                    "upnext", "missed", "continue", "trendingtv", "trendingmovies",
                     "foryou", "favorites", "allapps", "folders"
                 ))
 
@@ -4139,10 +4162,13 @@ fun section46() {
                 mainSrc.contains("Loading your library…") &&
                 mainSrc.contains("Loading your channels…"))
         val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
-        check("v28src: Details has no primary Open in Tracker — it lives in the More overflow",
-            !detailsSrc.contains("actionButton(\"▶ Open in Tracker\"") &&
-                detailsSrc.contains("actionButton(\"⋯ More\", \"more\")") &&
-                detailsSrc.contains("\"Open in Tracker\""))
+        // v3.7 RE-PINNED (launcher IS the tracker): the More
+        // overflow held ONLY Open in Tracker, so the whole
+        // menu block is deleted — no More button, no tracker
+        // entry anywhere in Details.
+        check("v28src: Details has no Open in Tracker anywhere — the More overflow is gone with it",
+            !detailsSrc.contains("Open in Tracker") &&
+            !detailsSrc.contains("⋯ More"))
         val iptvCardsSrc = src("app/src/main/java/com/mizan/launcher/ui/IptvCards.kt")
         check("v28src: IPTV cards carry the LIVE pill + in-frame progress + focus border",
             iptvCardsSrc.contains("liveBadge") &&
@@ -4280,18 +4306,20 @@ fun section47() {
         Discovery.diagSource(
             forYouComputed = true, forYouFromTracker = false, launcherSetsLive = true
         ) == "launcher")
-    check("discovery: tracker For You + live launcher sets reads launcher+tracker",
+    // v3.7 RE-PINNED (launcher IS the tracker): the /foryou
+    // section is the library's imported section now.
+    check("discovery: library For You + live launcher sets reads launcher+library",
         Discovery.diagSource(
             forYouComputed = false, forYouFromTracker = true, launcherSetsLive = true
-        ) == "launcher+tracker")
-    check("discovery: tracker-only reads tracker",
+        ) == "launcher+library")
+    check("discovery: library-only reads library",
         Discovery.diagSource(
             forYouComputed = false, forYouFromTracker = true, launcherSetsLive = false
-        ) == "tracker")
-    check("discovery: nothing supplied still reads tracker (the fallback word)",
+        ) == "library")
+    check("discovery: nothing supplied still reads library (the fallback word)",
         Discovery.diagSource(
             forYouComputed = false, forYouFromTracker = false, launcherSetsLive = false
-        ) == "tracker")
+        ) == "library")
 
     // --- source checks: the v2.9 wiring is really in the app ---
     fun src(path: String): String = try {
@@ -4307,8 +4335,13 @@ fun section47() {
     check("v29src: WatchPlay resolves on demand and warms what is displayed",
         watchPlaySrc.contains("fun warmUpDisplayed") &&
             watchPlaySrc.contains("fun resolveSeries"))
-    check("v29src: openTracker survives ONLY as its definition + the three hold-OK menu entries",
-        mainSrc.split("openTracker()").size - 1 == 4)
+    // v3.7 RE-PINNED (launcher IS the tracker): openTracker
+    // is deleted entirely — card menus carry Details /
+    // Mark / Add only, via cardMenu.
+    check("v29src: openTracker is gone; cardMenu replaces the old menu fn",
+        !mainSrc.contains("private fun openTracker(") &&
+            !mainSrc.contains("openTrackerCardMenu(") &&
+            mainSrc.contains("private fun cardMenu("))
     check("v29src: the unified bar replaced the stacked bars in both media homes",
         mainSrc.contains("barHost.addView(buildUnifiedBar(overHero = false))") &&
             mainSrc.contains("barHost.addView(buildUnifiedBar(overHero = hero != null))") &&
@@ -4317,9 +4350,13 @@ fun section47() {
         mainSrc.contains("fun openForecast()") &&
             mainSrc.contains("left.setOnClickListener { openForecast() }") &&
             mainSrc.contains("shell.setOnClickListener { openForecast() }"))
+    // v3.7 RE-PINNED (poster fix): the fit decision still
+    // comes from core/Artwork, but Up Next cards are
+    // poster-first now — landscape is true only when the
+    // poster is blank and a backdrop exists.
     check("v29src: landscape cards take the fit decision from core/Artwork",
         mainSrc.contains("Artwork.landscapeFit(imageLandscape)") &&
-            mainSrc.contains("imageLandscape = item.backdrop.isNotBlank()") &&
+            mainSrc.contains("imageLandscape = item.poster.isBlank() && item.backdrop.isNotBlank()") &&
             mainSrc.contains("imageLandscape = false"))
     val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
     check("v29src: the settings app pickers no longer scan on the main thread",
@@ -4873,8 +4910,15 @@ fun section50() {
                 mainSrc.contains("playInMovie(") && mainSrc.contains("Play in…"))
         check("v31src: quick-settings routes the internal Sort sections target to Settings by category",
             mainSrc.contains("sreeb:sortsections") && mainSrc.contains("openSettings(\"sortsections\")"))
-        check("v31src: tracker snapshots mirror to the home cache on the fetch worker",
-            src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt").contains("HomeCacheDisk.putSnapshot"))
+        // v3.7 RE-PINNED (launcher IS the tracker): there is
+        // no fetch worker any more, so nothing mirrors to the
+        // home cache — the indexed store IS the mirror, and
+        // the old mirror survives only as a legacy fallback
+        // read for the prefs-parse path.
+        check("v31src: the indexed store replaces the home-cache mirror (legacy read only)",
+            src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt").contains("storeSnapshots") &&
+                !src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt").contains("HomeCacheDisk.putSnapshot") &&
+                src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt").contains("HomeCacheDisk.mirrored"))
         val playInSrc = src("app/src/main/java/com/mizan/launcher/ui/PlayIn.kt")
         check("v31src: Play-in discovers handlers via the intent query — no hardcoded app packages",
             playInSrc.contains("queryIntentActivities") &&
@@ -4894,9 +4938,10 @@ fun section50() {
         // Re-pinned in v3.4 (intentional version bump 3.3/26 → 3.4/27, spec §34).
         // Re-pinned in v3.5 (intentional version bump 3.4/27 → 3.5/28, spec §35).
         // Re-pinned in v3.6 (intentional version bump 3.5/28 → 3.6/29, spec §36).
-        check("v31src: the version bump is 3.6 / code 29",
-            src("app/build.gradle.kts").contains("versionCode = 29") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.6\""))
+        // Re-pinned in v3.7 (intentional version bump 3.6/29 → 3.7/30, spec §37).
+        check("v31src: the version bump is 3.7 / code 30",
+            src("app/build.gradle.kts").contains("versionCode = 30") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.7\""))
     }
 }
 
@@ -5263,7 +5308,8 @@ fun section53() {
         val decoded = TrackerSections.decode("upnext,comingsoon,continue|comingsoon")
         check("merge53: stored order + hidden set mentioning comingsoon drop it on read",
             // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
-            decoded.order == listOf("upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders", "allapps") &&
+            // v3.7 RE-PINNED (Missed row): Missed splices after Up Next.
+            decoded.order == listOf("upnext", "missed", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders", "allapps") &&
                 "comingsoon" !in decoded.hidden)
         check("merge53: compose never emits comingsoon",
             !TrackerSections.compose(decoded) { true }.contains("comingsoon"))
@@ -5699,10 +5745,15 @@ fun section55() {
         check("src55: chain landing + destroy wiring in MainActivity",
             mainSrc.contains("ColdChainRunner.onLanded") &&
                 mainSrc.contains("ColdChainRunner.cancel()"))
-        check("src55: TrackerClient slim warm exists, full-parse warm is gone, fetch kicks the chain",
+        // v3.7 RE-PINNED (launcher IS the tracker): no fetch
+        // landings any more — refresh installs the store memo
+        // directly and posts onChanged; the chain is never
+        // kicked from a fetch path.
+        check("src55: TrackerClient slim warm exists, full-parse warm is gone, local re-read replaces the chain kick",
             clientSrc.contains("fun warmSlimAsync") &&
                 !clientSrc.contains("fun warmMemoAsync") &&
-                clientSrc.contains("ColdChainRunner.kickAfterFetch(appCtx)"))
+                clientSrc.contains("cachedMemo = snap") &&
+                !clientSrc.contains("kickAfterFetch"))
         check("src55: tracker mirror fallback reads disk on demand with a context",
             clientSrc.contains("HomeCacheDisk.mirrored(ctx,"))
         check("src55: tuples memo + blocking read are gone; key-only stream + counts replace them",
@@ -5982,8 +6033,249 @@ fun section56() {
                 settingsSrc.contains("slim: \" +"))
         check("src56: hero rule untouched by the store migration (missed first, today stays out)",
             mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
-        check("src56: no-refresh rule untouched (fetch landings still re-run the chain; home build never fetches)",
-            clientSrc.contains("ColdChainRunner.kickAfterFetch(appCtx)") &&
+        // v3.7 RE-PINNED (launcher IS the tracker): the RULE
+        // is untouched (home build never fetches — no
+        // provider fetch exists any more); the mechanism is
+        // a local store re-read, not a chain kick.
+        check("src56: no-refresh rule untouched (local re-read only; home build never fetches)",
+            clientSrc.contains("fun refreshAsync") &&
+                !clientSrc.contains("kickAfterFetch") &&
                 !mainSrc.substringAfter("private fun prepareTrackerData").substringBefore("private fun prepareWatchData").contains("refreshAsync"))
+    }
+}
+
+/** v3.7 checks — top-level because main() reached the JVM method-size limit. */
+fun section57() {
+    run {
+        // ---- Missed row: the pure filter (core/TrackerLogic.missedRow) ----
+        val today = "2026-10-25"
+        fun item(id: Long, title: String, date: String, s: Int, e: Int, type: String = "tv") =
+            TrackerLogic.UpNextItem(id, title, "S$s E$e", date, "/poster.jpg", "/backdrop.jpg", "", s, e, type)
+        val past = item(1, "Old Show", "2026-10-20", 1, 5)
+        val older = item(2, "Older Show", "2026-10-10", 2, 3)
+        val todayItem = item(3, "Today Show", "2026-10-25", 1, 1)
+        val future = item(4, "Future Show", "2026-10-28", 1, 1)
+        val watchedPast = item(5, "Watched Show", "2026-10-15", 1, 2)
+        val moviePast = item(6, "Movie", "2026-10-12", 0, 0, "movie")
+        val coordless = item(7, "No Coords", "2026-10-11", 0, 0)
+        val dateless = item(8, "No Date", "", 1, 1)
+        val dupPast = item(1, "Old Show", "2026-10-20", 1, 5)
+        val missed = TrackerLogic.missedRow(
+            listOf(past, older, todayItem, future, watchedPast, moviePast, coordless, dateless, dupPast),
+            { it.tmdbId == 5L },
+            today
+        )
+        check("missed57: row contains ONLY past-unwatched, most-overdue first, episode-precise",
+            missed.map { it.tmdbId } == listOf(2L, 1L))
+        check("missed57: today, future, watched, movie, coordless, dateless all excluded",
+            missed.none { it.tmdbId in setOf(3L, 4L, 5L, 6L, 7L, 8L) })
+
+        // ---- Missed computation: first unwatched past episode, one at a time ----
+        val seasons = listOf(
+            TrackerLogic.SeasonAirDates(1, listOf(1 to "2026-10-01", 2 to "2026-10-08", 3 to "2026-10-15")),
+            TrackerLogic.SeasonAirDates(2, listOf(1 to "2026-10-22"))
+        )
+        check("missed57: first missed is the earliest unwatched past episode",
+            TrackerLogic.firstMissedEpisode(setOf("1x1"), seasons, today) == Triple(1, 2, "2026-10-08"))
+        check("missed57: marking advances one at a time (next passed episode surfaces)",
+            TrackerLogic.firstMissedEpisode(setOf("1x1", "1x2"), seasons, today) == Triple(1, 3, "2026-10-15") &&
+                TrackerLogic.firstMissedEpisode(setOf("1x1", "1x2", "1x3"), seasons, today) == Triple(2, 1, "2026-10-22"))
+        check("missed57: caught-up show has no missed episode",
+            TrackerLogic.firstMissedEpisode(setOf("1x1", "1x2", "1x3", "2x1"), seasons, today) == null)
+        check("missed57: future-only unwatched show has no missed episode",
+            TrackerLogic.firstMissedEpisode(
+                emptySet(),
+                listOf(TrackerLogic.SeasonAirDates(1, listOf(1 to "2026-10-28"))),
+                today
+            ) == null)
+        check("missed57: blank date skipped, specials skipped, no date invented",
+            TrackerLogic.firstMissedEpisode(
+                emptySet(),
+                listOf(
+                    TrackerLogic.SeasonAirDates(0, listOf(1 to "2026-10-01")),
+                    TrackerLogic.SeasonAirDates(1, listOf(1 to "", 2 to "2026-10-05"))
+                ),
+                today
+            ) == Triple(1, 2, "2026-10-05"))
+
+        // ---- Section registry: Missed joins after Up Next, migrates cleanly ----
+        check("missed57: MISSED sits right after UPNEXT in CANONICAL",
+            TrackerSections.CANONICAL.indexOf(TrackerSections.MISSED) ==
+                TrackerSections.CANONICAL.indexOf(TrackerSections.UPNEXT) + 1)
+        check("missed57: pre-v3.7 order gains Missed after Up Next (not appended at the end)",
+            TrackerSections.decode("upnext,continue,foryou,favorites,allapps|").order ==
+                listOf("upnext", "missed", "continue", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
+        check("missed57: Missed label + compose gating (shown, available, hideable)",
+            TrackerSections.label(TrackerSections.MISSED) == "Missed" &&
+                TrackerSections.compose(TrackerSections.decode("upnext,missed,continue|")) { it == "upnext" || it == "missed" } ==
+                    listOf("upnext", "missed") &&
+                TrackerSections.compose(TrackerSections.decode("upnext,missed,continue|missed")) { it == "upnext" || it == "continue" || it == "missed" } ==
+                    listOf("upnext", "continue"))
+        check("missed57: deliberate Missed position is preserved (normalize never re-splices a stored Missed)",
+            TrackerSections.decode("continue,upnext,missed,foryou,favorites,allapps|").order ==
+                listOf("continue", "upnext", "missed", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
+
+        // ---- Missed fingerprint: content, not lengths ----
+        val titlesA = listOf(
+            TrackerStore.Title("tv", 1, "A", "/p", "/b", 500, false, false, 1, 2),
+            TrackerStore.Title("tv", 2, "B", "/p", "/b", 3, false, false, 0, 0)
+        )
+        val titlesB = listOf(
+            TrackerStore.Title("tv", 1, "A", "/p", "/b", 501, false, false, 1, 2),
+            TrackerStore.Title("tv", 2, "B", "/p", "/b", 3, false, false, 0, 0)
+        )
+        check("missed57: missed fingerprint distinguishes same-shape different-count libraries",
+            TrackerStore.missedFingerprint(titlesA) != TrackerStore.missedFingerprint(titlesB) &&
+                TrackerStore.missedFingerprint(titlesA) == TrackerStore.missedFingerprint(titlesA))
+        check("missed57: missed fingerprint ignores movies (TV-only input)",
+            TrackerStore.missedFingerprint(titlesA) == TrackerStore.missedFingerprint(
+                titlesA + TrackerStore.Title("movie", 9, "M", "/p", "/b", 1, false, false, 0, 0)
+            ))
+
+        // ---- Missed codec: UpNext line round-trips every card field ----
+        val missedItem = TrackerLogic.UpNextItem(
+            42, "Show", "S2 E3", "2026-10-19", "/poster.jpg", "/backdrop.jpg", "Overview", 2, 3, "tv"
+        )
+        check("missed57: missed item survives the UpNext line codec (poster, backdrop, coords, date)",
+            TrackerStore.decodeUpNext(TrackerStore.encodeUpNext(missedItem) ?: "") == missedItem)
+
+        // ---- Store-aware prune: local writes converge without any provider stamp ----
+        val storeShow = LibraryLogic.LibShow(42L, "Show", false, false, setOf("1x1", "1x2"))
+        val overlayWithAdd = LibraryLogic.withEpisodeToggle(emptyList(), 42, 1, 1, true, 5L)
+        check("missed57: prunePendingLocal retires a store-proven episode add (no stamp needed)",
+            LibraryLogic.prunePendingLocal(overlayWithAdd, listOf(storeShow), emptyList()).isEmpty())
+        val overlayUnproven = LibraryLogic.withEpisodeToggle(emptyList(), 42, 1, 9, true, 5L)
+        check("missed57: prunePendingLocal keeps an unproven episode add (fail-open)",
+            LibraryLogic.prunePendingLocal(overlayUnproven, listOf(storeShow), emptyList()).size == 1)
+
+        // ---- Source checks: every wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        val localSrc = src("app/src/main/java/com/mizan/launcher/data/LibraryLocal.kt")
+        val actionsSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerActions.kt")
+        val storeDiskSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerStoreDisk.kt")
+        val chainSrc = src("app/src/main/java/com/mizan/launcher/data/ColdChainRunner.kt")
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
+        val libSrc = src("app/src/main/java/com/mizan/launcher/ui/LibraryActivity.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        val posterSrc = src("app/src/main/java/com/mizan/launcher/ui/PosterCards.kt")
+        val sectionsSrc = src("app/src/main/java/com/mizan/launcher/core/TrackerSections.kt")
+        val manifestSrc = src("app/src/main/AndroidManifest.xml")
+
+        check("src57: provider action queue is gone; writes go through LibraryLocal",
+            !clientSrc.contains("fun callAction") &&
+                !clientSrc.contains("fun markWatched(") &&
+                !clientSrc.contains("fun addTitle(") &&
+                !clientSrc.contains("fun dismissForYou(") &&
+                actionsSrc.contains("LibraryLocal.queueEpisodeToggle") &&
+                actionsSrc.contains("LibraryLocal.queueMovieToggle") &&
+                actionsSrc.contains("LibraryLocal.queueAddTitle") &&
+                actionsSrc.contains("LibraryLocal.queueRemoveTitle") &&
+                actionsSrc.contains("LibraryLocal.queueMuted") &&
+                mainSrc.contains("TrackerActions.markWatchedHome"))
+        check("src57: one-time import is the sole provider contact (flag-gated, marked as the exception)",
+            clientSrc.contains("fun runOneTimeImport") &&
+                clientSrc.contains("libraryImported") &&
+                clientSrc.contains("enum class ImportResult") &&
+                clientSrc.contains("sole provider contact") &&
+                manifestSrc.contains("LAUNCHER_READ") &&
+                manifestSrc.contains("com.haythem.tvtracker"))
+        check("src57: no live provider read outside TrackerClient (no launcherdata string in any screen/action/local file)",
+            !mainSrc.contains("launcherdata") &&
+                !detailsSrc.contains("launcherdata") &&
+                !libSrc.contains("launcherdata") &&
+                !actionsSrc.contains("launcherdata") &&
+                !localSrc.contains("launcherdata"))
+        check("src57: TMDB is direct-only (no proxy, no proxy-first resolution)",
+            clientSrc.contains("TmdbDirect.getBlocking") &&
+                !clientSrc.contains("tmdbGetViaProxy") &&
+                !clientSrc.contains("resolveTmdb"))
+        check("src57: Details unlock — Add to my list for untracked titles, old gate toast gone",
+            detailsSrc.contains("Add to my list") &&
+                detailsSrc.contains("add_to_list") &&
+                detailsSrc.contains("Add this title to your list to use episode tools") &&
+                run {
+                    val body = detailsSrc.substringAfter("private fun episodeRow")
+                    !body.substringBefore("private fun playEpisodeFromDetails")
+                        .contains("Episode tools unlock once this title is in the tracker")
+                } &&
+                !detailsSrc.contains("Open in Tracker"))
+        check("src57: no Open Tracker entry in any card menu (menus only, bodies scoped)",
+            run {
+                val menu = mainSrc.substringAfter("private fun cardMenu")
+                    .substringBefore("private fun openTitleDetails")
+                !menu.contains("Open Tracker")
+            } &&
+                run {
+                    val menu = mainSrc.substringAfter("private fun openTrendingMenu")
+                        .substringBefore("private fun addToMyList")
+                    !menu.contains("Open Tracker")
+                } &&
+                run {
+                    val menu = mainSrc.substringAfter("private fun openForYouMenu")
+                        .substringBefore("private fun buildInputsSection")
+                    !menu.contains("Open Tracker")
+                } &&
+                !libSrc.contains("Open in Tracker") &&
+                !actionsSrc.contains("openTrackerGated"))
+        check("src57: hero buttons no longer gated on the tracker app being installed",
+            !mainSrc.contains("TrackerClient.isInstalled") &&
+                mainSrc.contains("libraryHere") &&
+                mainSrc.contains("tSnap.hasData"))
+        check("src57: missed row wired end to end (section, filter, worker, chain tail, retry)",
+            sectionsSrc.contains("MISSED") &&
+                mainSrc.contains("tMissed") &&
+                mainSrc.contains("buildMissedSection") &&
+                mainSrc.contains("TrackerLogic.missedRow") &&
+                mainSrc.contains("LibraryLocal.kickMissedAll") &&
+                chainSrc.contains("LibraryLocal.kickMissedAll") &&
+                localSrc.contains("fun kickMissedAll") &&
+                localSrc.contains("fun recomputeMissedForShow") &&
+                localSrc.contains("fun refreshNextEpisode") &&
+                storeDiskSrc.contains("fun writeMissed") &&
+                storeDiskSrc.contains("fun readMissed") &&
+                storeDiskSrc.contains("fun writeSeasonDates"))
+        check("src57: local writes are serialized + atomic (one lock, index rewrite, memo install)",
+            localSrc.contains("synchronized(lock)") &&
+                storeDiskSrc.contains("fun rewriteIndex") &&
+                clientSrc.contains("fun installStoreMemo") &&
+                localSrc.contains("finishWriteLocked"))
+        check("src57: poster fix — portrait cards FIT_CENTER, landscape cards poster-first, hero stays backdrop",
+            run {
+                val body = mainSrc.substringAfter("private fun portraitCard")
+                    .substringBefore("private fun landscapeCard")
+                body.contains("FIT_CENTER") && !body.contains("CENTER_CROP")
+            } &&
+                mainSrc.contains("item.poster.ifBlank { item.backdrop }") &&
+                run {
+                    val body = mainSrc.substringAfter("private fun upNextCard")
+                        .substringBefore("private fun buildMergedUpNextSection")
+                    body.contains("playUpNextItem") && body.contains("openTitleDetails")
+                } &&
+                run {
+                    val body = mainSrc.substringAfter("private fun addTrackerBackground")
+                        .substringBefore("private fun buildHeroZone")
+                    body.contains("hero.backdrop") && body.contains("w1280") &&
+                        !body.contains("hero.poster")
+                } &&
+                posterSrc.contains("FIT_CENTER") && !posterSrc.contains("CENTER_CROP"))
+        check("src57: diagnostics library line replaces the tracker line",
+            settingsSrc.contains("library: \" +") &&
+                settingsSrc.contains("TrackerClient.libraryDiag") &&
+                !settingsSrc.contains("TrackerClient.status"))
+        check("src57: hero rule untouched (missed first, today stays out) + no-refresh untouched (local re-read only)",
+            mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon") &&
+                clientSrc.contains("fun refreshAsync") &&
+                run {
+                    val body = clientSrc.substringAfter("fun refreshAsync")
+                        .substringBefore("private data class PathResult")
+                    body.contains("storeSnapshots") && body.contains("runOneTimeImport") &&
+                        !body.contains("queryPath(appCtx")
+                })
     }
 }

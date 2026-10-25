@@ -18,18 +18,17 @@ import com.mizan.launcher.data.TrackerClient
 
 /**
  * Search TMDB (v2.1) — find a show or movie on TMDB and add it to
- * the library, without opening the tracker app. The query runs
- * through the tracker's `tmdb_get` proxy (search/multi; the
- * tracker's own key — it never leaves the tracker). One search per
- * Search-key press (deliberately NOT per keystroke: each query is a
- * proxied network call). Results are poster cards; OK queues an
- * add_title action and the title appears in My Library at once as
- * "Pending" (the generalized overlay), joining for real when the
- * tracker applies the queue at its next boot — the tracker adds
- * it as planned, per contract.
+ * the library. The query runs through the launcher's OWN direct
+ * TMDB key (v3.7 — the tracker-proxy tmdb_get path died with
+ * the tracker app). One search per Search-key press
+ * (deliberately NOT per keystroke: each query is a network
+ * call). Results are poster cards; OK writes the add locally
+ * and the title appears in My Library at once as "Pending"
+ * (the generalized overlay), joining for real when the store
+ * worker lands — it is added as planned.
  *
  * The keyboard + keyboard↔results focus handoff mirror the app
- * Search screen. Errors use the same tmdb_get state lines as the
+ * Search screen. Errors use the same TMDB state lines as the
  * details screen (no_key / http_ / io / bad_path).
  */
 class TmdbSearchActivity : Activity() {
@@ -327,18 +326,13 @@ class TmdbSearchActivity : Activity() {
                 .show()
             return
         }
-        // TMDB search carries no full release date — "" per contract;
-        // the tracker fills richer data from its own fetch at drain.
+        // TMDB search carries no full release date — "".
         TrackerActions.addTitle(this, prefs, hit.id, hit.type, hit.title, hit.poster, "")
         addedKeys.add(key)
         if (hit.poster.isNotBlank()) {
             TrackerClient.notePoster(this, hit.type, hit.id, hit.poster)
         }
-        Toast.makeText(
-            this,
-            "Added “${hit.title}” — it joins your library when the tracker next opens",
-            Toast.LENGTH_SHORT
-        ).show()
+        Toast.makeText(this, "Added “${hit.title}” to your library", Toast.LENGTH_SHORT).show()
         rebuildResults()
     }
 }

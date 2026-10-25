@@ -2,45 +2,46 @@ package com.mizan.launcher.data
 
 import android.content.Context
 import android.net.Uri
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import com.mizan.launcher.core.HomeCache
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.TrackerSlim
-import com.mizan.launcher.core.TrackerStatus
 import java.io.File
 import kotlin.concurrent.thread
 
 /**
- * Launcher side of the TVShowsMoviesTracker sync bridge (v1.8).
- * Contract: tvshows-movies-tracker/LAUNCHER_SYNC.md — a read-only
- * ContentProvider (authority [AUTHORITY], guarded by the normal-level
- * [PERMISSION]) serving JSON snapshots, plus a `call("mark_watched")`
- * write-back that QUEUES an action the tracker applies at its next
- * boot. The tracker stays the single writer of watch progress.
+ * Launcher side of the library (v1.8–v3.6: the
+ * TVShowsMoviesTracker sync bridge; v3.7: the launcher IS
+ * the tracker). The tracker app's ContentProvider
+ * (authority [AUTHORITY], permission [PERMISSION]) is
+ * contacted ONLY by the one-time import
+ * ([runOneTimeImport]) while [Prefs.libraryImported] is
+ * false — first v3.7 launch, while the tracker app is
+ * still present. After the flag is set, every tracker
+ * read/write is local-only (filesDir/tracker/, the
+ * v3.6 indexed store, extended in v3.7 with missed.txt):
+ * a missing tracker app reads as normal, never as an
+ * error state, and the user uninstalls the tracker app
+ * himself after verifying v3.7 (see the v3.7 test
+ * script). The tracker app's data is never deleted
+ * from here.
  *
- * Everything here is FAIL-OPEN: tracker not installed, provider
- * missing, SecurityException, empty or malformed snapshots — all of
- * it reads as "no data" and the Tracker view falls back to the plain
- * clock/weather home. Queries run on a background thread only; the
- * view renders from the last-good cache in prefs.
+ * Everything here is FAIL-OPEN: no store, corrupt
+ * store, missing TMDB key — all of it reads as "no
+ * data" for the affected section and the home falls
+ * back to its other rows. Snapshot reads run on
+ * worker threads; the home build reads only the memo.
  *
- * v1.9 hardening (Haythem's TV: tracker fine, launcher showed
- * NOTHING, silently): every fetch is now CLASSIFIED
- * (core/TrackerStatus.Kind) and the kind is persisted — the
- * diagnostics `tracker:` line and the Tracker view's fallback line
- * are worded from it, so no failure is silent anymore. And the
- * resume throttle stamps ONLY a successful fetch WITH data
- * ([K_LAST_OK]): v1.8 stamped the attempt time even when every
- * query failed, so one permission-blocked first fetch poisoned
- * retries for a minute at a time. After an error or an empty
- * result, EVERY resume retries.
+ * v3.7 TMDB: direct TMDB with the launcher's own key
+ * (Prefs.tmdbKey, data/TmdbDirect) is now the ONLY
+ * TMDB path — the tracker-proxy tmdb_get path died
+ * with the tracker app. The key stays masked in
+ * Settings, prefs-only, never in diagnostics/logs.
  */
 object TrackerClient {
 
     const val TRACKER_PKG = "com.haythem.tvtracker"
-    const val TRACKER_LABEL = "TV Shows & Movies Tracker"
     const val AUTHORITY = "com.haythem.tvtracker.launcherdata"
     const val PERMISSION = "com.haythem.tvtracker.permission.LAUNCHER_READ"
 
@@ -57,6 +58,14 @@ object TrackerClient {
         val tracked: List<TrackerLogic.TrackedShow>,
         /** v2.0: the /foryou picks (tracker ≥ 1.14.4; empty on older). */
         val forYou: List<TrackerLogic.ForYouPick> = emptyList(),
+        /**
+         * v3.7: the missed row's items (data/LibraryLocal's
+         * missed worker, filesDir/tracker/missed.txt) —
+         * passed unwatched episodes, most overdue first.
+         * Empty on the legacy prefs path (missed lives
+         * only in the store); the store path fills it.
+         */
+        val missed: List<TrackerLogic.UpNextItem> = emptyList(),
         /**
          * v2.1: the RAW /tracked JSON — the Library/details screens
          * need watched episode SETS + muted flags, which the parsed
@@ -108,10 +117,6 @@ object TrackerClient {
     private const val K_FORYOU_UPDATED = "tracker_cache_foryou_updated"
     private const val K_UPDATED = "tracker_cache_updated"
     private const val K_FETCHED = "tracker_cache_fetched"
-    /** v1.9: the classified outcome of the last fetch (TrackerStatus.Kind name). */
-    private const val K_STATE = "tracker_state"
-    /** v1.9: last fetch that returned DATA — the only throttle stamp. */
-    private const val K_LAST_OK = "tracker_last_ok"
 
     /** Provider paths in fetch order — mirrors the keys list in refreshAsync. */
     private val PATHS = listOf("upnext", "continue", "movies", "tracked", "foryou")
@@ -321,6 +326,14 @@ object TrackerClient {
      * it on this same worker, so the NEXT open is
      * store-backed. Returns the snapshot that filled
      * the memo (or null when neither source had data).
+     *
+     * v3.7: before the legacy fallback, the one-time
+     * import gets its chance (provider present + flag
+     * unset) — so a first v3.7 launch with the tracker
+     * app still installed imports its record into the
+     * store instead of parsing stale prefs. After the
+     * flag is set, this function never touches the
+     * provider again.
      */
     fun storeOrCached(ctx: Context): Snapshots? {
         return try {
@@ -341,11 +354,31 @@ object TrackerClient {
                 }
                 return snap
             }
+            if (!Prefs(ctx).libraryImported) {
+                if (runOneTimeImport(ctx) == ImportResult.IMPORTED) {
+                    storeSnapshots(ctx)?.let { snap ->
+                        cachedMemo = snap
+                        cachedMemoKey = memoKeyFor(
+                            RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
+                        )
+                        return snap
+                    }
+                }
+            }
             val snap = cached(ctx)
-            if (snap.hasData) {
+            if (snap.hasData && snap.trackedJson.isNotBlank()) {
                 try {
                     val lib = com.mizan.launcher.core.LibraryLogic.parseLibShows(snap.trackedJson)
-                    TrackerStoreDisk.writeFromSnapshots(ctx, snap, lib)
+                    if (TrackerStoreDisk.writeFromSnapshots(ctx, snap, lib) != null) {
+                        // The store now holds the local record
+                        // (built from prefs/mirror because the
+                        // provider is already gone): the import
+                        // phase is closed, and the eviction gate
+                        // sees a landed store like a fetch's.
+                        Prefs(ctx).libraryImported = true
+                        storeFetchLanded = true
+                        storeDiag = TrackerStoreDisk.diagLine(ctx, "store")
+                    }
                 } catch (e: Exception) {
                     // A failed store write leaves prefs/mirror as the source.
                 }
@@ -353,6 +386,176 @@ object TrackerClient {
             snap
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * v3.7: install the store snapshot as the memo (worker
+     * threads only). Local writes (data/LibraryLocal) call
+     * this after every successful store mutation, so the
+     * home's next build reads the new data from the memo
+     * without any fetch — a mark-watched updates its own
+     * rows immediately; it does not trigger a refresh.
+     * A missing/corrupt store leaves the memo untouched
+     * (the previous memo keeps rendering).
+     */
+    fun installStoreMemo(ctx: Context) {
+        try {
+            storeSnapshots(ctx)?.let { snap ->
+                cachedMemo = snap
+                cachedMemoKey = memoKeyFor(
+                    RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
+                )
+            }
+        } catch (e: Exception) {
+            // Memo install is best-effort; the next chain run re-reads the store.
+        }
+    }
+
+    /** v3.7: stamp a local library change (diagnostics `library:` line). Worker threads only. */
+    fun noteLocalChange(ctx: Context) {
+        try {
+            Prefs(ctx).libraryLastChange = System.currentTimeMillis()
+        } catch (e: Exception) {
+            // Diagnostics bookkeeping only.
+        }
+    }
+
+    /**
+     * v3.7: the diagnostics `library:` line — the
+     * launcher-library replacement for the old `tracker:`
+     * line. Counts only (never titles, ids, or URLs):
+     * store titles, episode files, missed items, last
+     * local change, and whether the import phase is
+     * still pending. A missing store is a normal state
+     * (fresh install / store not built yet), never an
+     * error state — the tracker app's absence is never
+     * reported here at all.
+     */
+    fun libraryDiag(ctx: Context): String {
+        return try {
+            val idx = TrackerStoreDisk.readIndex(ctx)
+            val missed = try {
+                TrackerStoreDisk.readMissed(ctx).size
+            } catch (e: Exception) {
+                0
+            }
+            val last = try {
+                Prefs(ctx).libraryLastChange
+            } catch (e: Exception) {
+                0L
+            }
+            val whenText = if (last > 0) {
+                java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault())
+                    .format(java.util.Date(last))
+            } else {
+                "never"
+            }
+            val imported = try {
+                Prefs(ctx).libraryImported
+            } catch (e: Exception) {
+                false
+            }
+            val base = if (idx == null) {
+                "no library store yet"
+            } else {
+                "${idx.titles} titles · ${idx.episodeFiles} episode files"
+            }
+            base + " · missed $missed · last change $whenText" +
+                if (imported) "" else " · import pending"
+        } catch (e: Exception) {
+            "unavailable"
+        }
+    }
+
+    // ------------------------------------------------------------ v3.7 one-time import (sole provider contact)
+
+    /** Outcome of one import attempt (see [runOneTimeImport]). */
+    enum class ImportResult { IMPORTED, STORE_CURRENT, NO_PROVIDER, NO_DATA }
+
+    /** Serializes import attempts (chain step + explicit refresh may race on first launch). */
+    private val importLock = Any()
+
+    /**
+     * v3.7: the ONE-TIME final import — the sole provider
+     * contact left in the app, and only while
+     * [Prefs.libraryImported] is false. Reads all five
+     * provider paths once, writes everything into the
+     * launcher-owned store (atomic tmp+rename, index
+     * last, via the fetch worker's writer), and closes
+     * the phase:
+     * - IMPORTED: the store now holds the provider record.
+     * - STORE_CURRENT: a valid store already holds a
+     *   provider generation at least as new as the
+     *   provider's stamp — no overwrite (this preserves
+     *   any local writes since the store was built).
+     * - NO_PROVIDER: the tracker app is absent — phase
+     *   closed with nothing to import; the store (or an
+     *   empty library) is the record from here on.
+     * - NO_DATA: the provider answered nothing usable
+     *   (or the store write failed) — the flag stays
+     *   unset so a later launch retries, and the old
+     *   store / prefs fallback keeps rendering (never
+     *   an empty home from a failed import).
+     * Callers must never call this when the flag is
+     * already set — after the flag, no provider query
+     * runs on any path, including this one.
+     */
+    fun runOneTimeImport(ctx: Context): ImportResult {
+        synchronized(importLock) {
+            val appCtx = ctx.applicationContext
+            val prefs = Prefs(appCtx)
+            if (prefs.libraryImported) return ImportResult.IMPORTED
+            return try {
+                if (!isInstalled(appCtx)) {
+                    prefs.libraryImported = true
+                    return ImportResult.NO_PROVIDER
+                }
+                val results = PATHS.map { queryPath(appCtx, it) }
+                val anyAnswered = results.any { it.json != null }
+                if (!anyAnswered) return ImportResult.NO_DATA
+                val now = System.currentTimeMillis()
+                var updated = 0L
+                for (r in results) updated = maxOf(updated, r.updated)
+                val snap = Snapshots(
+                    upNext = TrackerLogic.parseUpNext(results[0].json),
+                    cont = TrackerLogic.parseContinue(results[1].json),
+                    movies = TrackerLogic.parseMovies(results[2].json),
+                    tracked = TrackerLogic.parseTrackedShows(results[3].json),
+                    forYou = TrackerLogic.parseForYou(results[4].json),
+                    trackedJson = results[3].json ?: "",
+                    updated = updated,
+                    forYouUpdated = results[4].updated,
+                    fetchedAt = now
+                )
+                if (!snap.hasData) return ImportResult.NO_DATA
+                val storeIdx = TrackerStoreDisk.readIndex(appCtx)
+                if (storeIdx != null && TrackerStoreDisk.storeValid(appCtx) &&
+                    updated > 0 && updated <= storeIdx.updated
+                ) {
+                    prefs.libraryImported = true
+                    return ImportResult.STORE_CURRENT
+                }
+                val lib = try {
+                    com.mizan.launcher.core.LibraryLogic.parseLibShows(snap.trackedJson)
+                } catch (e: Exception) {
+                    return ImportResult.NO_DATA
+                }
+                val written = TrackerStoreDisk.writeFromSnapshots(appCtx, snap, lib)
+                if (written == null) {
+                    // A refused line or failed write leaves the
+                    // old store untouched (the writer encodes
+                    // everything before moving any file).
+                    return ImportResult.NO_DATA
+                }
+                storeFetchLanded = true
+                storeDiag = TrackerStoreDisk.diagLine(appCtx, "store")
+                prefs.libraryImported = true
+                ImportResult.IMPORTED
+            } catch (e: Exception) {
+                try { Prefs.noteError(appCtx, "libraryImport", e) } catch (_: Exception) { }
+                ImportResult.NO_DATA
+            }
         }
     }
 
@@ -401,49 +604,13 @@ object TrackerClient {
         )
 
     /** The persisted fetch state, for diagnostics + the fallback line. */
-    data class Status(
-        val kind: TrackerStatus.Kind,
-        val installed: Boolean
-    )
-
-    /**
-     * The last fetch's classified state. Before any fetch has run,
-     * the state is derived: not installed → NOT_INSTALLED, installed
-     * with an empty cache → EMPTY, installed with cached data → NONE.
-     */
-    fun status(ctx: Context): Status {
-        val installed = isInstalled(ctx)
-        val stored = try {
-            PrefsSafe.strOrNull(prefs(ctx), K_STATE)
-        } catch (e: Exception) {
-            null
-        }
-        val kind = when {
-            stored != null -> try {
-                TrackerStatus.Kind.valueOf(stored)
-            } catch (e: Exception) {
-                null
-            }
-            !installed -> TrackerStatus.Kind.NOT_INSTALLED
-            cached(ctx).hasData -> TrackerStatus.Kind.NONE
-            else -> TrackerStatus.Kind.EMPTY
-        } ?: if (!installed) {
-            TrackerStatus.Kind.NOT_INSTALLED
-        } else if (cached(ctx).hasData) {
-            TrackerStatus.Kind.NONE
-        } else {
-            TrackerStatus.Kind.EMPTY
-        }
-        return Status(kind, installed)
-    }
-
-    private fun saveKind(ctx: Context, kind: TrackerStatus.Kind) {
-        try {
-            prefs(ctx).edit().putString(K_STATE, kind.name).apply()
-        } catch (e: Exception) {
-            // State is diagnostics bookkeeping; never break a fetch.
-        }
-    }
+    // v3.7: the old fetch-classification Status is gone with
+    // the provider fetch — the diagnostics `library:` line
+    // (libraryDiag above) replaces the `tracker:` line, and
+    // a missing tracker app is a normal state, not a
+    // classified failure. (core/TrackerStatus stays in the
+    // tree unused by live code; it is not referenced from
+    // any v3.7 path.)
 
     private fun prefs(ctx: Context) =
         ctx.getSharedPreferences("mizan_launcher", Context.MODE_PRIVATE)
@@ -639,122 +806,49 @@ object TrackerClient {
      * runs on the main thread when the snapshots changed OR the
      * classified state changed (the fallback wording depends on it).
      */
+    /**
+     * v3.7: LOCAL-ONLY refresh — the old provider fetch is
+     * gone. Re-reads the launcher-owned store into the memo
+     * on a background thread and posts [onChanged] on the
+     * main thread when the store fingerprint moved (or the
+     * memo was empty). Explicit user actions (Refresh home
+     * data, section Retry, Details/Library opens) use this
+     * to pick up local writes; it never fetches anything
+     * and never triggers a chain run by itself (the memo
+     * install is the refresh). The one exception: while
+     * the import flag is unset, this ALSO runs the
+     * one-time import first (same gate as the cold chain)
+     * — after the flag, no provider query runs here.
+     * [force] is kept for call-site compatibility; a
+     * local store read is cheap, so there is no throttle
+     * any more (the v1.9 throttle existed for provider
+     * round-trips). Single-flight via [inFlight].
+     */
     fun refreshAsync(ctx: Context, force: Boolean = false, onChanged: () -> Unit) {
         val appCtx = ctx.applicationContext
-        val before = try {
-            val p = prefs(appCtx)
-            listOf(
-                PrefsSafe.strOrNull(p, K_UPNEXT), PrefsSafe.strOrNull(p, K_CONTINUE),
-                PrefsSafe.strOrNull(p, K_MOVIES), PrefsSafe.strOrNull(p, K_TRACKED),
-                PrefsSafe.strOrNull(p, K_FORYOU)
-            )
-        } catch (e: Exception) {
-            null
-        }
         if (inFlight) return
-        val lastOk = try {
-            PrefsSafe.long(prefs(appCtx), K_LAST_OK, 0L)
-        } catch (e: Exception) {
-            0L
-        }
-        if (!force && lastOk > 0 &&
-            System.currentTimeMillis() - lastOk < REFRESH_MIN_AGE_MS
-        ) {
-            return
-        }
-        val kindBefore = status(appCtx).kind
         inFlight = true
-        thread(name = "mizan-tracker-fetch") {
+        thread(name = "mizan-library-refresh") {
             try {
-                val results = listOf(
-                    queryPath(appCtx, "upnext"),
-                    queryPath(appCtx, "continue"),
-                    queryPath(appCtx, "movies"),
-                    queryPath(appCtx, "tracked"),
-                    // v2.0: older trackers (< 1.14.4) have no /foryou
-                    // path — the query just yields nothing and the
-                    // For You section stays absent (fail-open).
-                    queryPath(appCtx, "foryou")
-                )
-                val now = System.currentTimeMillis()
-                val editor = prefs(appCtx).edit()
-                editor.putLong(K_FETCHED, now)
-                val keys = listOf(K_UPNEXT, K_CONTINUE, K_MOVIES, K_TRACKED, K_FORYOU)
-                var updated = 0L
-                var anyAnswered = false
-                var security = false
-                for ((i, r) in results.withIndex()) {
-                    if (r.security) security = true
-                    val json = r.json ?: continue
-                    anyAnswered = true
-                    editor.putString(keys[i], json)
-                    updated = maxOf(updated, r.updated)
-                    if (keys[i] == K_FORYOU && r.updated > 0) {
-                        editor.putLong(K_FORYOU_UPDATED, r.updated)
-                    }
+                if (!Prefs(appCtx).libraryImported) runOneTimeImport(appCtx)
+                val beforeFp = cachedMemo?.storeFingerprint
+                val snap = storeSnapshots(appCtx)
+                var changed = false
+                if (snap != null) {
+                    cachedMemo = snap
+                    cachedMemoKey = memoKeyFor(
+                        RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
+                    )
+                    changed = beforeFp == null || beforeFp != snap.storeFingerprint
                 }
-                if (updated > 0) editor.putLong(K_UPDATED, updated)
-                editor.apply()
-                // v3.1 (ask 38): mirror every answered snapshot to
-                // the on-disk home cache on this same worker, so the
-                // home keeps rendering last-known data even if prefs
-                // are later wiped. putSnapshot refuses credential-
-                // shaped payloads; snapshot JSON carries none.
-                warmDiskMirror(appCtx)
-                for ((i, r) in results.withIndex()) {
-                    val json = r.json ?: continue
-                    HomeCacheDisk.putSnapshot(appCtx, PATHS[i], json, now)
-                }
-                // v3.6: the fresh prefs write above must
-                // NOT be shadowed by a stale store memo —
-                // drop the memo so this parse reads the
-                // just-written documents, then write the
-                // store from that one parse (fetch worker
-                // only; the home never pays for it).
-                cachedMemo = null
-                cachedMemoKey = null
-                val snap = cached(appCtx)
-                if (snap.hasData && snap.trackedJson.isNotBlank()) {
-                    try {
-                        val lib = com.mizan.launcher.core.LibraryLogic.parseLibShows(snap.trackedJson)
-                        if (TrackerStoreDisk.writeFromSnapshots(appCtx, snap, lib) != null) {
-                            storeFetchLanded = true
-                            storeDiag = TrackerStoreDisk.diagLine(appCtx, "store")
-                        }
-                    } catch (e: Exception) {
-                        // A failed store write leaves prefs/mirror as the source.
-                    }
-                }
-                val kind = TrackerStatus.classify(
-                    installed = isInstalled(appCtx),
-                    anyAnswered = anyAnswered,
-                    securityError = security,
-                    hasData = snap.hasData
-                )
-                saveKind(appCtx, kind)
-                // The throttle stamp is earned only by data (v1.9).
-                if (snap.hasData) {
-                    try {
-                        prefs(appCtx).edit().putLong(K_LAST_OK, now).apply()
-                    } catch (e: Exception) {
-                        // Bookkeeping only.
-                    }
-                }
-                val after = listOf(
-                    results[0].json ?: before?.get(0), results[1].json ?: before?.get(1),
-                    results[2].json ?: before?.get(2), results[3].json ?: before?.get(3),
-                    results[4].json ?: before?.get(4)
-                )
-                if (after != before || kind != kindBefore) {
-                    // v3.5 (spec §35): a fetch landing re-runs the
-                    // cold chain (TRACKER_FULL re-parses since the
-                    // memo key moved, MATCH re-fingerprints and
-                    // re-streams only on change) — this is how a
-                    // post-survival fetch refreshes the home
-                    // without any home build ever parsing. The
-                    // chain is single-flight, so a landing during
-                    // the survival run dedupes against it.
-                    ColdChainRunner.kickAfterFetch(appCtx)
+                // The missed worker is stamp-gated (cheap
+                // no-op when its input fingerprint and age
+                // are unchanged) — an explicit refresh
+                // (force) is a legitimate moment to force a
+                // full recompute, so a show whose earlier
+                // fetch failed gets retried.
+                try { LibraryLocal.kickMissedAll(appCtx, force = force) } catch (_: Exception) { }
+                if (changed) {
                     Handler(Looper.getMainLooper()).post {
                         try { onChanged() } catch (e: Exception) {
                             // A caller's rebuild must never kill the poster.
@@ -762,7 +856,7 @@ object TrackerClient {
                     }
                 }
             } catch (e: Exception) {
-                Prefs.noteError(appCtx, "trackerFetch", e)
+                Prefs.noteError(appCtx, "libraryRefresh", e)
             } finally {
                 inFlight = false
             }
@@ -797,111 +891,15 @@ object TrackerClient {
         }
     }
 
-    /**
-     * Queue an action with the tracker (fire-and-forget on a
-     * background thread). The tracker applies queued actions at its
-     * next boot; the launcher reflects them locally in the meantime
-     * (marked-set / For You overlay). Contract: LAUNCHER_SYNC.md —
-     * call(method, arg = tmdb id as string, extras).
-     */
-    private fun callAction(ctx: Context, method: String, tmdbId: Long, extras: Bundle) {
-        val appCtx = ctx.applicationContext
-        thread(name = "mizan-tracker-call") {
-            try {
-                appCtx.contentResolver.call(BASE, method, tmdbId.toString(), extras)
-            } catch (e: SecurityException) {
-                // The read permission is missing, so writes are too —
-                // record the state the diagnostics line reports (v1.9).
-                saveKind(appCtx, TrackerStatus.Kind.PERMISSION)
-                Prefs.noteError(appCtx, "trackerCall:$method", e)
-            } catch (e: Exception) {
-                Prefs.noteError(appCtx, "trackerCall:$method", e)
-            }
-        }
-    }
-
-    /**
-     * Queue a mark-watched action. Movies pass season/episode 0
-     * (per contract).
-     */
-    fun markWatched(ctx: Context, tmdbId: Long, type: String, season: Int, episode: Int) {
-        val extras = Bundle()
-        extras.putString("type", if (type == "movie") "movie" else "tv")
-        extras.putInt("season", season)
-        extras.putInt("episode", episode)
-        callAction(ctx, "mark_watched", tmdbId, extras)
-    }
-
-    /**
-     * v2.0: queue an add_title action from a For You pick ("Add to my
-     * list"). The tracker adds the title as planned at its next boot.
-     * [releaseDate] is "" when unknown — For You picks carry no date.
-     */
-    fun addTitle(
-        ctx: Context,
-        tmdbId: Long,
-        type: String,
-        title: String,
-        poster: String,
-        releaseDate: String
-    ) {
-        val extras = Bundle()
-        extras.putString("type", if (type == "movie") "movie" else "tv")
-        extras.putString("title", title)
-        extras.putString("poster", poster)
-        extras.putString("releaseDate", releaseDate)
-        callAction(ctx, "add_title", tmdbId, extras)
-    }
-
-    /** v2.0: queue a dismiss_foryou action ("Not interested"). */
-    fun dismissForYou(ctx: Context, tmdbId: Long, type: String) {
-        val extras = Bundle()
-        extras.putString("type", if (type == "movie") "movie" else "tv")
-        callAction(ctx, "dismiss_foryou", tmdbId, extras)
-    }
-
-    // ------------------------------------------------------------ v2.1 actions
-
-    /**
-     * v2.1: queue an unwatch action — one episode off a show, or a
-     * movie's watched flag cleared (season/episode 0 for movies).
-     */
-    fun unwatch(ctx: Context, tmdbId: Long, type: String, season: Int, episode: Int) {
-        val extras = Bundle()
-        extras.putString("type", if (type == "movie") "movie" else "tv")
-        extras.putInt("season", season)
-        extras.putInt("episode", episode)
-        callAction(ctx, "unwatch", tmdbId, extras)
-    }
-
-    /**
-     * v2.1: queue a mark_season action. [episodesCsv] is the
-     * authoritative episode list (core/LibraryLogic.seasonCsv of
-     * the TMDB season payload) — the drain quickWatches exactly
-     * those episodes.
-     */
-    fun markSeason(ctx: Context, tmdbId: Long, season: Int, episodesCsv: String) {
-        val extras = Bundle()
-        extras.putString("type", "tv")
-        extras.putInt("season", season)
-        extras.putString("episodes", episodesCsv)
-        callAction(ctx, "mark_season", tmdbId, extras)
-    }
-
-    /** v2.1: queue a remove_title action (watchlist + progress go). */
-    fun removeTitle(ctx: Context, tmdbId: Long, type: String) {
-        val extras = Bundle()
-        extras.putString("type", if (type == "movie") "movie" else "tv")
-        callAction(ctx, "remove_title", tmdbId, extras)
-    }
-
-    /** v2.1: queue a set_muted action ("1" mutes, "0" unmutes). */
-    fun setMuted(ctx: Context, tmdbId: Long, type: String, muted: Boolean) {
-        val extras = Bundle()
-        extras.putString("type", if (type == "movie") "movie" else "tv")
-        extras.putString("muted", if (muted) "1" else "0")
-        callAction(ctx, "set_muted", tmdbId, extras)
-    }
+    // ------------------------------------------------------------ v3.7 local writes
+    // The provider action queue (mark_watched / add_title /
+    // dismiss_foryou / unwatch / mark_season / remove_title /
+    // set_muted) is DELETED with the tracker link. Every write
+    // now goes through data/LibraryLocal (local store writes,
+    // serialized worker) via data/TrackerActions, which keeps
+    // the instant-render overlay + marked-set behaviour. The
+    // only provider contact left is the one-time import's
+    // queryPath above — reads, never calls.
 
     // ------------------------------------------------------------ v2.1 tmdb_get
 
@@ -1008,70 +1006,34 @@ object TrackerClient {
     }
 
     /**
-     * One synchronous tmdb_get through the tracker provider (the
-     * tracker's own key, never exposed). MUST be called off the main
-     * thread (the provider itself does up to 10 s of HTTP inline).
-     * Returns (json, null) on success or (null, error) with the
-     * contract's error string; local failures (provider missing,
-     * SecurityException) map to "io" for the caller's state machine
-     * and are recorded via Prefs.noteError.
-     */
-    private fun tmdbGetViaProxy(appCtx: Context, path: String): Pair<String?, String?> {
-        return try {
-            val bundle = appCtx.contentResolver.call(BASE, "tmdb_get", path, null)
-            val json = bundle?.getString("json")
-            val error = bundle?.getString("error")
-            when {
-                json != null -> json to null
-                error != null -> null to error
-                else -> null to "io"
-            }
-        } catch (e: SecurityException) {
-            saveKind(appCtx, TrackerStatus.Kind.PERMISSION)
-            Prefs.noteError(appCtx, "tmdbGet", e)
-            null to "io"
-        } catch (e: Exception) {
-            Prefs.noteError(appCtx, "tmdbGet", e)
-            null to "io"
-        }
-    }
-
-    /**
-     * One TMDB read with the v2.6 resolution order
-     * (core/LibraryLogic.resolveTmdb): the tracker proxy first;
-     * on ANY proxy error, direct TMDB with the launcher's own key
-     * (Prefs.tmdbKey, data/TmdbDirect) when one is set. Both paths
-     * failing surfaces the PROXY error. MUST be called off the
-     * main thread (up to 10 s of HTTP per path). Every outcome is
-     * persisted for the diagnostics `tmdb:` line — which path won,
-     * and, on failure, the direct path's own token (or that no
-     * launcher key is set). Key material is never persisted.
+     * v3.7: one TMDB read, DIRECT ONLY, with the launcher's
+     * own key (Prefs.tmdbKey, data/TmdbDirect). The
+     * tracker-proxy tmdb_get path is deleted with the
+     * tracker link — there is no proxy any more, and no
+     * fallback to one. MUST be called off the main thread
+     * (up to 10 s of HTTP per path). Every outcome is
+     * persisted for the diagnostics `tmdb:` line; key
+     * material is never persisted. A missing key reports
+     * "no_key" (the user-visible line names the launcher
+     * Settings page, not the tracker app — see
+     * core/LibraryLogic.tmdbUserLine).
      */
     fun tmdbGetBlocking(ctx: Context, path: String): Pair<String?, String?> {
         val appCtx = ctx.applicationContext
-        val proxy = tmdbGetViaProxy(appCtx, path)
         val key = try {
             Prefs(appCtx).tmdbKey
         } catch (e: Exception) {
             ""
         }
-        val resolution = com.mizan.launcher.core.LibraryLogic.resolveTmdb(
-            proxy.first, proxy.second, key.isNotBlank()
-        ) {
-            TmdbDirect.getBlocking(appCtx, path, key)
+        if (key.isBlank()) {
+            noteTmdbOutcome(appCtx, "no_key", "not_set")
+            return null to "no_key"
         }
-        val outcome = when {
-            resolution.json != null && resolution.viaDirect -> "ok_direct"
-            resolution.json != null -> "ok"
-            else -> resolution.error ?: "io"
-        }
-        val directNote = when {
-            resolution.json != null -> ""
-            key.isBlank() -> "not_set"
-            else -> resolution.directError ?: ""
-        }
+        val (json, error) = TmdbDirect.getBlocking(appCtx, path, key)
+        val outcome = if (json != null) "ok_direct" else error ?: "io"
+        val directNote = if (json != null) "" else error ?: ""
         noteTmdbOutcome(appCtx, outcome, directNote)
-        return resolution.json to resolution.error
+        return json to error
     }
 
     /**

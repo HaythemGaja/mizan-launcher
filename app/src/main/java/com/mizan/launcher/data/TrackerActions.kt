@@ -6,22 +6,28 @@ import android.content.Intent
 import android.widget.Toast
 import com.mizan.launcher.core.LibraryLogic
 import com.mizan.launcher.core.TrackerLogic
-import com.mizan.launcher.ui.ArrowPinDialog
 
 /**
- * The launcher's tracker WRITE path (v2.1) — one funnel for every
- * queued action from the Library, details and TMDB-search screens
- * (plus the For You "Add to my list"). Each write does three things:
- *   1. queues the action with the tracker (data/TrackerClient —
- *      the tracker applies it at its next boot; it stays the
- *      single writer of watch progress),
- *   2. mirrors it into this profile's generalized pending overlay
- *      (core/LibraryLogic) so every surface renders it instantly,
+ * The launcher's library WRITE path (v2.1 queue funnel;
+ * v3.7 local funnel) — one funnel for every write from
+ * the Library, details and TMDB-search screens (plus the
+ * For You "Add to my list"). Each write does three things:
+ *   1. writes it to the launcher-owned store
+ *      (data/LibraryLocal — the launcher IS the tracker
+ *      now; there is no tracker app to queue to),
+ *   2. mirrors it into this profile's generalized pending
+ *      overlay (core/LibraryLogic) so every surface
+ *      renders it instantly (the overlay is written
+ *      FIRST, synchronously, so the screen never waits
+ *      on the store worker),
  *   3. where the write is a watched-mark, ALSO updates the v1.8
  *      marked-set, so the home view's Up Next / hero
  *      hiding behaves exactly as if the mark had been tapped there
- *      (and an unwatch un-hides).
- * Nothing here blocks; the client calls are fire-and-forget.
+ *      (and an unwatch un-hides). The marked entry retires
+ *      when the store proves it (home prepare prunes with
+ *      a store-backed stamp — see MainActivity).
+ * Nothing here blocks; the store calls are fire-and-forget
+ * workers, and the overlay already rendered the result.
  */
 object TrackerActions {
 
@@ -51,10 +57,10 @@ object TrackerActions {
             )
         )
         if (watched) {
-            TrackerClient.markWatched(activity, tmdbId, "tv", season, episode)
+            LibraryLocal.queueEpisodeToggle(activity, prefs, tmdbId, season, episode, true)
             addMarked(prefs, tmdbId, "tv", season, episode, now)
         } else {
-            TrackerClient.unwatch(activity, tmdbId, "tv", season, episode)
+            LibraryLocal.queueEpisodeToggle(activity, prefs, tmdbId, season, episode, false)
             removeMarked(prefs, tmdbId, "tv", season, episode)
         }
     }
@@ -67,8 +73,7 @@ object TrackerActions {
         season: Int,
         episodes: List<LibraryLogic.EpisodeInfo>
     ) {
-        val csv = LibraryLogic.seasonCsv(episodes)
-        if (csv.isEmpty()) return
+        if (episodes.isEmpty()) return
         val now = System.currentTimeMillis()
         save(
             prefs,
@@ -76,7 +81,11 @@ object TrackerActions {
                 overlay(prefs), tmdbId, season, episodes.map { it.number }, now
             )
         )
-        TrackerClient.markSeason(activity, tmdbId, season, csv)
+        // The CSV was the tracker's drain input; the
+        // local writer takes the episode numbers directly.
+        LibraryLocal.queueSeasonMark(
+            activity, prefs, tmdbId, season, episodes.map { it.number }
+        )
         for (ep in episodes) {
             if (ep.number > 0) addMarked(prefs, tmdbId, "tv", season, ep.number, now)
         }
@@ -88,11 +97,10 @@ object TrackerActions {
     fun toggleMovie(activity: Activity, prefs: Prefs, tmdbId: Long, watched: Boolean) {
         val now = System.currentTimeMillis()
         save(prefs, LibraryLogic.withMovieToggle(overlay(prefs), tmdbId, watched, now))
+        LibraryLocal.queueMovieToggle(activity, prefs, tmdbId, watched)
         if (watched) {
-            TrackerClient.markWatched(activity, tmdbId, "movie", 0, 0)
             addMarked(prefs, tmdbId, "movie", 0, 0, now)
         } else {
-            TrackerClient.unwatch(activity, tmdbId, "movie", 0, 0)
             removeMarked(prefs, tmdbId, "movie", 0, 0)
         }
     }
@@ -107,7 +115,8 @@ object TrackerActions {
         type: String,
         title: String,
         poster: String,
-        releaseDate: String
+        releaseDate: String,
+        onDone: (() -> Unit)? = null
     ) {
         save(
             prefs,
@@ -116,7 +125,7 @@ object TrackerActions {
                 System.currentTimeMillis()
             )
         )
-        TrackerClient.addTitle(activity, tmdbId, type, title, poster, releaseDate)
+        LibraryLocal.queueAddTitle(activity, prefs, tmdbId, type, title, poster, releaseDate, onDone)
     }
 
     /** Remove a title from the library (queued + hidden at once). */
@@ -131,7 +140,7 @@ object TrackerActions {
         val kept = TrackerLogic.decodeMarked(prefs.trackerMarked)
             .filter { !(it.tmdbId == tmdbId && it.type == type) }
         prefs.trackerMarked = TrackerLogic.encodeMarked(kept)
-        TrackerClient.removeTitle(activity, tmdbId, type)
+        LibraryLocal.queueRemoveTitle(activity, prefs, tmdbId, type)
     }
 
     /** Mute/unmute a title's notifications (queued + rendered at once). */
@@ -148,7 +157,7 @@ object TrackerActions {
                 overlay(prefs), type, tmdbId, muted, System.currentTimeMillis()
             )
         )
-        TrackerClient.setMuted(activity, tmdbId, type, muted)
+        LibraryLocal.queueMuted(activity, prefs, tmdbId, type, muted)
     }
 
     // ------------------------------------------------------------ marked-set sync
@@ -169,60 +178,35 @@ object TrackerActions {
         )
     }
 
-    // ------------------------------------------------------------ open the tracker
-
     /**
-     * Open the tracker app from a v2.1 screen, through the same
-     * arrow-lock gate the Search screen uses (the tracker is a
-     * launchable app; if this profile locked it, the lock applies).
-     * Absent tracker → toast.
+     * v3.7: home mark-watched (Up Next / Missed / hero
+     * menus). Home marks never touched the pending
+     * overlay — only the marked set (which hides the
+     * card at once) — plus the store write, which
+     * removes the upnext line and advances the show.
+     * No overlay entry is created here, matching the
+     * pre-v3.7 home behaviour exactly.
      */
-    fun openTrackerGated(activity: Activity, prefs: Prefs, accent: Int) {
-        val doOpen: () -> Unit = {
-            try {
-                val intent = AppLoader.launchIntent(
-                    activity.packageManager, TrackerClient.TRACKER_PKG
-                )
-                if (intent == null) {
-                    Toast.makeText(
-                        activity, "TV Shows & Movies Tracker isn't installed",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    prefs.recordLaunch(TrackerClient.TRACKER_PKG)
-                    activity.startActivity(intent)
-                }
-            } catch (e: Exception) {
-                Prefs.noteError(activity, "v21OpenTracker", e)
-                Toast.makeText(activity, "Couldn't open the tracker", Toast.LENGTH_SHORT).show()
-            }
+    fun markWatchedHome(
+        activity: Activity,
+        prefs: Prefs,
+        tmdbId: Long,
+        type: String,
+        season: Int,
+        episode: Int
+    ) {
+        val now = System.currentTimeMillis()
+        if (type == "movie") {
+            LibraryLocal.queueMovieToggle(activity, prefs, tmdbId, true)
+        } else {
+            LibraryLocal.queueEpisodeToggle(activity, prefs, tmdbId, season, episode, true)
         }
-        if (!prefs.lockedApps.contains(TrackerClient.TRACKER_PKG)) {
-            doOpen()
-            return
-        }
-        val stored = prefs.arrowPin
-        if (stored.isEmpty()) {
-            ArrowPinDialog.showSetup(
-                activity = activity,
-                title = "Set an arrow pattern to lock TV Shows & Movies Tracker",
-                accent = accent,
-                onDone = { seq ->
-                    prefs.arrowPin = seq
-                    Toast.makeText(activity, "Arrow lock set", Toast.LENGTH_SHORT).show()
-                    doOpen()
-                }
-            )
-            return
-        }
-        ArrowPinDialog.showUnlock(
-            activity = activity,
-            title = "TV Shows & Movies Tracker is locked",
-            accent = accent,
-            storedEncoded = stored,
-            onSuccess = { doOpen() },
-            onWrongAttempt = { prefs.arrowAttempts = prefs.arrowAttempts + 1 }
-        )
+        addMarked(prefs, tmdbId, type, season, episode, now)
+    }
+
+    /** v3.7: dismiss a For You pick (local foryou-section write; the overlay hides it at once in the caller). */
+    fun dismissForYou(activity: Activity, tmdbId: Long, type: String) {
+        LibraryLocal.queueDismissForYou(activity, tmdbId, type)
     }
 
     /** Confirm-then-remove dialog shared by Library + details. */
@@ -237,13 +221,12 @@ object TrackerActions {
         AlertDialog.Builder(activity)
             .setTitle("Remove “$title”?")
             .setMessage(
-                "It leaves your library and its watch progress is cleared. " +
-                    "This applies next time the tracker app opens."
+                "It leaves your library and its watch progress is cleared."
             )
             .setPositiveButton("Remove") { _, _ ->
                 removeTitle(activity, prefs, tmdbId, type)
                 Toast.makeText(
-                    activity, "Removed — applies next time the tracker opens",
+                    activity, "Removed from your library",
                     Toast.LENGTH_SHORT
                 ).show()
                 onRemoved()

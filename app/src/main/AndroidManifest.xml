@@ -12,9 +12,16 @@
          (non-dangerous) permission; it cannot kill foreground
          processes and disables nothing. -->
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
-    <!-- Tracker view (v1.8): read TVShowsMoviesTracker's launcher sync
-         snapshots. Normal-level permission declared by the tracker;
-         granted at install, no runtime prompt. -->
+    <!-- v3.7: kept ONLY for the one-time tracker import
+         (data/TrackerClient.runOneTimeImport, flag-gated on
+         first v3.7 launch while the tracker app is still
+         installed). Normal-level permission declared by the
+         tracker; granted at install, no runtime prompt.
+         After the import flag is set, NO code path queries
+         the tracker provider again — the entry is then
+         unused but harmless (and removing it before the
+         import would break the import with a
+         SecurityException). -->
     <uses-permission android:name="com.haythem.tvtracker.permission.LAUNCHER_READ" />
 
     <uses-feature
@@ -26,7 +33,8 @@
 
     <!-- Package visibility for the TV app list. -->
     <queries>
-        <!-- Tracker view (v1.8): the sync provider + installed checks. -->
+        <!-- v3.7: the one-time import's provider + installed
+             checks only (see the LAUNCHER_READ note above). -->
         <package android:name="com.haythem.tvtracker" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
