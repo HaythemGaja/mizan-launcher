@@ -1441,12 +1441,19 @@ fun main() {
         // Watch only): a saved "tracker" migrates to Watch
         // through the codec, and the picker lists TV / IPTV /
         // Watch only. isTracker() no longer exists.
-        check("homestyle: saved tracker migrates to watch (v3.8 removal); iptv survives",
+        // v3.9 RE-PINNED (IPTV home style removed — Haythem:
+        // keep Watch, remove the IPTV view; IPTV lives under
+        // Watch's Live tab): a saved "iptv" migrates to Watch
+        // too, and the picker lists TV / Watch only. The raw
+        // isIptv("iptv") predicate stays true for a legacy key
+        // that bypassed normalize (fallback code only) — the
+        // codec itself never returns "iptv" anymore.
+        check("homestyle: saved tracker + iptv migrate to watch (v3.9 removal)",
             HomeStyle.normalize("tracker") == "watch" &&
-                HomeStyle.normalize("iptv") == "iptv" && HomeStyle.isIptv("iptv") &&
+                HomeStyle.normalize("iptv") == "watch" && HomeStyle.isIptv("iptv") &&
                 !HomeStyle.isIptv("tv") && !HomeStyle.isIptv("watch"))
-        check("homestyle: value list is tv, iptv, watch (the Settings picker order, v3.8)",
-            HomeStyle.VALUES == listOf("tv", "iptv", "watch"))
+        check("homestyle: value list is tv, watch (the Settings picker order, v3.9)",
+            HomeStyle.VALUES == listOf("tv", "watch"))
         check("homestyle: watch survives the codec (v2.3, kept in v3.8)",
             HomeStyle.normalize("watch") == "watch" && HomeStyle.isWatch("watch") &&
                 !HomeStyle.isWatch("tv") &&
@@ -3284,6 +3291,9 @@ fun main() {
     // ---------- (57) v3.7: launcher IS the tracker + Missed row + poster fix ----------
     section57()
 
+    // ---------- (59) v3.9: hero/Missed memo fix + diagnostics, Trending IPTV play, IPTV→Watch/Live, portrait cards ----------
+    section59()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -4007,9 +4017,12 @@ fun section42() {
         // launcher IS the tracker + Missed row + poster fix, spec §37).
         // Re-pinned in v3.8 (intentional version bump 3.7/30 → 3.8/31 —
         // slim Missed + hero + poster backfill + Watch-only + bar fit, spec §38).
-        check("v25src: the app version is 3.8 / code 31 (bumped by v3.8)",
-            gradleSrc.contains("versionName = \"3.8\"") &&
-                gradleSrc.contains("versionCode = 31"))
+        // Re-pinned in v3.9 (intentional version bump 3.8/31 → 3.9/32 —
+        // hero/Missed memo fix + diagnostics + Trending IPTV play + IPTV→Watch/Live
+        // merge + portrait Up Next/Missed cards, spec §39).
+        check("v25src: the app version is 3.9 / code 32 (bumped by v3.9)",
+            gradleSrc.contains("versionName = \"3.9\"") &&
+                gradleSrc.contains("versionCode = 32"))
     }
 }
 
@@ -4089,31 +4102,29 @@ fun section46() {
         // v3.8 RE-PINNED: trackerTabs() is renamed watchTabs()
         // (Tracker-only style removed); the tabs themselves are
         // unchanged, and a raw "tracker" key still lands on them.
+        // v3.9 RE-PINNED (IPTV home style removed — Haythem:
+        // keep Watch, remove the IPTV view): Watch gains the
+        // Live tab LAST (Home · Library · Apps · Live), the
+        // IPTV tab list is deleted (iptvTabs() no longer
+        // exists — IPTV lives inside Watch via Live), and a
+        // raw "iptv" key lands on the Watch tabs like the
+        // legacy "tracker" key already did.
         val tTabs = HomeTabs.watchTabs()
-        check("tabs: Watch = Home · Library · Apps",
-            tTabs.map { it.id } == listOf("home", "library", "apps") &&
-                tTabs.map { it.label } == listOf("Home", "Library", "Apps"))
+        check("tabs: Watch = Home · Library · Apps · Live (v3.9)",
+            tTabs.map { it.id } == listOf("home", "library", "apps", "live") &&
+                tTabs.map { it.label } == listOf("Home", "Library", "Apps", "Live"))
         check("tabs: only Home is selected, and it is STAY",
             tTabs.count { it.selected } == 1 &&
                 tTabs.first().action == HomeTabs.Action.STAY)
-        check("tabs: Library opens the library; Apps jumps focus to All Apps",
+        check("tabs: Library opens the library; Apps jumps focus to All Apps; Live opens IPTV Live",
             tTabs[1].action == HomeTabs.Action.OPEN_LIBRARY &&
-                tTabs[2].action == HomeTabs.Action.FOCUS_ALL_APPS)
-        val iTabs = HomeTabs.iptvTabs()
-        check("tabs: IPTV = Home · Live · Movies · Series · Guide · Apps",
-            iTabs.map { it.id } == listOf("home", "live", "movies", "series", "guide", "apps"))
-        check("tabs: IPTV actions map Live/Movies/Series/Guide/Apps",
-            iTabs[1].action == HomeTabs.Action.OPEN_IPTV_LIVE &&
-                iTabs[2].action == HomeTabs.Action.OPEN_IPTV_MOVIES &&
-                iTabs[3].action == HomeTabs.Action.OPEN_IPTV_SERIES &&
-                iTabs[4].action == HomeTabs.Action.OPEN_GUIDE &&
-                iTabs[5].action == HomeTabs.Action.FOCUS_ALL_APPS &&
-                iTabs.count { it.selected } == 1)
-        check("tabs: the TV style has no tab bar; watch (and legacy tracker key) share one; iptv gets its own",
+                tTabs[2].action == HomeTabs.Action.FOCUS_ALL_APPS &&
+                tTabs[3].action == HomeTabs.Action.OPEN_IPTV_LIVE)
+        check("tabs: the TV style has no tab bar; watch (and legacy tracker/iptv keys) share the Watch tabs",
             HomeTabs.forStyle("tv").isEmpty() &&
                 HomeTabs.forStyle("tracker") == tTabs &&
                 HomeTabs.forStyle("watch") == tTabs &&
-                HomeTabs.forStyle("iptv") == iTabs)
+                HomeTabs.forStyle("iptv") == tTabs)
 
         // --- the hero primary decision (Open in Tracker demotion) ---
         // Re-pinned in v2.9: the decision moved to
@@ -4170,9 +4181,15 @@ fun section46() {
         // the colddwarm threads are deleted — the cold chain
         // replaces them (see section 55); the staged shell +
         // deferred prepares + shell lines below still hold.
+        // v3.9 RE-PINNED (the v3.8 empty-memo home): the
+        // prepare gate is no longer "not coldStart" alone —
+        // a recreated activity with a warm static memo now
+        // prepares on its first build (coldStart is
+        // per-instance, the memo is process-static). Only a
+        // genuinely memo-less build still defers.
         check("v28src: cold start is staged (warm worker + deferred prepares + shell lines)",
             mainSrc.contains("ColdChainRunner.kickAfterSurvival(appCtx)") &&
-                mainSrc.contains("if (trackerStyle && !coldStart) {") &&
+                mainSrc.contains("if (trackerStyle && (!coldStart || TrackerClient.memoOrNull() != null)) {") &&
                 mainSrc.contains("try { prepareTrackerData() } catch (e: Throwable)") &&
                 mainSrc.contains("Loading your library…") &&
                 mainSrc.contains("Loading your channels…"))
@@ -4266,23 +4283,28 @@ fun section47() {
     val defCfg = StatusBarConfig()
     check("bar: the TV style has no unified bar (it keeps its own top bar)",
         UnifiedBar.items("tv", defCfg, guest = false, safeMode = false).isEmpty())
-    check("bar: tracker = 3 tabs, then info + glyphs + the config's tiles as pills",
+    // v3.9 RE-PINNED (Watch tabs grew the Live tab): the
+    // unified bar carries 4 TAB pills now (Home · Library ·
+    // Apps · Live), and a legacy "iptv" key yields the same
+    // 4 (it migrates to Watch) instead of the old 6-tab
+    // IPTV bar, which no longer exists.
+    check("bar: tracker = 4 tabs, then info + glyphs + the config's tiles as pills (v3.9)",
         UnifiedBar.items("tracker", defCfg, guest = false, safeMode = false) == listOf(
-            UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB,
+            UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB,
             UnifiedBar.Item.INFO, UnifiedBar.Item.GLYPHS,
             UnifiedBar.Item.TILE_ALL_APPS, UnifiedBar.Item.TILE_SEARCH,
             UnifiedBar.Item.TILE_PROFILE, UnifiedBar.Item.TILE_SETTINGS
         ))
-    check("bar: the watch style shares the tracker's bar shape (6 IPTV tabs on iptv)",
+    check("bar: the watch style shares the tracker's bar shape (4 tabs on watch and on legacy iptv, v3.9)",
         UnifiedBar.items("watch", defCfg, guest = false, safeMode = false).count {
             it == UnifiedBar.Item.TAB
-        } == 3 &&
+        } == 4 &&
             UnifiedBar.items("iptv", defCfg, guest = false, safeMode = false).count {
                 it == UnifiedBar.Item.TAB
-            } == 6)
+            } == 4)
     check("bar: showBar off hides the whole status group but never the tabs",
         UnifiedBar.items("tracker", defCfg.copy(showBar = false), guest = false, safeMode = false) ==
-            listOf(UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB))
+            listOf(UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB, UnifiedBar.Item.TAB))
     check("bar: clock+date+weather all off drops the info pill; glyphs follow their toggles",
         UnifiedBar.items(
             "tracker",
@@ -4369,9 +4391,14 @@ fun section47() {
     // comes from core/Artwork, but Up Next cards are
     // poster-first now — landscape is true only when the
     // poster is blank and a backdrop exists.
+    // v3.9 RE-PINNED (Up Next/Missed are portrait now): the
+    // item.-receiver landscape expression belonged to the
+    // old Up Next landscape call, which is gone. The fit
+    // decision itself is unchanged and still exercised by
+    // Continue (trackerItem receiver) and Soon (false).
     check("v29src: landscape cards take the fit decision from core/Artwork",
         mainSrc.contains("Artwork.landscapeFit(imageLandscape)") &&
-            mainSrc.contains("imageLandscape = item.poster.isBlank() && item.backdrop.isNotBlank()") &&
+            mainSrc.contains("imageLandscape = trackerItem.poster.isBlank() && trackerItem.backdrop.isNotBlank()") &&
             mainSrc.contains("imageLandscape = false"))
     val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
     check("v29src: the settings app pickers no longer scan on the main thread",
@@ -4955,9 +4982,10 @@ fun section50() {
         // Re-pinned in v3.6 (intentional version bump 3.5/28 → 3.6/29, spec §36).
         // Re-pinned in v3.7 (intentional version bump 3.6/29 → 3.7/30, spec §37).
         // Re-pinned in v3.8 (intentional version bump 3.7/30 → 3.8/31, spec §38).
-        check("v31src: the version bump is 3.8 / code 31",
-            src("app/build.gradle.kts").contains("versionCode = 31") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.8\""))
+        // Re-pinned in v3.9 (intentional version bump 3.8/31 → 3.9/32, spec §39).
+        check("v31src: the version bump is 3.9 / code 32",
+            src("app/build.gradle.kts").contains("versionCode = 32") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.9\""))
     }
 }
 
@@ -5544,9 +5572,14 @@ fun section54() {
                 settingsSrc.contains("sortGrabMove(-1)") &&
                 settingsSrc.contains("sortGrabDrop()") &&
                 settingsSrc.contains("sortGrabCancel()"))
-        check("src54: sort page offers hold-OK on tracker and TV rows, IPTV lists folders hide/show",
+        // v3.9 RE-PINNED (IPTV home style removed): the
+        // IPTV sort branch (folders/favorites/apps
+        // hide-show list) is deleted with the style — a
+        // migrated profile sorts via the Watch branch.
+        // Hold-OK grab on the remaining rows is unchanged.
+        check("src54: sort page offers hold-OK on tracker and TV rows; no IPTV sort branch (v3.9)",
             settingsSrc.contains("hold OK to grab") &&
-                settingsSrc.contains("listOf(\"folders\", \"favorites\", \"apps\")"))
+                !settingsSrc.contains("Home style: IPTV — catalogue rows"))
         check("src54: diagnostics gains the slim proof line",
             settingsSrc.contains("slim: \" +"))
         check("src54: hero rule untouched (missed first, today stays out)",
@@ -6412,11 +6445,17 @@ fun section57() {
                 listOf(blankCont), mapOf("tv|702" to "/cc.jpg"))[0].poster == "/cc.jpg")
 
         // ---- (4) Watch-only: codec, tabs, picker, family ----
-        check("watch58: stored tracker decodes to watch; picker is tv/iptv/watch",
+        // v3.9 RE-PINNED (IPTV home style removed): the picker
+        // is TV / Watch, and a stored "iptv" profile decodes
+        // to Watch and renders the Watch tabs (now with Live).
+        check("watch58: stored tracker + iptv decode to watch; picker is tv/watch (v3.9 re-pin)",
             HomeStyle.normalize("tracker") == "watch" &&
-                HomeStyle.VALUES == listOf("tv", "iptv", "watch"))
-        check("watch58: migrated profile renders Watch tabs (Home/Library/Apps)",
+                HomeStyle.normalize("iptv") == "watch" &&
+                HomeStyle.VALUES == listOf("tv", "watch"))
+        check("watch58: migrated profile renders Watch tabs (Home/Library/Apps/Live, v3.9 re-pin)",
             HomeTabs.forStyle(HomeStyle.normalize("tracker")) ==
+                HomeTabs.watchTabs() &&
+                HomeTabs.forStyle(HomeStyle.normalize("iptv")) ==
                 HomeTabs.watchTabs() &&
                 HomeTabs.forStyle("watch") == HomeTabs.watchTabs())
 
@@ -6462,8 +6501,13 @@ fun section57() {
             !styleSrc.contains("isTracker") && !styleSrc.contains("TRACKER =") &&
                 !mainSrc.contains("fun isTrackerStyle") &&
                 !settingsSrc.contains("HomeStyle.TRACKER"))
-        check("src58: picker lists exactly TV/IPTV/Watch",
-            settingsSrc.contains("HomeStyle.IPTV") &&
+        // v3.9 RE-PINNED (IPTV home style removed — Haythem:
+        // keep Watch, remove the IPTV view): the picker lists
+        // TV / Watch only. HomeStyle.IPTV must not appear in
+        // SettingsActivity at all anymore (the IPTV Settings
+        // page itself is untouched — it is not a home style).
+        check("src58: picker lists exactly TV/Watch (v3.9 re-pin)",
+            !settingsSrc.contains("HomeStyle.IPTV") &&
                 settingsSrc.contains("HomeStyle.WATCH") &&
                 !settingsSrc.contains("HomeStyle.TRACKER"))
         check("src58: media-home family is Watch-only",
@@ -6480,5 +6524,169 @@ fun section57() {
             !mainSrc.contains("startForegroundService(") &&
                 !clientSrc.contains("startForegroundService(") &&
                 !localSrc.contains("startForegroundService("))
+    }
+}
+
+/** v3.9 checks — hero/Missed memo fix + diagnostics, Trending IPTV play, IPTV→Watch/Live, portrait cards (spec §39). */
+fun section59() {
+    run {
+        // ---- (1) Hero/Missed: the memo, not the data, was empty ----
+        // Pure codec: a stored "iptv" profile is Watch now, and
+        // Watch tabs are Home · Library · Apps · Live (Live last,
+        // opening IPTV Live — the single IPTV entry point).
+        check("watch59: final styles are TV/Watch only; iptv migrates to Watch",
+            HomeStyle.VALUES == listOf("tv", "watch") &&
+                HomeStyle.normalize("iptv") == "watch" &&
+                HomeStyle.normalize("tracker") == "watch" &&
+                HomeStyle.normalize("ipad") == "tv" &&
+                HomeStyle.normalize(null) == "tv")
+        val wTabs = HomeTabs.watchTabs()
+        check("watch59: Watch tabs are Home · Library · Apps · Live, Live last",
+            wTabs.map { it.id } == listOf("home", "library", "apps", "live") &&
+                wTabs[3].action == HomeTabs.Action.OPEN_IPTV_LIVE &&
+                wTabs.count { it.selected } == 1)
+        check("watch59: raw iptv/tracker keys land on the Watch tabs (defensive mapping)",
+            HomeTabs.forStyle("iptv") == wTabs &&
+                HomeTabs.forStyle("tracker") == wTabs &&
+                HomeTabs.forStyle("tv").isEmpty())
+
+        // ---- (2) The per-show missed filter (the contamination regression) ----
+        // Two shows share S2 E3 coordinates; only show A has a
+        // pending mark at S2 E3. The old folded-set filter
+        // dropped BOTH; the per-show lookup drops only A.
+        val pending = listOf(
+            LibraryLogic.PendingTitle(type = "tv", tmdbId = 100L, at = 1L,
+                watchedAdd = setOf("2x3")),
+            LibraryLogic.PendingTitle(type = "tv", tmdbId = 200L, at = 2L,
+                watchedAdd = setOf("9x9"))
+        )
+        check("missed59: pendingWatchedFor scopes adds/removes to one show",
+            LibraryLogic.pendingWatchedFor(pending, 100L) ==
+                (setOf("2x3") to emptySet<String>()) &&
+                LibraryLogic.pendingWatchedFor(pending, 200L) ==
+                (setOf("9x9") to emptySet<String>()) &&
+                LibraryLogic.pendingWatchedFor(pending, 300L) ==
+                (emptySet<String>() to emptySet<String>()))
+        val missedA = TrackerLogic.UpNextItem(
+            100L, "Show A", "S2 E3", "2026-10-20", "/pa.jpg", "/ba.jpg", "", 2, 3, "tv")
+        val missedB = TrackerLogic.UpNextItem(
+            200L, "Show B", "S2 E3", "2026-10-20", "/pb.jpg", "/bb.jpg", "", 2, 3, "tv")
+        val kept = TrackerLogic.missedRow(
+            listOf(missedA, missedB),
+            { item ->
+                val (adds, removes) =
+                    LibraryLogic.pendingWatchedFor(pending, item.tmdbId)
+                val epKey = LibraryLogic.epKey(item.season, item.episode)
+                epKey in adds && epKey !in removes
+            },
+            "2026-10-25"
+        )
+        check("missed59: same S/E coords on another show do NOT filter its missed item",
+            kept == listOf(missedB))
+
+        // ---- (3) Trending matching (the matcher itself; wiring is src-pinned below) ----
+        val keyed = listOf(
+            WatchMatch.keyOnlyOf(201, "Lupin", 0),
+            WatchMatch.keyOnlyOf(202, "Dune", 2021)
+        )
+        val trendTv = WatchMatch.matchAllKeyed(
+            listOf(WatchMatch.TrackerTitle(11, "tv", "Lupin", 0)), keyed)
+        val trendMovies = WatchMatch.matchAllKeyed(
+            listOf(WatchMatch.TrackerTitle(12, "movie", "Dune", 2021)), keyed)
+        val trendAbsent = WatchMatch.matchAllKeyed(
+            listOf(WatchMatch.TrackerTitle(13, "tv", "Absent Show", 0)), keyed)
+        check("trend59: a Trending title present in the catalogue matches (tv + movie)",
+            trendTv[11L]?.iptvId == 201L && trendMovies[12L]?.iptvId == 202L)
+        check("trend59: a Trending title absent from the catalogue gets no match (Details only)",
+            trendAbsent.isEmpty())
+        check("trend59: the IPTV badge shows only on matched cards",
+            WatchMatch.cardBadge(true) != null && WatchMatch.cardBadge(false) == null)
+
+        // ---- (4) Source checks: the Android-side wirings (the sim cannot render views) ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        val appSrc = src("app/src/main/java/com/mizan/launcher/App.kt")
+        val playSrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+        val discSrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+        check("src59: a warm static memo renders tracker rows on a fresh instance's first build",
+            mainSrc.contains("(!coldStart || TrackerClient.memoOrNull() != null)"))
+        check("src59: the store-memo warm exists and is kicked from App + the memo-less build",
+            clientSrc.contains("fun warmStoreMemoAsync") &&
+                appSrc.contains("warmStoreMemoAsync") &&
+                mainSrc.contains("warmStoreMemoAsync"))
+        check("src59: memo source is tracked per install (store/slim/prefs) for the home line",
+            clientSrc.contains("memoSource = \"store\"") &&
+                clientSrc.contains("memoSource = \"slim\"") &&
+                clientSrc.contains("memoSource = \"prefs\"") &&
+                clientSrc.contains("fun noteHomeBuild") &&
+                clientSrc.contains("lastHomeDiag"))
+        check("src59: the home build records its working set; diagnostics prints it as home:",
+            mainSrc.contains("noteHomeBuild(") &&
+                mainSrc.contains("memoSource") &&
+                settingsSrc.contains("home: \" +") &&
+                settingsSrc.contains("lastHomeDiag"))
+        check("src59: the Missed filter scopes pending adds/removes per show",
+            mainSrc.contains("pendingWatchedFor(pending, item.tmdbId)"))
+        check("src59: Trending TV + Movies join the visible-first match set and warm up",
+            mainSrc.contains("WatchMatch.TrackerTitle(item.id, \"tv\", item.title, 0)") &&
+                mainSrc.contains("WatchMatch.TrackerTitle(item.id, \"movie\", item.title, year)") &&
+                mainSrc.contains("for (item in dTrendTv.take(window)) displayShow(item.id)"))
+        check("src59: a matched Trending show without a library twin plays S1 E1 (no mark token)",
+            mainSrc.contains("\"\", 1, 1, \"tv\"") &&
+                mainSrc.contains("inSnapshot = false"))
+        check("src59: the full pass matches Trending from disk (type-strict, library wins duplicates)",
+            playSrc.contains("trendingTitlesFromDisk") &&
+                playSrc.contains("trendShows") &&
+                playSrc.contains("trendMovies") &&
+                playSrc.contains("libKeys") &&
+                discSrc.contains("fun trendingTitlesFromDisk"))
+        check("src59: Up Next + Missed cards are portrait (no landscape builder, no over-blur branch)",
+            run {
+                val body = mainSrc.substringAfter("private fun upNextCard")
+                    .substringBefore("private fun buildMergedUpNextSection")
+                body.contains("portraitCard(") &&
+                    !body.contains("landscapeCard(") &&
+                    !body.contains("FIT_COMPLETE")
+            } &&
+                run {
+                    val body = mainSrc.substringAfter("private fun buildMissedSection")
+                        .substringBefore("private fun portraitCard")
+                    body.contains("upNextCard(item)")
+                } &&
+                run {
+                    val body = mainSrc.substringAfter("private fun portraitCard")
+                        .substringBefore("private fun landscapeCard")
+                    body.contains("FIT_CENTER") && !body.contains("CENTER_CROP")
+                })
+        check("src59: scope guard — Continue cards keep landscapeCard; hero tier order untouched",
+            run {
+                val body = mainSrc.substringAfter("private fun buildTrackerContinueSection")
+                    .substringBefore("private fun soonCard")
+                body.contains("landscapeCard(")
+            } &&
+                run {
+                    // The tier order lives in core/TrackerLogic
+                    // (missed first, then today/blank) — v3.9
+                    // does not touch it; this pins the order
+                    // expression itself, not a version string.
+                    val logicSrc = src("app/src/main/java/com/mizan/launcher/core/TrackerLogic.kt")
+                    logicSrc.contains("val schedule = missed + upNextTier")
+                })
+        check("src59: picker lists TV/Watch only (explicit list, no IPTV key)",
+            run {
+                val body = settingsSrc.substringAfter("private fun pickHomeStyle")
+                    .substringBefore("private fun ")
+                body.contains("HomeStyle.WATCH") && !body.contains("HomeStyle.IPTV")
+            })
+        check("src59: no foreground service in the newly touched data files (standing rule)",
+            !playSrc.contains("startForegroundService(") &&
+                !discSrc.contains("startForegroundService(") &&
+                !mainSrc.contains("startForegroundService("))
     }
 }

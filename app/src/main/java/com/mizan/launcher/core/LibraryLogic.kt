@@ -389,6 +389,22 @@ object LibraryLogic {
     fun overlayEntry(overlay: List<PendingTitle>, type: String, tmdbId: Long): PendingTitle? =
         overlay.firstOrNull { it.type == type && it.tmdbId == tmdbId }
 
+    /**
+     * v3.9: this show's pending watched adds/removes only
+     * (watchedAdd/watchedRemove are bare "SxE" episode keys
+     * with NO show id in them). Callers must scope the
+     * lookup by tmdbId — the old home code folded EVERY
+     * show's adds into one set, so a pending mark for show
+     * A at S2 E3 filtered show B's missed S2 E3 as
+     * "watched" too (cross-show contamination). Returns
+     * (adds, removes), both empty when the show has no
+     * pending entry.
+     */
+    fun pendingWatchedFor(overlay: List<PendingTitle>, tmdbId: Long): Pair<Set<String>, Set<String>> {
+        val entry = overlayEntry(overlay, "tv", tmdbId) ?: return emptySet<String>() to emptySet()
+        return entry.watchedAdd to entry.watchedRemove
+    }
+
     /** A show's effective watched set: snapshot ∪ adds − removes. */
     fun effectiveWatched(show: LibShow, entry: PendingTitle?): Set<String> {
         if (entry == null) return show.watched

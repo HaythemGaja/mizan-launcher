@@ -276,7 +276,25 @@ object WatchPlay {
     private fun recomputeOnWorker(appCtx: Context): Boolean {
         val snap = TrackerClient.cached(appCtx)
         val titles = trackerTitles(snap)
-        val keyHash = titles.map { "${it.type}:${it.tmdbId}" }.sorted().joinToString(",").hashCode()
+        // v3.9: Trending titles (from the disk cache — no
+        // network, worker thread only) join the full-pass
+        // match set. Without them the full pass REPLACED
+        // the table with library-only matches, wiping the
+        // visible kick's Trending matches on the next
+        // cold-chain MATCH step — and the visible kick's
+        // once-per-instance guard would not re-kick
+        // mid-instance, so Trending play silently died
+        // after the first full pass. Trending titles join
+        // the fingerprint too, so a trending refresh
+        // triggers a fresh full pass and stale Trending
+        // matches drop (the table is replaced wholesale).
+        val trendTitles = try {
+            DiscoveryData.trendingTitlesFromDisk(appCtx)
+        } catch (e: Exception) {
+            emptyList<WatchMatch.TrackerTitle>()
+        }
+        val keyHash = (titles.map { "${it.type}:${it.tmdbId}" } +
+            trendTitles.map { "${it.type}:${it.tmdbId}" }).sorted().joinToString(",").hashCode()
         val counts = IptvClient.catalogueCounts(appCtx)
         val fp = WatchMatch.fingerprint(
             counts?.first ?: 0, counts?.second ?: 0,
@@ -300,7 +318,28 @@ object WatchPlay {
         val movies = WatchMatch.matchAllKeyed(
             titles.filter { it.type == "movie" }, keyed.second
         )
-        val all = shows.values + movies.values
+        // v3.9: Trending matches ride the same keyed lists
+        // (type-strict: tv titles against series keys only,
+        // movie titles against VOD keys only). NOTE:
+        // matchAllKeyed is keyed by BARE tmdbId, and TMDB
+        // ids overlap across types — so the merge below
+        // stays a LIST merge with type|id dedupe, never a
+        // map merge (a map merge would drop a movie that
+        // shares a show's numeric id). Library matches
+        // win over Trending duplicates; the library set
+        // itself is untouched (shows.values + movies.values
+        // exactly as before).
+        val trendShows = WatchMatch.matchAllKeyed(
+            trendTitles.filter { it.type == "tv" }, keyed.first
+        )
+        val trendMovies = WatchMatch.matchAllKeyed(
+            trendTitles.filter { it.type == "movie" }, keyed.second
+        )
+        val libKeys = (shows.values.map { "tv|${it.tmdbId}" } +
+            movies.values.map { "movie|${it.tmdbId}" }).toHashSet()
+        val all = shows.values + movies.values +
+            trendShows.values.filter { "tv|${it.tmdbId}" !in libKeys } +
+            trendMovies.values.filter { "movie|${it.tmdbId}" !in libKeys }
         try {
             p.edit()
                 .putString(K_MATCH_CACHE, WatchMatch.encodeMatches(all))

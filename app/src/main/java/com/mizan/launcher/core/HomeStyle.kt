@@ -34,6 +34,20 @@ package com.mizan.launcher.core
  * Tracker style now branches on Watch, and the Tracker style
  * name must never appear in the picker, the diagnostics
  * home-style label, or a rendered home.
+ *
+ * v3.9 REMOVED the IPTV home style (Haythem 2026-10-25:
+ * "merge iptv home view with watch home view under live,
+ * keep watch, remove iptv view"). The stored value "iptv"
+ * now decodes to [WATCH] the same way, so profiles saved
+ * with IPTV open in Watch with no migration step and no
+ * data loss — and the IPTV browser itself is NOT deleted:
+ * Watch's new Live tab opens IptvActivity (Live channels
+ * plus its Movies/Series/Guide/Favorites/Search tabs,
+ * locks, PiP, catch-up), so a migrated profile loses no
+ * IPTV feature, only the IPTV-as-home layout. The IPTV
+ * const stays for the dead-via-dispatch fallback code
+ * (buildIptvHome etc.) and SectionGuard's crash-fallback
+ * mapping — see spec §39. Final styles: TV / Watch.
  */
 object HomeStyle {
 
@@ -41,19 +55,19 @@ object HomeStyle {
     const val IPTV = "iptv"
     const val WATCH = "watch"
 
-    /** Picker order: TV first (the fallback), then IPTV, Watch. */
-    val VALUES: List<String> = listOf(TV, IPTV, WATCH)
+    /** Picker order: TV first (the fallback), then Watch (v3.9: IPTV removed). */
+    val VALUES: List<String> = listOf(TV, WATCH)
 
     /**
-     * The codec: the exact "iptv"/"watch" keys select those
-     * styles; the removed "tracker" key migrates to Watch;
+     * The codec: the exact "watch" key selects Watch; the
+     * removed "tracker" and "iptv" keys migrate to Watch;
      * EVERYTHING else — missing, empty, garbled, "TV" in the
      * wrong case, an old backup, and the removed "ipad" — is
      * TV.
      */
     fun normalize(raw: String?): String = when (raw) {
         "tracker" -> WATCH
-        IPTV -> IPTV
+        "iptv" -> WATCH
         WATCH -> WATCH
         else -> TV
     }

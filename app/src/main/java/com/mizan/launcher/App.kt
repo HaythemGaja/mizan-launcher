@@ -71,6 +71,22 @@ class App : Application() {
         } catch (e: Exception) {
             // Warm-up is an optimisation; the chain warms on survival.
         }
+        // v3.9: the store warm as a head start, beside the
+        // slim — on his TV the slim is absent (v1 rejected,
+        // v2 never written by the store path), so the slim
+        // kick alone left every fresh process memo-less
+        // until the cold chain's survival + steps. Store
+        // line reads are bounded like the slim's; both
+        // kicks are single-flight and neither parses JSON.
+        // If the slim hits first, the store warm's install
+        // replaces it with the record (a superset); if the
+        // store lands first, the slim kick refuses to
+        // clobber it (v3.8 guard).
+        try {
+            com.mizan.launcher.data.TrackerClient.warmStoreMemoAsync(this) { }
+        } catch (e: Exception) {
+            // Warm-up is an optimisation; the chain warms on survival.
+        }
     }
 
     /**

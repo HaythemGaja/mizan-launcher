@@ -166,6 +166,8 @@ class MainActivity : Activity() {
 
     /** v3.2: the memo-parse kick guard for prepareTrackerData (see there). */
     private var trackerMemoKickDone = false
+    /** v3.9: the store-memo warm kick guard for prepareTrackerData (see there). */
+    private var trackerStoreKickDone = false
     private var watchVisibleKickDone = false
 
     /** v3.2: wallpaper value the dynamic accent was last computed for (see resolveColours). */
@@ -695,7 +697,23 @@ class MainActivity : Activity() {
         // the fill path); the tracker refresh has no listener to
         // miss — the warm landing's rebuild runs both prepares
         // with every memo warm.
-        if (trackerStyle && !coldStart) {
+        // v3.9: the skip is about a NULL memo, not about the
+        // instance being new. The memo is process-static
+        // (TrackerClient) while coldStart is per-activity —
+        // so a recreated activity (system destroyed the old
+        // one while the user was in Settings, or the user
+        // pressed Home and came back) skipped the tracker
+        // prepare even though the memo was already warm,
+        // and rendered discovery-only rows: Up Next filled
+        // by Soon items, Trending present, but NO hero, NO
+        // Missed, NO Continue and NO My Library entry row —
+        // exactly the v3.8 on-device photo, while
+        // diagnostics (which reads the store index
+        // directly) correctly reported the store data. A
+        // warm memo now prepares on the first build of any
+        // instance; only a genuinely memo-less build still
+        // defers to the warm workers below.
+        if (trackerStyle && (!coldStart || TrackerClient.memoOrNull() != null)) {
             try { prepareTrackerData() } catch (e: Throwable) {
                 Prefs.noteError(this, "prepareTracker", e)
             }
@@ -1262,6 +1280,25 @@ class MainActivity : Activity() {
                     runOnUiThread { if (!isFinishing && !isDestroyed) rebuild() }
                 }
             }
+            // v3.9: the store warm — the slim above is absent
+            // on his TV (v1 rejected, v2 never written because
+            // the chain's store path never runs cached()'s
+            // slim writer), so a memo-less build waited on the
+            // cold chain's 10 s survival + steps, and a chain
+            // cancelled by navigation (onDestroy) restarted
+            // that clock. The store warm reads only bounded
+            // line files on its worker and rebuilds on
+            // landing, so tracker rows arrive without the
+            // survival wait and without a JSON parse.
+            // Guarded per activity instance, like the slim
+            // kick, so its landing rebuild cannot re-kick
+            // into a loop.
+            if (!trackerStoreKickDone) {
+                trackerStoreKickDone = true
+                TrackerClient.warmStoreMemoAsync(this) {
+                    runOnUiThread { if (!isFinishing && !isDestroyed) rebuild() }
+                }
+            }
             TrackerClient.Snapshots.EMPTY
         }
         tSnap = snap
@@ -1296,19 +1333,21 @@ class MainActivity : Activity() {
         // marks that landed after the worker ran.
         val markedKeys = marked.map { it.key() }.toHashSet()
         val pending = com.mizan.launcher.core.LibraryLogic.decodePending(prefs.pendingOverlay)
-        val overlayAdds = HashSet<String>()
-        val overlayRemoves = HashSet<String>()
-        for (entry in pending) {
-            if (entry.type != "tv") continue
-            overlayAdds.addAll(entry.watchedAdd)
-            overlayRemoves.addAll(entry.watchedRemove)
-        }
         tMissed = TrackerLogic.missedRow(
             snap.missed,
             { item ->
                 val key = TrackerLogic.markedKey(item.tmdbId, item.type, item.season, item.episode)
                 val epKey = com.mizan.launcher.core.LibraryLogic.epKey(item.season, item.episode)
-                (key in markedKeys || epKey in overlayAdds) && epKey !in overlayRemoves
+                // v3.9: pending adds/removes are scoped to
+                // THIS show (LibraryLogic.pendingWatchedFor).
+                // The old shape folded every show's adds
+                // into one set, so a pending mark for show A
+                // at SxE filtered show B's missed SxE as
+                // watched too — episode keys carry no show
+                // id, so only a per-show lookup is sound.
+                val (adds, removes) =
+                    com.mizan.launcher.core.LibraryLogic.pendingWatchedFor(pending, item.tmdbId)
+                (key in markedKeys || epKey in adds) && epKey !in removes
             },
             todayIso()
         )
@@ -1427,6 +1466,23 @@ class MainActivity : Activity() {
             val year = 0
             visibleTitles.add(WatchMatch.TrackerTitle(pick.id, pick.type, pick.title, year))
         }
+        // v3.9: Trending joins the visible-first match set.
+        // Before this, the set covered hero/Up Next/Missed/
+        // Continue/For You only, so a Trending title NEVER
+        // got an IPTV match, badge, or play path — tapping
+        // it only ever opened Details, which is exactly
+        // the "can't play trending with IPTV" report. Type
+        // must match (a Trending movie never matches
+        // series logic or vice versa); the year rides
+        // along for movies (deprioritizes only, as
+        // everywhere in Watch matching).
+        for (item in dTrendTv.take(window)) {
+            visibleTitles.add(WatchMatch.TrackerTitle(item.id, "tv", item.title, 0))
+        }
+        for (item in dTrendMovies.take(window)) {
+            val year = item.year.take(4).toIntOrNull() ?: 0
+            visibleTitles.add(WatchMatch.TrackerTitle(item.id, "movie", item.title, year))
+        }
         if (!watchVisibleKickDone && WatchPlay.visibleNeedsMatch(this, visibleTitles)) {
             watchVisibleKickDone = true
             WatchPlay.kickVisibleRecompute(this, visibleTitles)
@@ -1453,6 +1509,10 @@ class MainActivity : Activity() {
         // v3.7: Missed first window warms with Up Next.
         for (item in tMissed.take(window)) displayShow(item.tmdbId)
         for (item in tCont.take(window)) displayShow(item.tmdbId)
+        // v3.9: matched Trending shows warm with the rest,
+        // so a Trending card's play resolution does not
+        // pay a cold series-info fetch on the tap.
+        for (item in dTrendTv.take(window)) displayShow(item.id)
         WatchPlay.warmUpDisplayed(this, displayed) {
             // The warm-up reports from its own thread; rebuilds are UI work.
             runOnUiThread { if (isWatchStyle()) rebuild() }
@@ -3895,6 +3955,28 @@ class MainActivity : Activity() {
             dSoon, todayIso()
         )
         val sectionsCfg = prefs.trackerSectionsConfig()
+        // v3.9: record this build's working set for the
+        // diagnostics `home:` line (counts only, never
+        // titles/ids). This is what makes the next
+        // hero/Missed photo decisive instead of a guess:
+        // memo source (store/slim/prefs/none), raw snap
+        // counts, hero-candidate and Missed-row counts
+        // AFTER filtering, and each section's shown-state.
+        // A home with memo "none" and snap counts 0 is a
+        // memo-less shell frame (the v3.8 photo's shape);
+        // snap missed 12 with missedRow 0 points at the
+        // watched filter; missedRow 12 with missedShown
+        // false points at Sort sections.
+        com.mizan.launcher.data.TrackerClient.noteHomeBuild(
+            "memo: ${com.mizan.launcher.data.TrackerClient.memoSource}" +
+                " · snap up ${tSnap.upNext.size} · cont ${tSnap.cont.size}" +
+                " · missed ${tSnap.missed.size} · foryou ${tSnap.forYou.size}" +
+                " · tracked ${tSnap.tracked.size}" +
+                " · hero ${tHeroCandidates.size} · missedRow ${tMissed.size}" +
+                " · heroShown ${TrackerSections.isShown(sectionsCfg, TrackerSections.HERO)}" +
+                " · missedShown ${TrackerSections.isShown(sectionsCfg, TrackerSections.MISSED)}" +
+                " · coldStart $coldStart"
+        )
         val available = mapOf(
             TrackerSections.HERO to (hero != null),
             TrackerSections.UPNEXT to mergedUpNext.isNotEmpty(),
@@ -4838,25 +4920,31 @@ class MainActivity : Activity() {
         // v2.9: an unmatched card opens the in-launcher Details
         // (it used to open the tracker app) — ask F.25.
         val wMatch = watchMatch("tv", item.tmdbId)
-        // v2.8: Up Next rides the landscape rail ("Sx Ey"
-        // pill chip) — the Google-TV card language.
-        // v3.7 (poster fix): the POSTER leads, complete
-        // over its blurred fill (landscapeCard's
-        // FIT_COMPLETE branch), with the backdrop only
-        // when no poster exists. The old shape led with
-        // the backdrop whenever one existed, so Up Next
-        // cards read as landscape stills, not as the
-        // title's poster — the "poster is wired for Up
-        // Next" complaint in his 2026-10-24 report. A
-        // poster in a 16:9 frame is never centre-cropped
-        // (standing v2.9 rule); the hero keeps backdrops.
-        val card = landscapeCard(
-            imagePath = item.poster.ifBlank { item.backdrop },
-            imageSize = if (item.poster.isNotBlank()) "w342" else "w780",
-            imageLandscape = item.poster.isBlank() && item.backdrop.isNotBlank(),
+        // v3.9 (Haythem 2026-10-25 13:53): Up Next — and
+        // Missed, which renders through this same builder
+        // — are TALL 2:3 portrait poster cards now, like
+        // the Trending portraitCard. The blurred fill is
+        // GONE from these cards: no blurred copy of the
+        // art behind the poster, no over-blur fill branch
+        // at all. A true 2:3 poster fills the frame
+        // edge-to-edge; off-ratio art letterboxes via
+        // portraitCard's FIT_CENTER — complete, never
+        // centre-cropped (standing v2.8 rule: heads cut
+        // is unacceptable). The S/E indicator moves from
+        // an in-frame chip to the line below the title
+        // (portraitCard has no chip slot); the countdown /
+        // date label stays as meta, the ▶ IPTV badge, the
+        // play path and the mark-watched menu are
+        // unchanged. Scope is exactly Up Next + Missed:
+        // Continue cards keep landscapeCard (with its
+        // blurred fill), Soon cards, Trending cards, the
+        // hero backdrop and Library grid cards are all
+        // untouched.
+        val card = portraitCard(
+            posterPath = item.poster.ifBlank { item.backdrop },
             title = item.title,
             meta = countdown.ifBlank { item.sub },
-            chip = if (item.season > 0 && item.episode > 0) {
+            line2 = if (item.season > 0 && item.episode > 0) {
                 "S${item.season} E${item.episode}"
             } else {
                 null
@@ -5116,6 +5204,16 @@ class MainActivity : Activity() {
                     // twins (movie via its VOD entry; a show via
                     // its Up Next twin); everything else opens
                     // Details, as before.
+                    // v3.9: a matched show WITHOUT a library
+                    // twin now plays too — from the beginning
+                    // (S1 E1), inSnapshot = false so no
+                    // library mark-watched token rides along
+                    // (this show is not in the library). If
+                    // S1 E1 is not on IPTV, playUpNextItem's
+                    // failure path shows its toast and fails
+                    // open to Details, where the episode
+                    // picker lives — never a dead end, never
+                    // an invented later episode.
                     val twin = if (wMatch != null && item.type == "tv") {
                         tSnap.upNext.firstOrNull { it.tmdbId == item.id }
                     } else {
@@ -5128,6 +5226,13 @@ class MainActivity : Activity() {
                             )
                         )
                         twin != null -> playUpNextItem(twin, inSnapshot = true)
+                        wMatch != null && item.type == "tv" -> playUpNextItem(
+                            TrackerLogic.UpNextItem(
+                                item.id, item.title, "", "", item.poster, item.backdrop,
+                                "", 1, 1, "tv"
+                            ),
+                            inSnapshot = false
+                        )
                         else -> openTitleDetails(item.id, item.type, item.title, item.poster)
                     }
                 },

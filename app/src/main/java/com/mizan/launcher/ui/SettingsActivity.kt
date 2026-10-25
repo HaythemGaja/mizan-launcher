@@ -1354,29 +1354,11 @@ class SettingsActivity : Activity() {
                     content.addView(tv)
                 }
             }
-            hs.isIptv(prefs.homeStyle) -> {
-                content.addView(info(
-                    "Home style: IPTV — catalogue rows follow your IPTV store order " +
-                        "and can't be reordered here. Folders, Favorites and Apps " +
-                        "below can be hidden or shown."
-                ))
-                for (key in listOf("folders", "favorites", "apps")) {
-                    content.addView(row(
-                        "${rowLabel(key)} — " +
-                            if (layout.isRowVisible(key)) "Shown" else "Hidden",
-                        "Tap for options"
-                    ) {
-                        sortSectionDialog(rowLabel(key), canMove = false,
-                            shown = layout.isRowVisible(key)) { action ->
-                            if (action == SortAction.TOGGLE) {
-                                layout.rowVisible[key] = !layout.isRowVisible(key)
-                                saveLayout()
-                                rebuild()
-                            }
-                        }
-                    })
-                }
-            }
+            // v3.9: the IPTV branch is gone — the IPTV home
+            // style no longer exists (stored "iptv" profiles
+            // normalize to Watch, whose sort page is the
+            // Watch branch above). IPTV rows are not sorted
+            // here; the IPTV browser keeps its own order.
             else -> {
                 content.addView(info(
                     "Home style: TV — tap a row, then Move up, Move down, or " +
@@ -1612,31 +1594,33 @@ class SettingsActivity : Activity() {
         } else when {
             com.mizan.launcher.core.HomeStyle.isWatch(prefs.homeStyle) ->
                 "Watch — your library + IPTV playback of your titles"
-            com.mizan.launcher.core.HomeStyle.isIptv(prefs.homeStyle) ->
-                "IPTV — live TV, movies & series from your IPTV account"
+            // v3.9: no IPTV label anymore — a stored "iptv"
+            // profile normalizes to Watch, so the label
+            // above is what it prints. IPTV lives under
+            // Watch's Live tab, not as its own style.
             else ->
                 "TV — rows of apps under the hero bar"
         }
 
     /**
-     * Home style picker (v1.7, extended v1.8, reworked v2.2): three
+     * Home style picker (v1.7, extended v1.8, reworked v2.2): two
      * described choices, per profile. Switching is presentation-
      * only — favorites, folders, order and locks are shared, so
      * nothing is lost either way. (v2.2 removed the iPad style; a
-     * profile still set to it reads as TV — see core/HomeStyle.)
+     * profile still set to it reads as TV — see core/HomeStyle.
+     * v3.9 removed the IPTV style the same way; a profile still
+     * set to it reads as Watch, and IPTV lives under Watch's
+     * Live tab.)
      */
     private fun pickHomeStyle() {
-        // v3.8: Tracker-only style removed (Watch is the only
-        // library home) — picker lists TV / IPTV / Watch only.
+        // v3.9: IPTV home style removed — picker lists TV / Watch only.
         val keys = listOf(
             com.mizan.launcher.core.HomeStyle.TV,
-            com.mizan.launcher.core.HomeStyle.IPTV,
             com.mizan.launcher.core.HomeStyle.WATCH
         )
         val labels = arrayOf(
             "TV — rows of apps under the hero bar",
-            "IPTV — live TV, movies & series (set up your account in Settings › IPTV)",
-            "Watch — your library + IPTV playback of your titles (needs an IPTV account for playback)"
+            "Watch — your library + IPTV playback of your titles (needs an IPTV account for playback; IPTV live channels live under the Live tab)"
         )
         val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
         val builder = AlertDialog.Builder(this).setTitle("Home style")
@@ -1948,6 +1932,19 @@ class SettingsActivity : Activity() {
             // too: libraryDiag reads only the small index.)
             append(
                 "\nlibrary: " + com.mizan.launcher.data.TrackerClient.libraryDiag(this@SettingsActivity)
+            )
+            // v3.9: the home: line — the last Watch home
+            // build's working set (memo source, raw snap
+            // counts, hero-candidate and Missed-row counts
+            // after filtering, each section's shown-state,
+            // and whether the build was a cold first frame).
+            // This is the line that settles a future
+            // "no hero / no Missed" photo without code
+            // reading: it shows what the home ITSELF saw,
+            // while library: shows what the store holds.
+            // Counts only — never titles or ids.
+            append(
+                "\nhome: " + com.mizan.launcher.data.TrackerClient.lastHomeDiag
             )
             // v2.1: the tmdb: line — the last TMDB outcome, so a
             // details/search failure is diagnosable, incl. bad_path.

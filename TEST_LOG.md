@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-25 15:54 UTC
+Date: 2026-10-25 18:09 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -543,8 +543,8 @@ PASS  redditstatus: success summary shows the photo count
 PASS  redditstatus: failure summary names the last result
 PASS  homestyle: missing/garbage decodes to tv
 PASS  homestyle: saved ipad migrates to tv (v2.2 removal)
-PASS  homestyle: saved tracker migrates to watch (v3.8 removal); iptv survives
-PASS  homestyle: value list is tv, iptv, watch (the Settings picker order, v3.8)
+PASS  homestyle: saved tracker + iptv migrate to watch (v3.9 removal)
+PASS  homestyle: value list is tv, watch (the Settings picker order, v3.9)
 PASS  homestyle: watch survives the codec (v2.3, kept in v3.8)
 PASS  homestyle: root reorder permutes only the root slots
 PASS  homestyle: root reorder keeps nesting intact
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.8 / code 31 (bumped by v3.8)
+PASS  v25src: the app version is 3.9 / code 32 (bumped by v3.9)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -944,12 +944,10 @@ PASS  migrate: only the still-appended rows move (comingsoon drops on decode)
 PASS  migrate: a focus row parked mid-list (before foryou) is never itself moved
 PASS  migrate: the user's other rows keep their relative order exactly
 PASS  migrate: the hidden set drops removed keys; the splice still applies
-PASS  tabs: Watch = Home ? Library ? Apps
+PASS  tabs: Watch = Home ? Library ? Apps ? Live (v3.9)
 PASS  tabs: only Home is selected, and it is STAY
-PASS  tabs: Library opens the library; Apps jumps focus to All Apps
-PASS  tabs: IPTV = Home ? Live ? Movies ? Series ? Guide ? Apps
-PASS  tabs: IPTV actions map Live/Movies/Series/Guide/Apps
-PASS  tabs: the TV style has no tab bar; watch (and legacy tracker key) share one; iptv gets its own
+PASS  tabs: Library opens the library; Apps jumps focus to All Apps; Live opens IPTV Live
+PASS  tabs: the TV style has no tab bar; watch (and legacy tracker/iptv keys) share the Watch tabs
 PASS  hero: a matched title's primary is Play (v2.9 rule)
 PASS  hero: an unmatched title's primary is Details ? never the tracker
 PASS  startup: both timings recorded
@@ -982,8 +980,8 @@ PASS  art: a portrait poster in a landscape frame renders COMPLETE, never croppe
 PASS  art: a poster in its own 2:3 frame fills it
 PASS  art: the details header crops a real backdrop but fits a poster complete
 PASS  bar: the TV style has no unified bar (it keeps its own top bar)
-PASS  bar: tracker = 3 tabs, then info + glyphs + the config's tiles as pills
-PASS  bar: the watch style shares the tracker's bar shape (6 IPTV tabs on iptv)
+PASS  bar: tracker = 4 tabs, then info + glyphs + the config's tiles as pills (v3.9)
+PASS  bar: the watch style shares the tracker's bar shape (4 tabs on watch and on legacy iptv, v3.9)
 PASS  bar: showBar off hides the whole status group but never the tabs
 PASS  bar: clock+date+weather all off drops the info pill; glyphs follow their toggles
 PASS  bar: the guest pill appears only for a guest profile outside safe mode
@@ -1100,7 +1098,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.8 / code 31
+PASS  v31src: the version bump is 3.9 / code 32
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1211,7 +1209,7 @@ PASS  src54: App.onCreate kicks the memo warm and the discovery preload
 PASS  src54: discovery preload exists as a single-flight kick
 PASS  src54: cold-warm runs tracker and store warms in parallel
 PASS  src54: sort page holds, moves, drops and cancels a grab
-PASS  src54: sort page offers hold-OK on tracker and TV rows, IPTV lists folders hide/show
+PASS  src54: sort page offers hold-OK on tracker and TV rows; no IPTV sort branch (v3.9)
 PASS  src54: diagnostics gains the slim proof line
 PASS  src54: hero rule untouched (missed first, today stays out)
 PASS  chain55: fresh chain waits for survival, first step is tracker
@@ -1333,8 +1331,8 @@ PASS  hero58: For You fallback present without a cached backdrop (blank, not inv
 PASS  poster58: blank Up Next poster fills from the cache; present poster untouched
 PASS  poster58: uncached title keeps a blank poster (card falls back to backdrop)
 PASS  poster58: Continue cards get the same backfill
-PASS  watch58: stored tracker decodes to watch; picker is tv/iptv/watch
-PASS  watch58: migrated profile renders Watch tabs (Home/Library/Apps)
+PASS  watch58: stored tracker + iptv decode to watch; picker is tv/watch (v3.9 re-pin)
+PASS  watch58: migrated profile renders Watch tabs (Home/Library/Apps/Live, v3.9 re-pin)
 PASS  bar58: unified bar ends with the Settings tile (never clipped off the end)
 PASS  bar58: unified bar carries tabs + info + glyphs + all action tiles
 PASS  src58: slim snapshot carries missed (trySlimSnap + writer pass it)
@@ -1342,9 +1340,29 @@ PASS  src58: slim warm never clobbers a store memo
 PASS  src58: missed landing refreshes the memo on every path
 PASS  src58: home fills blank posters from the poster cache before hero/rows
 PASS  src58: no Tracker style branch remains (no isTracker, no TRACKER const use)
-PASS  src58: picker lists exactly TV/IPTV/Watch
+PASS  src58: picker lists exactly TV/Watch (v3.9 re-pin)
 PASS  src58: media-home family is Watch-only
 PASS  src58: both bars use the pill builders + the fit pass (Settings stays on screen)
 PASS  src58: no foreground service anywhere (standing rule)
-RESULT: 1130 passed, 0 failed, 1130 total
+PASS  watch59: final styles are TV/Watch only; iptv migrates to Watch
+PASS  watch59: Watch tabs are Home ? Library ? Apps ? Live, Live last
+PASS  watch59: raw iptv/tracker keys land on the Watch tabs (defensive mapping)
+PASS  missed59: pendingWatchedFor scopes adds/removes to one show
+PASS  missed59: same S/E coords on another show do NOT filter its missed item
+PASS  trend59: a Trending title present in the catalogue matches (tv + movie)
+PASS  trend59: a Trending title absent from the catalogue gets no match (Details only)
+PASS  trend59: the IPTV badge shows only on matched cards
+PASS  src59: a warm static memo renders tracker rows on a fresh instance's first build
+PASS  src59: the store-memo warm exists and is kicked from App + the memo-less build
+PASS  src59: memo source is tracked per install (store/slim/prefs) for the home line
+PASS  src59: the home build records its working set; diagnostics prints it as home:
+PASS  src59: the Missed filter scopes pending adds/removes per show
+PASS  src59: Trending TV + Movies join the visible-first match set and warm up
+PASS  src59: a matched Trending show without a library twin plays S1 E1 (no mark token)
+PASS  src59: the full pass matches Trending from disk (type-strict, library wins duplicates)
+PASS  src59: Up Next + Missed cards are portrait (no landscape builder, no over-blur branch)
+PASS  src59: scope guard ? Continue cards keep landscapeCard; hero tier order untouched
+PASS  src59: picker lists TV/Watch only (explicit list, no IPTV key)
+PASS  src59: no foreground service in the newly touched data files (standing rule)
+RESULT: 1148 passed, 0 failed, 1148 total
 ```

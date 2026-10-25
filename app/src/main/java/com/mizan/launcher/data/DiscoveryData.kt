@@ -581,6 +581,33 @@ object DiscoveryData {
         return changed
     }
 
+    /**
+     * v3.9: Trending titles from the DISK cache only (no
+     * network, no stamp reads, no state mutation) as
+     * Watch match titles, so the full-pass match
+     * (WatchPlay) can include Trending without depending
+     * on in-memory discovery state. Worker threads only.
+     * Type-strict: the tv file yields "tv" titles, the
+     * movie file yields "movie" titles — a Trending movie
+     * never matches series logic or vice versa. Year is
+     * the 4-digit prefix (0 when unknown); in Watch
+     * matching a year only deprioritizes, never excludes.
+     */
+    fun trendingTitlesFromDisk(ctx: Context): List<WatchMatch.TrackerTitle> {
+        val out = ArrayList<WatchMatch.TrackerTitle>()
+        for ((file, type) in listOf(F_TREND_TV to "tv", F_TREND_MOVIE to "movie")) {
+            val items = Discovery.parseTrending(readFile(ctx, file), type)
+            for (item in items) {
+                out.add(
+                    WatchMatch.TrackerTitle(
+                        item.id, type, item.title, item.year.take(4).toIntOrNull() ?: 0
+                    )
+                )
+            }
+        }
+        return out
+    }
+
     /** First load: parse whatever the disk cache already holds. */
     private fun loadFromDisk(appCtx: Context): State {
         val forYou = TrackerLogic.parseForYou(readFile(appCtx, F_FORYOU))

@@ -269,6 +269,7 @@ object TrackerClient {
     /** The slim snapshots for these inputs, or null on a slim miss (caller falls through to the full parse). */
     private fun trySlimSnap(ctx: Context, inputs: RawInputs): Snapshots? {
         val slim = readSlim(ctx, slimFpFor(inputs)) ?: return null
+        memoSource = "slim"
         return Snapshots(
             upNext = slim.upNext, cont = slim.cont,
             movies = slim.movies, tracked = slim.tracked,
@@ -354,6 +355,7 @@ object TrackerClient {
         return try {
             storeSnapshots(ctx)?.let { snap ->
                 cachedMemo = snap
+                memoSource = "store"
                 cachedMemoKey = memoKeyFor(
                     RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
                 )
@@ -373,6 +375,7 @@ object TrackerClient {
                 if (runOneTimeImport(ctx) == ImportResult.IMPORTED) {
                     storeSnapshots(ctx)?.let { snap ->
                         cachedMemo = snap
+                        memoSource = "store"
                         cachedMemoKey = memoKeyFor(
                             RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
                         )
@@ -418,12 +421,60 @@ object TrackerClient {
         try {
             storeSnapshots(ctx)?.let { snap ->
                 cachedMemo = snap
+                memoSource = "store"
                 cachedMemoKey = memoKeyFor(
                     RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
                 )
             }
         } catch (e: Exception) {
             // Memo install is best-effort; the next chain run re-reads the store.
+        }
+    }
+
+    @Volatile
+    private var memoStoreInFlight = false
+
+    /**
+     * v3.9: warm the memo from the indexed store ONLY (line
+     * files, no JSON parse — the store path is what the
+     * v3.5 "no parse on the open path" rule was protecting,
+     * and line reads are bounded: tens of section lines +
+     * one title line per show). Reports via [onWarmed] on
+     * the worker thread (callers post to the main thread,
+     * exactly like warmSlimAsync). Single-flight, so a
+     * memo-less home build cannot spam workers on every
+     * rebuild. This is the fix for the v3.8 on-device
+     * empty-memo home: App.onCreate only warmed the slim
+     * (absent on his TV), and the cold chain's store
+     * install waited behind 10 s of survival — a fresh
+     * activity instance (or a chain cancelled by
+     * navigation) rendered discovery-only rows with no
+     * hero, no Missed, no Continue and no My Library
+     * entry row, while diagnostics (which reads the
+     * index directly) correctly reported the store data.
+     * A store warm never parses and never clobbers a
+     * newer memo with older data: the store IS the
+     * record, so installing it is always current.
+     */
+    fun warmStoreMemoAsync(ctx: Context, onWarmed: () -> Unit) {
+        synchronized(this) {
+            if (memoStoreInFlight) return
+            memoStoreInFlight = true
+        }
+        val appCtx = ctx.applicationContext
+        kotlin.concurrent.thread(name = "mizan-tracker-storewarm") {
+            try {
+                installStoreMemo(appCtx)
+            } catch (e: Exception) {
+                // A failed store read just leaves the memo empty; the home renders the shell.
+            } finally {
+                synchronized(this) { memoStoreInFlight = false }
+            }
+            try {
+                onWarmed()
+            } catch (e: Exception) {
+                // The caller's rebuild guard handles dead activities.
+            }
         }
     }
 
@@ -647,6 +698,37 @@ object TrackerClient {
     private var cachedMemoKey: List<Any?>? = null
 
     /**
+     * v3.9: which source filled the current memo — "store" (the
+     * indexed store, the record), "slim" (the slim file bridge),
+     * "prefs" (the legacy full parse), "none" (no memo yet).
+     * The home diagnostics `home:` line reports this, so a
+     * photo can tell a store-served home from a memo-less
+     * shell frame without code reading. Set wherever a memo
+     * is installed; never read on a home build (diagnostics
+     * only).
+     */
+    @Volatile
+    var memoSource: String = "none"
+        private set
+
+    /**
+     * v3.9: the last Watch home build's working-set summary,
+     * written by MainActivity.buildTrackerHome (counts only,
+     * never titles/ids). SettingsActivity's diagnostics
+     * `home:` line prints this verbatim. "no home build yet"
+     * before the first Watch home build of the process — an
+     * honest state, not a missing line.
+     */
+    @Volatile
+    var lastHomeDiag: String = "no home build yet"
+        private set
+
+    /** v3.9: record a Watch home build's working-set summary (see [lastHomeDiag]). */
+    fun noteHomeBuild(diag: String) {
+        lastHomeDiag = diag
+    }
+
+    /**
      * Slim-cache diagnostics (v3.4, ask 49): what the last slim
      * attempt did — "absent" (no file), "hit, <age>" (served),
      * "miss" (present but stale/garbled). Read freely from any
@@ -804,6 +886,7 @@ object TrackerClient {
                 fetchedAt = inputs.fetchedAt
             )
             cachedMemo = snap
+            memoSource = "prefs"
             cachedMemoKey = key
             writeSlimAsync(ctx, snap, slimFpFor(inputs))
             snap
@@ -867,6 +950,7 @@ object TrackerClient {
                 var changed = false
                 if (snap != null) {
                     cachedMemo = snap
+                    memoSource = "store"
                     cachedMemoKey = memoKeyFor(
                         RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
                     )
