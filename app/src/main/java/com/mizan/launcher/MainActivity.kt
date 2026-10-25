@@ -568,19 +568,22 @@ class MainActivity : Activity() {
         if (coldWarmScheduled) return
         coldWarmScheduled = true
         val appCtx = applicationContext
+        // v3.4 (ask 49): the cold-warm steps run in PARALLEL now.
+        // They used to serialize on one thread — tracker memo
+        // parse, then store stamp, then the matches kick — so the
+        // warm rebuild (and with it every tracker row) waited for
+        // the slowest step. Now the tracker memo thread flips
+        // coldStart the moment IT lands (the store stamp never
+        // gated the home; it warms beside it), and the matches
+        // kick was always async. The flip semantics are
+        // unchanged: cached() returns instantly when the memo is
+        // already warm (App.onCreate kick or the slim path), and
+        // parses on this thread otherwise.
         kotlin.concurrent.thread(name = "mizan-coldwarm") {
             try { TrackerClient.cached(appCtx) } catch (e: Exception) {
                 // Warm-up is an optimisation; the full build re-reads fail-open.
             }
             DiagLog.markStage("warm: tracker read")
-            try { IptvClient.storeStamp(appCtx) } catch (e: Exception) {
-                // As above.
-            }
-            DiagLog.markStage("warm: store read")
-            try { WatchPlay.matches(appCtx) } catch (e: Exception) {
-                // As above.
-            }
-            DiagLog.markStage("warm: matches read")
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 coldStart = false
@@ -590,6 +593,16 @@ class MainActivity : Activity() {
                 }
             }
         }
+        kotlin.concurrent.thread(name = "mizan-coldwarm-store") {
+            try { IptvClient.storeStamp(appCtx) } catch (e: Exception) {
+                // As above.
+            }
+            DiagLog.markStage("warm: store read")
+        }
+        try { WatchPlay.matches(appCtx) } catch (e: Exception) {
+            // As above.
+        }
+        DiagLog.markStage("warm: matches read")
     }
 
     /** Theme colours for this profile, with Dynamic accent and Safe mode applied. */
@@ -1140,6 +1153,7 @@ class MainActivity : Activity() {
         TrackerSections.TRENDINGMOVIES -> "Trending Movies"
         TrackerSections.FORYOU -> "For You"
         TrackerSections.FAVORITES -> "Favorites"
+        TrackerSections.FOLDERS -> "Folders"
         TrackerSections.ALLAPPS -> "Apps"
         else -> key
     }
@@ -1685,6 +1699,21 @@ class MainActivity : Activity() {
                 )
             }
         }
+        // v3.4 (ask 51): folders on the IPTV home too (same
+        // TV row builder, same visibility store) — placed
+        // before the app rows, like the Tracker home's section.
+        // Without it, an app put in a folder vanished from this
+        // home's apps row with no folder tile to open it from.
+        if (layout.isRowVisible("folders")) {
+            try {
+                buildFoldersSection()?.let { content.addView(it) }
+            } catch (e: Throwable) {
+                noteSectionFailure("row:iptv:folders", e)
+                content.addView(
+                    sectionErrorTile("Folders") { retrySection("folders") }
+                )
+            }
+        }
         if (layout.isRowVisible("favorites")) {
             try {
                 content.addView(buildFavoritesSection())
@@ -1939,7 +1968,10 @@ class MainActivity : Activity() {
                 // v2.8: Live cards wear the red LIVE pill.
                 liveBadge = card.kind == IptvLogic.KIND_LIVE,
                 onClick = { iptvCardClicked(card, row) },
-                onLong = { iptvCardMenu(card, row) }
+                onLong = { iptvCardMenu(card, row) },
+                // v3.4 (ask 52): home rows only — the browser
+                // grids keep the default scale (see IptvCards).
+                scale = TileLayout.HOME_ROW_CARD_SCALE
             )
             if (firstTile == null) firstTile = (view as LinearLayout).getChildAt(0)
             rowLayout.addView(view)
@@ -3309,9 +3341,19 @@ class MainActivity : Activity() {
         // v1.3 folder dedupe: an app inside any folder lives ONLY in
         // its folder here (see FolderLogic); removing it from the
         // folder brings it back. Favorites are unaffected.
-        val visiblePkgs = FolderLogic.allAppsVisible(
-            apps.map { it.pkg }, layout.hidden.toSet(), layout.folders
-        ).toSet()
+        // v3.4 (ask 51): the inviolable rule — a home that cannot
+        // show folders must NOT dedupe folder apps out. The safe
+        // shell's plain home shows favorites + apps only (no
+        // folders row), so there dedupe is bypassed: every
+        // non-hidden app stays reachable.
+        val shellSafe = prefs.safeMode || safeShell
+        val visiblePkgs = if (shellSafe) {
+            (apps.map { it.pkg } - layout.hidden.toSet()).toSet()
+        } else {
+            FolderLogic.allAppsVisible(
+                apps.map { it.pkg }, layout.hidden.toSet(), layout.folders
+            ).toSet()
+        }
         val visible = apps.filter { it.pkg in visiblePkgs }
         if (visible.isEmpty()) {
             val hint = TextView(this)
@@ -3631,6 +3673,12 @@ class MainActivity : Activity() {
             // yet — the two app-backed sections join at the warm
             // rebuild instead of flashing their empty-state hints.
             TrackerSections.FAVORITES to (!coldStart && layout.isRowVisible("favorites")),
+            // v3.4 (ask 51): folders are a regular tracker-home
+            // section now (they used to render only on the TV
+            // home, so on Watch a created folder had nowhere to
+            // show). Folder data is prefs-local, so no cold-shell
+            // gate: it renders as soon as the row is visible.
+            TrackerSections.FOLDERS to layout.isRowVisible("folders"),
             TrackerSections.ALLAPPS to (!coldStart && layout.isRowVisible("apps"))
         )
         val order = TrackerSections.compose(sectionsCfg) { available[it] == true }
@@ -3714,6 +3762,8 @@ class MainActivity : Activity() {
                         content.addView(buildForYouSection(tPicks))
                     TrackerSections.FAVORITES ->
                         content.addView(buildFavoritesSection())
+                    TrackerSections.FOLDERS ->
+                        buildFoldersSection()?.let { content.addView(it) }
                     TrackerSections.ALLAPPS ->
                         content.addView(buildAppsSection())
                 }
@@ -4382,7 +4432,13 @@ class MainActivity : Activity() {
     ): View {
         val dm = resources.displayMetrics
         val cm = TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
-        val w = cm.tileWidthPx
+        // v3.4 (ask 52): home media-row cards render at 0.75× —
+        // smaller cards, more per row. Height follows the width
+        // (same 16:9 frame), the 2:3 poster fit inside is
+        // unchanged (v2.9 FIT_COMPLETE), and title/meta text
+        // sizes below are untouched. App tiles never come through
+        // here (they use tileMetrics), and neither does the hero.
+        val w = TileLayout.homeRowCardWidthPx(cm.tileWidthPx)
         val h = w * 9 / 16
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL

@@ -5,8 +5,11 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import com.mizan.launcher.core.HomeCache
 import com.mizan.launcher.core.TrackerLogic
+import com.mizan.launcher.core.TrackerSlim
 import com.mizan.launcher.core.TrackerStatus
+import java.io.File
 import kotlin.concurrent.thread
 
 /**
@@ -232,6 +235,87 @@ object TrackerClient {
     private var cachedMemoKey: List<Any?>? = null
 
     /**
+     * Slim-cache diagnostics (v3.4, ask 49): what the last slim
+     * attempt did — "absent" (no file), "hit, <age>" (served),
+     * "miss" (present but stale/garbled). Read freely from any
+     * thread; surfaced as the diagnostics `slim:` line. A miss
+     * is not an error — the full parse below runs instead.
+     */
+    @Volatile
+    var slimDiag: String = "absent"
+        private set
+
+    /** Slim file (lives beside the home-cache mirrors, same dir). */
+    private fun slimFile(ctx: Context): File =
+        File(File(ctx.filesDir, "home_cache"), "tracker_slim.json")
+
+    /** Last slim fingerprint written (avoids a write storm on repeated parses). */
+    @Volatile
+    private var lastSlimFp: String? = null
+
+    /**
+     * Try the slim file (v3.4, ask 49): a bounded read (refused
+     * past TrackerSlim.MAX_BYTES) + a small-document parse. Null
+     * on any failure — the caller falls through to the full
+     * parse, so a bad slim can never empty the home.
+     */
+    private fun readSlim(ctx: Context, expectedFp: String): TrackerSlim.Data? {
+        return try {
+            val f = slimFile(ctx)
+            if (!f.isFile || f.length() > TrackerSlim.MAX_BYTES) {
+                slimDiag = "absent"
+                return null
+            }
+            val data = TrackerSlim.decode(f.readText(), expectedFp)
+            if (data == null) {
+                slimDiag = "miss"
+                return null
+            }
+            slimDiag = "hit, " + HomeCache.ageLabel(
+                data.fetchedAt, System.currentTimeMillis()
+            )
+            data
+        } catch (e: Exception) {
+            slimDiag = "miss"
+            null
+        }
+    }
+
+    /**
+     * Persist the slim file on a worker (v3.4, ask 49): called
+     * after a full parse only, never on the home build path.
+     * Atomic (tmp + rename), credential-tripwired inside
+     * TrackerSlim.encode (a null encode writes nothing).
+     */
+    private fun writeSlimAsync(
+        ctx: Context,
+        snap: Snapshots,
+        fingerprint: String
+    ) {
+        if (lastSlimFp == fingerprint) return
+        lastSlimFp = fingerprint
+        val appCtx = ctx.applicationContext
+        thread(name = "mizan-tracker-slim") {
+            try {
+                val encoded = TrackerSlim.encode(
+                    snap.upNext, snap.cont, snap.movies, snap.tracked,
+                    snap.forYou, snap.updated, snap.forYouUpdated,
+                    snap.fetchedAt, fingerprint
+                ) ?: return@thread
+                val dir = File(appCtx.filesDir, "home_cache")
+                if (!dir.exists()) dir.mkdirs()
+                val target = slimFile(appCtx)
+                val tmp = File(dir, "tracker_slim.tmp")
+                tmp.writeText(encoded)
+                if (target.exists()) target.delete()
+                tmp.renameTo(target)
+            } catch (e: Exception) {
+                // Slim writes are best-effort; the full parse path is unaffected.
+            }
+        }
+    }
+
+    /**
      * The last-good snapshots, parsed. Never blocks on the provider.
      * v3.1 (ask 38, local-first): each path falls back to the
      * on-disk home-cache mirror (data/HomeCacheDisk, worker-loaded
@@ -258,6 +342,37 @@ object TrackerClient {
             )
             val memo = cachedMemo
             if (memo != null && cachedMemoKey == key) return memo
+            // v3.4 (ask 49): the slim path — a cold start after a
+            // crash used to re-parse the multi-megabyte snapshot
+            // documents here before any tracker row could render.
+            // The slim file holds only the home-consumed fields,
+            // so it parses in milliseconds; the full parse below
+            // still runs behind it whenever the fingerprint moved
+            // (a fetch landing) and rewrites the slim for the
+            // next cold start. trackedJson still rides the raw
+            // string (a reference, never a parse) so Library
+            // screens keep their watched sets.
+            val slimFp = TrackerSlim.fingerprint(
+                updated, fetchedAt,
+                rawUp?.length ?: 0, rawCont?.length ?: 0,
+                rawMovies?.length ?: 0, rawTracked?.length ?: 0,
+                rawForYou?.length ?: 0
+            )
+            val slim = readSlim(ctx, slimFp)
+            if (slim != null) {
+                val slimSnap = Snapshots(
+                    upNext = slim.upNext, cont = slim.cont,
+                    movies = slim.movies, tracked = slim.tracked,
+                    forYou = slim.forYou,
+                    trackedJson = rawTracked ?: "",
+                    updated = slim.updated,
+                    forYouUpdated = slim.forYouUpdated,
+                    fetchedAt = slim.fetchedAt
+                )
+                cachedMemo = slimSnap
+                cachedMemoKey = key
+                return slimSnap
+            }
             val snap = Snapshots(
                 upNext = TrackerLogic.parseUpNext(rawUp),
                 cont = TrackerLogic.parseContinue(rawCont),
@@ -271,6 +386,7 @@ object TrackerClient {
             )
             cachedMemo = snap
             cachedMemoKey = key
+            writeSlimAsync(ctx, snap, slimFp)
             snap
         } catch (e: Exception) {
             Snapshots.EMPTY

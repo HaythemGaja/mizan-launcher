@@ -27,6 +27,21 @@ object TileLayout {
     /** Tile margin, in dp (each side). */
     const val TILE_MARGIN_DP = 5
 
+    /**
+     * Home media-row card scale (v3.4, ask 52): Tracker/Watch/IPTV
+     * home rows render their poster cards at 0.75× the standard
+     * card width (height follows proportionally, so the 16:9 frame
+     * and the 2:3 poster fit inside it are unchanged in shape —
+     * only smaller, so visibly more cards fit per row). App tiles
+     * never pass through this scale (their size is the v1.2
+     * uniform tile rule, untouched), and neither does the hero.
+     */
+    const val HOME_ROW_CARD_SCALE: Float = 0.75f
+
+    /** A standard card width scaled for a home media row (floor, min 1px). */
+    fun homeRowCardWidthPx(cardWidthPx: Int): Int =
+        (cardWidthPx * HOME_ROW_CARD_SCALE).toInt().coerceAtLeast(1)
+
     /** Uniform scale applied by the app-size setting. */
     fun sizeScale(sizeKey: String): Float = when (sizeKey) {
         "compact" -> 0.82f

@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-25 00:08 UTC
+Date: 2026-10-25 01:04 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.3 / code 26 (bumped by v3.3)
+PASS  v25src: the app version is 3.4 / code 27 (bumped by v3.4)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1100,7 +1100,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.3 / code 26
+PASS  v31src: the version bump is 3.4 / code 27
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1173,5 +1173,46 @@ PASS  merge53: hero still excludes future items and same-episode Soon twins
 PASS  merge53src: home composes the merged section, not two sections
 PASS  merge53src: Coming Soon const is gone from the registry
 PASS  merge53src: merged retry refreshes both sources
-RESULT: 957 passed, 0 failed, 957 total
+PASS  slim54: encode succeeds and stays under the cap
+PASS  slim54: round-trip preserves every list (incl. unicode, quotes, newlines)
+PASS  slim54: empty lists round-trip to empty lists
+PASS  slim54: fingerprint mismatch reads as absent
+PASS  slim54: garbage reads as absent
+PASS  slim54: version mismatch reads as absent
+PASS  slim54: oversize reads as absent
+PASS  slim54: credential-shaped payload refuses to encode
+PASS  grab54: idle state grabs nothing, order intact
+PASS  grab54: grab holds the row and snapshots the order
+PASS  grab54: unknown key and re-grab are no-ops
+PASS  grab54: move down swaps with the neighbour
+PASS  grab54: move up restores the order
+PASS  grab54: edge moves are no-ops
+PASS  grab54: no-grab moves are no-ops
+PASS  grab54: drop commits the moved order and ends the grab
+PASS  grab54: cancel restores the snapshot and ends the grab
+PASS  folders54: FOLDERS is in CANONICAL after FAVORITES, before ALLAPPS
+PASS  folders54: label is Folders
+PASS  folders54: a stored order predating folders gains it (canonical slot, before All Apps)
+PASS  folders54: compose includes folders when shown and available
+PASS  folders54: compose excludes folders when hidden
+PASS  folders54: move works on the folders row (up one swaps with favorites)
+PASS  scale54: home row scale is 0.75
+PASS  scale54: scaled card keeps the 16:9 frame ratio
+PASS  scale54: reference row fits more cards scaled than standard (3 -> 4)
+PASS  scale54: scaled width is 0.75x standard (floor)
+PASS  src54: tracker home renders a Folders section
+PASS  src54: IPTV home renders a folders section before favorites
+PASS  src54: safe shell bypasses folder dedupe (no vanishing apps)
+PASS  src54: tracker home availability gates folders on its visibility row
+PASS  src54: landscapeCard scales home row cards
+PASS  src54: IPTV home rows pass the 0.75 scale, browser keeps default
+PASS  src54: TrackerClient tries the slim before the full parse and writes it after
+PASS  src54: App.onCreate kicks the memo warm and the discovery preload
+PASS  src54: discovery preload exists as a single-flight kick
+PASS  src54: cold-warm runs tracker and store warms in parallel
+PASS  src54: sort page holds, moves, drops and cancels a grab
+PASS  src54: sort page offers hold-OK on tracker and TV rows, IPTV lists folders hide/show
+PASS  src54: diagnostics gains the slim proof line
+PASS  src54: hero rule untouched (missed first, today stays out)
+RESULT: 998 passed, 0 failed, 998 total
 ```

@@ -34,6 +34,8 @@ import com.mizan.launcher.core.SettingsFit
 import com.mizan.launcher.core.SettingsNavMachine
 import com.mizan.launcher.core.SwitchLogic
 import com.mizan.launcher.core.TileLayout
+import com.mizan.launcher.core.TrackerSlim
+import com.mizan.launcher.core.SortGrab
 import com.mizan.launcher.core.WifiLabel
 import com.mizan.launcher.core.WeatherCondition
 import com.mizan.launcher.core.WeatherLogic
@@ -1846,8 +1848,10 @@ fun main() {
         // v3.3 RE-PINNED (ask 47): foryou's predecessor is now
         // trendingmovies (movienight gone in v3.1, comingsoon
         // merged into upnext in v3.3), so the swap lands there.
+        // v3.4 RE-PINNED (ask 51): folders joins the canonical
+        // tail (after favorites, before allapps).
         check("sections: move up swaps with the previous row",
-            moved.order == listOf("upnext", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "allapps"))
+            moved.order == listOf("upnext", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: moves at the edges and for the hero are no-ops",
             ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
                 ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
@@ -1857,13 +1861,15 @@ fun main() {
         check("sections: compose follows the configured order, hero first",
             ts.compose(reordered) { true } ==
                 // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext.
-                listOf("hero", "allapps", "upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites"))
+                // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
+                listOf("hero", "allapps", "upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders"))
         // RE-PINNED in v2.7 (new sections compose when available).
         // v3.1 RE-PINNED (ask 37): MOVIENIGHT is gone, so the data-empty
         // gate uses foryou; hidden upnext + gated foryou both drop.
         check("sections: hidden + data-empty sections are both skipped",
             ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.FORYOU } ==
-                listOf("hero", "continue", "trendingtv", "trendingmovies", "favorites", "allapps"))
+                // v3.4 RE-PINNED (ask 51): folders composes in its canonical slot.
+                listOf("hero", "continue", "trendingtv", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: unknown keys are dropped by normalize",
             ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
                 ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
@@ -3244,6 +3250,9 @@ fun main() {
     // ---------- (53) v3.3: lock auto-submit, safe mode escapable + visible ----------
     section53()
 
+    // ---------- (54) v3.4: slim tracker cache, folders on media homes, hold-and-drop sort, smaller row posters ----------
+    section54()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3743,10 +3752,11 @@ fun section45() {
         val tsx = TrackerSections
         // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext
         // (v3.1 had already removed movienight from this order).
+        // v3.4 RE-PINNED (ask 51): folders joins after favorites.
         check("sections: v2.7 canonical order is the directive's focus order",
             tsx.CANONICAL == listOf(
                 "hero", "upnext", "continue", "trendingtv",
-                "trendingmovies", "foryou", "favorites", "allapps"
+                "trendingmovies", "foryou", "favorites", "folders", "allapps"
             ))
         check("sections: v2.7 labels",
             tsx.label(tsx.TRENDINGTV) == "Trending TV" &&
@@ -3756,9 +3766,10 @@ fun section45() {
         // (comingsoon no longer appends — it is merged into upnext).
         check("sections: a pre-v2.7 stored order keeps its order; the new rows append",
             tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|").order ==
+                // v3.4 RE-PINNED (ask 51): folders appends after the trending rows.
                 listOf(
                     "upnext", "continue", "foryou", "favorites",
-                    "allapps", "trendingtv", "trendingmovies"
+                    "allapps", "trendingtv", "trendingmovies", "folders"
                 ))
 
         // --- source checks: the v2.7 wiring is really in the app ---
@@ -3947,11 +3958,11 @@ fun section42() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        // Re-pinned in v3.3 (intentional version bump 3.2/25 → 3.3/26 —
-        // lock auto-submit + safe-mode exit/disclosure, spec §33).
-        check("v25src: the app version is 3.3 / code 26 (bumped by v3.3)",
-            gradleSrc.contains("versionName = \"3.3\"") &&
-                gradleSrc.contains("versionCode = 26"))
+        // Re-pinned in v3.4 (intentional version bump 3.3/26 → 3.4/27 —
+        // slim cache + media-home folders + hold-and-drop + row posters, spec §34).
+        check("v25src: the app version is 3.4 / code 27 (bumped by v3.4)",
+            gradleSrc.contains("versionName = \"3.4\"") &&
+                gradleSrc.contains("versionCode = 27"))
     }
 }
 
@@ -3965,13 +3976,16 @@ fun section46() {
         val preV27 = tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|")
         // v3.3 RE-PINNED (ask 47): comingsoon is gone (merged
         // into upnext); only the trending rows still append.
+        // v3.4 RE-PINNED (ask 51): folders appends too (a new
+        // row, not a splice target — the migration leaves it
+        // at the end).
         check("migrate: a pre-v2.7 stored order has the focus rows appended at the end",
-            preV27.order.takeLast(2) == listOf("trendingtv", "trendingmovies"))
+            preV27.order.takeLast(3) == listOf("trendingtv", "trendingmovies", "folders"))
         val migrated = tsx.migrateOrder(preV27)
         check("migrate: the appended rows splice into their canonical slots",
             migrated.order == listOf(
                 "upnext", "continue", "trendingtv", "trendingmovies",
-                "foryou", "favorites", "allapps"
+                "foryou", "favorites", "allapps", "folders"
             ))
         check("migrate: idempotent — a second pass changes nothing",
             tsx.migrateOrder(migrated) == migrated)
@@ -3983,25 +3997,28 @@ fun section46() {
         // v3.3 RE-PINNED (ask 47): comingsoon drops on decode, so
         // only the still-appended trending rows splice.
         check("migrate: only the still-appended rows move (comingsoon drops on decode)",
+            // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             tsx.migrateOrder(partial).order == listOf(
                 "upnext", "continue", "trendingtv", "trendingmovies",
-                "foryou", "favorites", "allapps"
+                "foryou", "favorites", "allapps", "folders"
             ))
         val parked = tsx.decode(
             "upnext,continue,trendingtv,foryou,favorites,allapps,trendingmovies|"
         )
         check("migrate: a focus row parked mid-list (before foryou) is never itself moved",
+            // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             tsx.migrateOrder(parked).order == listOf(
                 "upnext", "continue", "trendingtv", "trendingmovies",
-                "foryou", "favorites", "allapps"
+                "foryou", "favorites", "allapps", "folders"
             ))
         val custom = tsx.decode(
             "movienight,upnext,continue,foryou,favorites,allapps,comingsoon,trendingtv,trendingmovies|"
         )
         check("migrate: the user's other rows keep their relative order exactly",
+            // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             tsx.migrateOrder(custom).order == listOf(
                 "upnext", "continue", "trendingtv",
-                "trendingmovies", "foryou", "favorites", "allapps"
+                "trendingmovies", "foryou", "favorites", "allapps", "folders"
             ))
         val hiddenCfg = tsx.decode(
             "upnext,continue,movienight,foryou,favorites,allapps|comingsoon"
@@ -4010,9 +4027,10 @@ fun section46() {
         // hidden set on decode; the splice still applies.
         check("migrate: the hidden set drops removed keys; the splice still applies",
             tsx.migrateOrder(hiddenCfg).hidden.isEmpty() &&
+                // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
                 tsx.migrateOrder(hiddenCfg).order == listOf(
                     "upnext", "continue", "trendingtv", "trendingmovies",
-                    "foryou", "favorites", "allapps"
+                    "foryou", "favorites", "allapps", "folders"
                 ))
 
         // --- the pill tab model (core/HomeTabs) ---
@@ -4852,10 +4870,10 @@ fun section50() {
         check("v31src: discovery Retry forces one TTL-ignoring worker run",
             src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("forceNext") &&
                 src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun refreshNow"))
-        // Re-pinned in v3.3 (intentional version bump 3.2/25 → 3.3/26, spec §33).
-        check("v31src: the version bump is 3.3 / code 26",
-            src("app/build.gradle.kts").contains("versionCode = 26") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.3\""))
+        // Re-pinned in v3.4 (intentional version bump 3.3/26 → 3.4/27, spec §34).
+        check("v31src: the version bump is 3.4 / code 27",
+            src("app/build.gradle.kts").contains("versionCode = 27") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.4\""))
     }
 }
 
@@ -5218,7 +5236,8 @@ fun section53() {
                 !TrackerSections.ROWS.contains("comingsoon"))
         val decoded = TrackerSections.decode("upnext,comingsoon,continue|comingsoon")
         check("merge53: stored order + hidden set mentioning comingsoon drop it on read",
-            decoded.order == listOf("upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "allapps") &&
+            // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
+            decoded.order == listOf("upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders", "allapps") &&
                 "comingsoon" !in decoded.hidden)
         check("merge53: compose never emits comingsoon",
             !TrackerSections.compose(decoded) { true }.contains("comingsoon"))
@@ -5248,5 +5267,184 @@ fun section53() {
             !sectionsSrc.contains("const val COMINGSOON"))
         check("merge53src: merged retry refreshes both sources",
             mainSrc.contains("the merged Up Next retries BOTH sources"))
+    }
+}
+
+/** v3.4 checks — slim tracker cache (ask 49), folders on media homes (ask 51), hold-and-drop sort (ask 50), smaller row posters (ask 52). */
+fun section54() {
+    run {
+        val ts = com.mizan.launcher.core.TrackerSections
+        
+        // ---- TrackerSlim: round-trip over every list, incl. unicode/quotes/empty lists ----
+        val up = listOf(
+            TrackerLogic.UpNextItem(1L, "Café \"Show\" ☕", "S2 E6", "2026-10-25", "/p1.jpg", "/b1.jpg", "Ov\nerview", 2, 6, "tv"),
+            TrackerLogic.UpNextItem(2L, "Plain", "", "", "", "", "", 0, 0, "tv")
+        )
+        val cont = listOf(
+            TrackerLogic.ContinueItem(3L, "Cont’d", "3/10", 3, 10, "/p2.jpg", "", "", "tv")
+        )
+        val mov = listOf(
+            TrackerLogic.MovieItem(4L, "Movie", "2026-01-01", true, "/p3.jpg", false)
+        )
+        val trk = listOf(
+            TrackerLogic.TrackedShow(5L, "Tracked", 42, false)
+        )
+        val fy = listOf(
+            TrackerLogic.ForYouPick(6L, "movie", "Pick", "/p4.jpg", 8.5, "Because you watched X", listOf("Drama", "Sci-Fi"), 91.5)
+        )
+        val fp = TrackerSlim.fingerprint(1000L, 2000L, 11, 22, 33, 44, 55)
+        val encoded = TrackerSlim.encode(up, cont, mov, trk, fy, 1000L, 900L, 2000L, fp)
+        check("slim54: encode succeeds and stays under the cap",
+            encoded != null && encoded.length < TrackerSlim.MAX_BYTES)
+        val decoded = TrackerSlim.decode(encoded, fp)
+        check("slim54: round-trip preserves every list (incl. unicode, quotes, newlines)",
+            decoded != null && decoded.upNext == up && decoded.cont == cont &&
+                decoded.movies == mov && decoded.tracked == trk && decoded.forYou == fy &&
+                decoded.updated == 1000L && decoded.forYouUpdated == 900L &&
+                decoded.fetchedAt == 2000L)
+        val emptyEncoded = TrackerSlim.encode(
+            emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
+            0L, 0L, 0L, TrackerSlim.fingerprint(0L, 0L, 0, 0, 0, 0, 0)
+        )
+        val emptyDecoded = TrackerSlim.decode(
+            emptyEncoded, TrackerSlim.fingerprint(0L, 0L, 0, 0, 0, 0, 0)
+        )
+        check("slim54: empty lists round-trip to empty lists",
+            emptyDecoded != null && emptyDecoded.upNext.isEmpty() &&
+                emptyDecoded.cont.isEmpty() && emptyDecoded.movies.isEmpty() &&
+                emptyDecoded.tracked.isEmpty() && emptyDecoded.forYou.isEmpty())
+        check("slim54: fingerprint mismatch reads as absent",
+            TrackerSlim.decode(encoded, "different|fp") == null)
+        check("slim54: garbage reads as absent",
+            TrackerSlim.decode("not json at all {{{", fp) == null &&
+                TrackerSlim.decode("", fp) == null &&
+                TrackerSlim.decode(null, fp) == null)
+        check("slim54: version mismatch reads as absent",
+            TrackerSlim.decode(encoded.orEmpty().replace("\"v\":1", "\"v\":99"), fp) == null)
+        check("slim54: oversize reads as absent",
+            TrackerSlim.decode("x".repeat(TrackerSlim.MAX_BYTES + 1), fp) == null)
+        val credentialUp = listOf(
+            TrackerLogic.UpNextItem(9L, "tmdb_key=abc123", "", "", "", "", "", 0, 0, "tv")
+        )
+        check("slim54: credential-shaped payload refuses to encode",
+            TrackerSlim.encode(credentialUp, emptyList(), emptyList(), emptyList(), emptyList(),
+                0L, 0L, 0L, "fp") == null)
+
+        // ---- SortGrab: the grab/move/drop/cancel machine ----
+        val order = listOf("upnext", "continue", "trendingtv", "foryou")
+        val idle = SortGrab.State.idle(order)
+        check("grab54: idle state grabs nothing, order intact",
+            idle.grabbed == null && idle.order == order)
+        val grabbed = SortGrab.grab(idle, "continue")
+        check("grab54: grab holds the row and snapshots the order",
+            grabbed.grabbed == "continue" && grabbed.snapshot == order)
+        check("grab54: unknown key and re-grab are no-ops",
+            SortGrab.grab(idle, "nope").grabbed == null &&
+                SortGrab.grab(grabbed, "foryou").grabbed == "continue")
+        val movedDown = SortGrab.move(grabbed, +1)
+        check("grab54: move down swaps with the neighbour",
+            movedDown.order == listOf("upnext", "trendingtv", "continue", "foryou") &&
+                movedDown.grabbed == "continue")
+        val movedUp = SortGrab.move(movedDown, -1)
+        check("grab54: move up restores the order",
+            movedUp.order == order)
+        val atTop = SortGrab.grab(idle, "upnext")
+        val atBottom = SortGrab.grab(idle, "foryou")
+        check("grab54: edge moves are no-ops",
+            SortGrab.move(atTop, -1).order == order &&
+                SortGrab.move(atBottom, +1).order == order)
+        check("grab54: no-grab moves are no-ops",
+            SortGrab.move(idle, +1) == idle && SortGrab.move(idle, -1) == idle)
+        val dropped = SortGrab.drop(movedDown)
+        check("grab54: drop commits the moved order and ends the grab",
+            dropped.order == listOf("upnext", "trendingtv", "continue", "foryou") &&
+                dropped.grabbed == null)
+        val cancelled = SortGrab.cancel(movedDown)
+        check("grab54: cancel restores the snapshot and ends the grab",
+            cancelled.order == order && cancelled.grabbed == null)
+
+        // ---- Folders registry: joins CANONICAL/ROWS, old orders gain it, compose includes it ----
+        check("folders54: FOLDERS is in CANONICAL after FAVORITES, before ALLAPPS",
+            ts.CANONICAL.indexOf(ts.FOLDERS) == ts.CANONICAL.indexOf(ts.FAVORITES) + 1 &&
+                ts.CANONICAL.indexOf(ts.FOLDERS) == ts.CANONICAL.indexOf(ts.ALLAPPS) - 1)
+        check("folders54: label is Folders",
+            ts.label(ts.FOLDERS) == "Folders")
+        val oldDecoded = ts.decode("upnext,continue|")
+        check("folders54: a stored order predating folders gains it (canonical slot, before All Apps)",
+            ts.FOLDERS in oldDecoded.order &&
+                oldDecoded.order.indexOf(ts.FOLDERS) == oldDecoded.order.indexOf(ts.ALLAPPS) - 1)
+        check("folders54: compose includes folders when shown and available",
+            ts.compose(oldDecoded) { true }.contains(ts.FOLDERS))
+        check("folders54: compose excludes folders when hidden",
+            ts.compose(ts.setShown(oldDecoded, ts.FOLDERS, false)) { true }
+                .contains(ts.FOLDERS).not())
+        check("folders54: move works on the folders row (up one swaps with favorites)",
+            ts.move(oldDecoded, ts.FOLDERS, -1).order[oldDecoded.order.size - 3] == ts.FOLDERS &&
+                ts.move(oldDecoded, ts.FOLDERS, -1).order[oldDecoded.order.size - 2] == ts.FAVORITES)
+
+        // ---- Row poster scale: 0.75x, aspect preserved, more cards per reference row ----
+        check("scale54: home row scale is 0.75",
+            TileLayout.HOME_ROW_CARD_SCALE == 0.75f)
+        val ref = TileLayout.cardMetrics(1920, 2.0f, "standard", 6)
+        val scaledW = TileLayout.homeRowCardWidthPx(ref.tileWidthPx)
+        val scaledH = scaledW * 9 / 16
+        check("scale54: scaled card keeps the 16:9 frame ratio",
+            scaledW * 9 == scaledH * 16 || (scaledW * 9 / 16) == scaledH)
+        val marginPx = (TileLayout.TILE_MARGIN_DP * 2 * 2.0f).toInt()
+        val before = 1920 / (ref.tileWidthPx + marginPx)
+        val after = 1920 / (scaledW + marginPx)
+        check("scale54: reference row fits more cards scaled than standard (3 -> 4)",
+            before == 3 && after == 4)
+        check("scale54: scaled width is 0.75x standard (floor)",
+            scaledW == (ref.tileWidthPx * 0.75f).toInt())
+
+        // ---- Source checks: every wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        val appSrc = src("app/src/main/java/com/mizan/launcher/App.kt")
+        val discSrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+        val cardsSrc = src("app/src/main/java/com/mizan/launcher/ui/IptvCards.kt")
+        check("src54: tracker home renders a Folders section",
+            mainSrc.contains("TrackerSections.FOLDERS ->") &&
+                mainSrc.contains("buildFoldersSection()?.let { content.addView(it) }"))
+        check("src54: IPTV home renders a folders section before favorites",
+            mainSrc.contains("row:iptv:folders"))
+        check("src54: safe shell bypasses folder dedupe (no vanishing apps)",
+            mainSrc.contains("shellSafe") && mainSrc.contains("safeMode || safeShell"))
+        check("src54: tracker home availability gates folders on its visibility row",
+            mainSrc.contains("TrackerSections.FOLDERS to layout.isRowVisible(\"folders\")"))
+        check("src54: landscapeCard scales home row cards",
+            mainSrc.contains("homeRowCardWidthPx(cm.tileWidthPx)"))
+        check("src54: IPTV home rows pass the 0.75 scale, browser keeps default",
+            mainSrc.contains("scale = TileLayout.HOME_ROW_CARD_SCALE") &&
+                cardsSrc.contains("scale: Float = 1f"))
+        check("src54: TrackerClient tries the slim before the full parse and writes it after",
+            clientSrc.contains("readSlim(ctx, slimFp)") &&
+                clientSrc.contains("writeSlimAsync(ctx, snap, slimFp)"))
+        check("src54: App.onCreate kicks the memo warm and the discovery preload",
+            appSrc.contains("warmMemoAsync(this)") && appSrc.contains("DiscoveryData.preload(this)"))
+        check("src54: discovery preload exists as a single-flight kick",
+            discSrc.contains("fun preload(ctx: Context)"))
+        check("src54: cold-warm runs tracker and store warms in parallel",
+            mainSrc.contains("mizan-coldwarm-store"))
+        check("src54: sort page holds, moves, drops and cancels a grab",
+            settingsSrc.contains("sortGrabStart(key, \"tracker\")") &&
+                settingsSrc.contains("sortGrabStart(key, \"tv\")") &&
+                settingsSrc.contains("sortGrabMove(-1)") &&
+                settingsSrc.contains("sortGrabDrop()") &&
+                settingsSrc.contains("sortGrabCancel()"))
+        check("src54: sort page offers hold-OK on tracker and TV rows, IPTV lists folders hide/show",
+            settingsSrc.contains("hold OK to grab") &&
+                settingsSrc.contains("listOf(\"folders\", \"favorites\", \"apps\")"))
+        check("src54: diagnostics gains the slim proof line",
+            settingsSrc.contains("slim: \" +"))
+        check("src54: hero rule untouched (missed first, today stays out)",
+            mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
     }
 }

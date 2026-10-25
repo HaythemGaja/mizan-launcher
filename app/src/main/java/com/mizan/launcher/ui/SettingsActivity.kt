@@ -18,6 +18,7 @@ import com.mizan.launcher.MainActivity
 import com.mizan.launcher.core.Folder
 import com.mizan.launcher.core.LayoutData
 import com.mizan.launcher.core.SettingsFit
+import com.mizan.launcher.core.SortGrab
 import com.mizan.launcher.core.SettingsNavMachine
 import com.mizan.launcher.core.Themes
 import com.mizan.launcher.core.WeatherUnits
@@ -164,6 +165,20 @@ class SettingsActivity : Activity() {
 
     /** Last focused control title per category id (focus memory). */
     private val detailFocusMemory = mutableMapOf<String, String>()
+
+    /**
+     * Hold-and-drop sort state (v3.4, ask 50): the grab machine
+     * for the "Sort sections" page, or null when no row is held.
+     * [sortGrabKey]/[sortGrabBranch] name the held row
+     * ("tracker" = Tracker/Watch via TrackerSections, "tv" = TV
+     * via LayoutStore rowOrder). IPTV catalogue rows are not
+     * reorderable (v3.1) and never grab. Moves persist at once
+     * (like the Up/Down buttons); Back cancels by restoring the
+     * grab-time snapshot, so a cancelled grab changes nothing.
+     */
+    private var sortGrab: SortGrab.State? = null
+    private var sortGrabKey: String? = null
+    private var sortGrabBranch: String = ""
 
     /**
      * The focused control's INDEX in its page, per category id
@@ -622,6 +637,29 @@ class SettingsActivity : Activity() {
         // Behind the entry-gate prompt there is no UI to navigate.
         if (!entered) return super.dispatchKeyEvent(event)
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            // v3.4 (ask 50): while a sort grab is active, the
+            // D-pad drives the grabbed row instead of focus:
+            // up/down moves it live, OK drops it. LEFT leaves
+            // the page AND cancels the grab (snapshot restored)
+            // before the normal LEFT handling runs below. Back
+            // is handled in onBackPressed (same cancel).
+            if (sortGrab != null) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        sortGrabMove(-1)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        sortGrabMove(+1)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        sortGrabDrop()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> sortGrabCancel()
+                }
+            }
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     if (focusedPane == SettingsNavMachine.COLUMN_LEFT) {
@@ -671,6 +709,13 @@ class SettingsActivity : Activity() {
         if (showingMakeHome) {
             showingMakeHome = false
             rebuild()
+            return
+        }
+        // v3.4 (ask 50): Back while a sort grab is active
+        // CANCELS the grab (snapshot restored) and stays on the
+        // page — it takes precedence over leaving the page.
+        if (sortGrab != null) {
+            sortGrabCancel()
             return
         }
         if (focusedPane == SettingsNavMachine.COLUMN_RIGHT || nav.inDetail) {
@@ -1269,8 +1314,16 @@ class SettingsActivity : Activity() {
                 val cfg = prefs.trackerSectionsConfig()
                 content.addView(info(
                     "Home style: ${homeStyleLabel()} — tap a section, then Move up, " +
-                        "Move down, or Hide/Show. Changes apply at once."
+                        "Move down, or Hide/Show. Changes apply at once. Hold OK on a " +
+                        "row to grab it, then D-pad up/down to move it, OK to drop, " +
+                        "Back to cancel."
                 ))
+                if (sortGrabKey != null && sortGrabBranch == "tracker") {
+                    content.addView(info(
+                        "Holding “${ts.label(sortGrabKey!!)}” — D-pad up/down moves it, " +
+                            "OK drops it, Back cancels."
+                    ))
+                }
                 content.addView(row(
                     "Hero — ${if (ts.isShown(cfg, ts.HERO)) "Shown" else "Hidden"}",
                     "Always first when shown — Hide/Show only"
@@ -1281,25 +1334,33 @@ class SettingsActivity : Activity() {
                     }
                 })
                 for ((i, key) in cfg.order.withIndex()) {
-                    content.addView(row(
+                    val held = sortGrabKey == key && sortGrabBranch == "tracker"
+                    val tv = row(
                         "${i + 1}. ${ts.label(key)} — " +
                             if (ts.isShown(cfg, key)) "Shown" else "Hidden",
-                        "Tap for options"
+                        if (held) "◉ Held — D-pad up/down to move, OK to drop, Back to cancel"
+                        else "Tap for options — hold OK to grab"
                     ) {
                         sortSectionDialog(ts.label(key), canMove = true,
                             shown = ts.isShown(cfg, key)) { action ->
                             applyTrackerSortAction(key, action)
                         }
-                    })
+                    }
+                    tv.setOnLongClickListener {
+                        sortGrabStart(key, "tracker")
+                        true
+                    }
+                    if (held) tv.background = Ui.tileBackground(accent, true, 12, this)
+                    content.addView(tv)
                 }
             }
             hs.isIptv(prefs.homeStyle) -> {
                 content.addView(info(
                     "Home style: IPTV — catalogue rows follow your IPTV store order " +
-                        "and can't be reordered here. Favorites and Apps below can " +
-                        "be hidden or shown."
+                        "and can't be reordered here. Folders, Favorites and Apps " +
+                        "below can be hidden or shown."
                 ))
-                for (key in listOf("favorites", "apps")) {
+                for (key in listOf("folders", "favorites", "apps")) {
                     content.addView(row(
                         "${rowLabel(key)} — " +
                             if (layout.isRowVisible(key)) "Shown" else "Hidden",
@@ -1319,18 +1380,28 @@ class SettingsActivity : Activity() {
             else -> {
                 content.addView(info(
                     "Home style: TV — tap a row, then Move up, Move down, or " +
-                        "Hide/Show. Changes apply at once."
+                        "Hide/Show. Changes apply at once. Hold OK on a row to " +
+                        "grab it, then D-pad up/down to move it, OK to drop, " +
+                        "Back to cancel."
                 ))
                 val effectiveOrder = com.mizan.launcher.core.RowOrder.normalize(layout.rowOrder)
                 if (effectiveOrder != layout.rowOrder) {
                     layout.rowOrder.clear()
                     layout.rowOrder.addAll(effectiveOrder)
                 }
+                if (sortGrabKey != null && sortGrabBranch == "tv") {
+                    content.addView(info(
+                        "Holding “${rowLabel(sortGrabKey!!)}” — D-pad up/down moves it, " +
+                            "OK drops it, Back cancels."
+                    ))
+                }
                 for ((i, key) in layout.rowOrder.withIndex()) {
-                    content.addView(row(
+                    val held = sortGrabKey == key && sortGrabBranch == "tv"
+                    val tv = row(
                         "${i + 1}. ${rowLabel(key)} — " +
                             if (layout.isRowVisible(key)) "Shown" else "Hidden",
-                        "Tap for options"
+                        if (held) "◉ Held — D-pad up/down to move, OK to drop, Back to cancel"
+                        else "Tap for options — hold OK to grab"
                     ) {
                         sortSectionDialog(rowLabel(key), canMove = true,
                             shown = layout.isRowVisible(key)) { action ->
@@ -1343,7 +1414,13 @@ class SettingsActivity : Activity() {
                             saveLayout()
                             rebuild()
                         }
-                    })
+                    }
+                    tv.setOnLongClickListener {
+                        sortGrabStart(key, "tv")
+                        true
+                    }
+                    if (held) tv.background = Ui.tileBackground(accent, true, 12, this)
+                    content.addView(tv)
                 }
             }
         }
@@ -1379,6 +1456,110 @@ class SettingsActivity : Activity() {
                 apply(action)
             }
             .setNegativeButton("Cancel", null).show()
+    }
+
+    /**
+     * Hold-and-drop sort (v3.4, ask 50) — the wiring around the
+     * pure core/SortGrab machine. A long-press on a sort-page row
+     * grabs it; D-pad up/down moves it live (persisted at once,
+     * like the Up/Down buttons); OK drops it; Back cancels it by
+     * restoring the grab-time snapshot. The existing Up/Down/Hide
+     * dialog stays untouched alongside. Focus is re-aimed at the
+     * grabbed row after every rebuild (its title carries its
+     * position number, so the plain title-memory restore would
+     * miss after a move).
+     */
+    private fun sortGrabStart(key: String, branch: String) {
+        if (sortGrab != null) return
+        val order = when (branch) {
+            "tracker" -> prefs.trackerSectionsConfig().order
+            "tv" -> layout.rowOrder.toList()
+            else -> return
+        }
+        val state = SortGrab.grab(SortGrab.State.idle(order), key)
+        if (state.grabbed == null) return
+        sortGrab = state
+        sortGrabKey = key
+        sortGrabBranch = branch
+        rebuild()
+        sortGrabFocusKey(key, branch)
+    }
+
+    private fun sortGrabMove(dir: Int) {
+        val state = sortGrab ?: return
+        val moved = SortGrab.move(state, dir)
+        if (moved == state) return
+        sortGrab = moved
+        when (sortGrabBranch) {
+            "tracker" -> prefs.setTrackerSectionsConfig(
+                prefs.trackerSectionsConfig().copy(order = moved.order)
+            )
+            "tv" -> {
+                layout.rowOrder.clear()
+                layout.rowOrder.addAll(moved.order)
+                saveLayout()
+            }
+        }
+        rebuild()
+        sortGrabFocusKey(sortGrabKey ?: return, sortGrabBranch)
+    }
+
+    private fun sortGrabDrop() {
+        val key = sortGrabKey ?: return
+        val branch = sortGrabBranch
+        sortGrab = null
+        sortGrabKey = null
+        sortGrabBranch = ""
+        rebuild()
+        sortGrabFocusKey(key, branch)
+    }
+
+    private fun sortGrabCancel() {
+        val state = sortGrab ?: return
+        val key = sortGrabKey ?: return
+        val branch = sortGrabBranch
+        when (branch) {
+            "tracker" -> prefs.setTrackerSectionsConfig(
+                prefs.trackerSectionsConfig().copy(order = state.snapshot)
+            )
+            "tv" -> {
+                layout.rowOrder.clear()
+                layout.rowOrder.addAll(state.snapshot)
+                saveLayout()
+            }
+        }
+        sortGrab = null
+        sortGrabKey = null
+        sortGrabBranch = ""
+        rebuild()
+        sortGrabFocusKey(key, branch)
+    }
+
+    /** The sort-page row title for [key] under the CURRENT store (position + label + shown). */
+    private fun sortGrabRowTitle(key: String, branch: String): String? {
+        val ts = com.mizan.launcher.core.TrackerSections
+        return when (branch) {
+            "tracker" -> {
+                val cfg = prefs.trackerSectionsConfig()
+                val i = cfg.order.indexOf(key)
+                if (i < 0) null
+                else "${i + 1}. ${ts.label(key)} — " +
+                    if (ts.isShown(cfg, key)) "Shown" else "Hidden"
+            }
+            "tv" -> {
+                val i = layout.rowOrder.indexOf(key)
+                if (i < 0) null
+                else "${i + 1}. ${rowLabel(key)} — " +
+                    if (layout.isRowVisible(key)) "Shown" else "Hidden"
+            }
+            else -> null
+        }
+    }
+
+    private fun sortGrabFocusKey(key: String, branch: String) {
+        val title = sortGrabRowTitle(key, branch) ?: return
+        detailFocusMemory[nav.selectedId] = title
+        detailFocusable.firstOrNull { it.tag == title }?.requestFocus()
     }
 
     /** Apply one sort action to a Tracker/Watch section (existing store only). */
@@ -1821,6 +2002,16 @@ class SettingsActivity : Activity() {
             append(
                 "\nhome cache: " +
                     com.mizan.launcher.data.HomeCacheDisk.lastDiag
+            )
+            // v3.4 (ask 49): the slim-cache proof — whether the
+            // last cold start painted from the fast slim file
+            // ("hit"), found none ("absent", first run after
+            // install), or fell through to the full parse
+            // ("miss"). A miss is not an error; it only means
+            // the next cold start parses the full snapshots.
+            append(
+                "\nslim: " +
+                    com.mizan.launcher.data.TrackerClient.slimDiag
             )
             // v3.2 (ask 43): the proof line — when the home data
             // was last refreshed, and by what (manual Refresh vs

@@ -54,14 +54,25 @@ object IptvCards {
         liveBadge: Boolean = false,
         onFocus: (() -> Unit)? = null,
         onClick: () -> Unit,
-        onLong: (() -> Unit)? = null
+        onLong: (() -> Unit)? = null,
+        // v3.4 (ask 52): home-row scale — the IPTV home passes
+        // TileLayout.HOME_ROW_CARD_SCALE so its poster rows
+        // shrink with the Tracker/Watch rows; the browser grids
+        // keep the default 1f. Width and height scale together,
+        // so poster aspect and the wide logo fit are unchanged.
+        scale: Float = 1f
     ): View {
         val dm = activity.resources.displayMetrics
-        val m = if (wide) {
+        val base = if (wide) {
             TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         } else {
             TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         }
+        val m = if (scale == 1f) base else TileLayout.Metrics(
+            (base.tileWidthPx * scale).toInt().coerceAtLeast(1),
+            (base.tileHeightPx * scale).toInt().coerceAtLeast(1),
+            base.iconPx
+        )
         val col = LinearLayout(activity)
         col.orientation = LinearLayout.VERTICAL
         val colLp = LinearLayout.LayoutParams(m.tileWidthPx, -2)

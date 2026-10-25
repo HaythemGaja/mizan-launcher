@@ -39,6 +39,14 @@ package com.mizan.launcher.core
  * "comingsoon" drop it on read. The discovery data itself
  * survives (it feeds the merged section and the hero
  * exclusion); only the standalone section is gone.
+ *
+ * v3.4 (ask 51): FOLDERS joins as a regular section — folders
+ * used to render only on the TV home, so on Tracker/Watch a
+ * created folder had nowhere to show (and its apps were still
+ * deduped out of "Your apps"). The folders section reuses the
+ * TV home's row builder, is sortable/hideable here like every
+ * other row, and profiles whose stored order predates it gain
+ * it at the end (normalize's missing-keys rule).
  */
 object TrackerSections {
 
@@ -49,12 +57,13 @@ object TrackerSections {
     const val TRENDINGMOVIES = "trendingmovies"
     const val FORYOU = "foryou"
     const val FAVORITES = "favorites"
+    const val FOLDERS = "folders"
     const val ALLAPPS = "allapps"
 
-    /** Every section, in the order a fresh profile sees them (v3.3: Coming Soon merged into Up Next). */
+    /** Every section, in the order a fresh profile sees them (v3.3: Coming Soon merged into Up Next; v3.4: Folders joins). */
     val CANONICAL: List<String> = listOf(
         HERO, UPNEXT, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
-        FORYOU, FAVORITES, ALLAPPS
+        FORYOU, FAVORITES, FOLDERS, ALLAPPS
     )
 
     /** The reorderable rows (everything except the hero). */
@@ -73,6 +82,7 @@ object TrackerSections {
         TRENDINGMOVIES -> "Trending Movies"
         FORYOU -> "For You"
         FAVORITES -> "Favorites"
+        FOLDERS -> "Folders"
         ALLAPPS -> "All apps"
         else -> key
     }

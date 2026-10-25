@@ -107,6 +107,18 @@ object DiscoveryData {
     fun peek(): State = state
 
     /**
+     * Start the first-run disk hydration early (v3.4, ask 49):
+     * App.onCreate calls this so the discovery disk caches are
+     * in memory by the first home build instead of starting on
+     * it. Same single-flight kick as [snapshot] — no behaviour
+     * change, only an earlier start. Network fetching inside
+     * the worker is still gated exactly as in runWorker.
+     */
+    fun preload(ctx: Context) {
+        if (!loaded) kick(ctx)
+    }
+
+    /**
      * v3.1 (hero schedule): the last worker run's per-show TMDB
      * facts (next_episode_to_air date + season/episode), kept in
      * memory for the hero's date fill. Worker-written, freely

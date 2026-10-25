@@ -54,5 +54,21 @@ class App : Application() {
         // worker so a prefs wipe still leaves last-known tracker
         // data for the first home build of this process.
         com.mizan.launcher.data.TrackerClient.warmDiskMirror(this)
+        // v3.4 (ask 49): start the two worker warms at process
+        // start, not at the first home build — the tracker memo
+        // parse (now slim-accelerated) and the discovery disk
+        // hydration overlap process startup instead of queuing
+        // behind the first frame. Both are single-flight, so the
+        // home's own kicks below dedupe against these.
+        try {
+            com.mizan.launcher.data.TrackerClient.warmMemoAsync(this) { }
+        } catch (e: Exception) {
+            // Warm-up is an optimisation; the home warms on demand.
+        }
+        try {
+            com.mizan.launcher.data.DiscoveryData.preload(this)
+        } catch (e: Exception) {
+            // As above.
+        }
     }
 }
