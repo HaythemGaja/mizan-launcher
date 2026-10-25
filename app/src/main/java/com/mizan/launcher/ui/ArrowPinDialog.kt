@@ -36,7 +36,13 @@ import com.mizan.launcher.data.Prefs
  */
 object ArrowPinDialog {
 
-    /** Unlock prompt: checks entries against [storedEncoded] internally. */
+    /**
+     * Unlock prompt: checks entries against [storedEncoded] internally.
+     * v3.3 (ask 45): SAME dialog, just auto-submit — the dialog
+     * submits by itself the moment the entered count reaches the
+     * stored pattern length, so no OK press is ever needed to
+     * unlock. (An unset/garbled stored value falls back to OK-only.)
+     */
     fun showUnlock(
         activity: Activity,
         title: String,
@@ -46,12 +52,14 @@ object ArrowPinDialog {
         onWrongAttempt: () -> Unit = {},
         onCancel: () -> Unit = {}
     ) {
+        val storedLength = com.mizan.launcher.core.ArrowPinCodec.decode(storedEncoded).size
         show(
             activity = activity,
             initialTitle = title,
             accent = accent,
             showGlyphs = false,
-            hint = "Press your arrow pattern · OK when done · Back deletes",
+            hint = "Press your arrow pattern · Back deletes",
+            autoSubmitLength = storedLength,
             onSubmitSeq = { seq ->
                 if (ArrowPinCodec.matches(ArrowPinCodec.decode(seq), storedEncoded)) {
                     SubmitOutcome.Accept { onSuccess() }
@@ -118,6 +126,7 @@ object ArrowPinDialog {
         showGlyphs: Boolean,
         hint: String,
         titleProvider: (() -> String)? = null,
+        autoSubmitLength: Int? = null,
         onSubmitSeq: (String) -> SubmitOutcome,
         onCancel: () -> Unit
     ) {
@@ -244,6 +253,20 @@ object ArrowPinDialog {
                     dir != null -> {
                         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
                             handle(machine.append(dir))
+                            // v3.3 (ask 45): unlock auto-submit — the
+                            // moment the entry reaches the stored
+                            // length, submit without any OK press.
+                            // A mismatch clears inside handle() and
+                            // the user retries at once; partial
+                            // entries never submit (pure rule:
+                            // ArrowPinAutoSubmit, sim section 53).
+                            if (autoSubmitLength != null &&
+                                com.mizan.launcher.core.ArrowPinAutoSubmit.shouldSubmit(
+                                    machine.entered, autoSubmitLength
+                                )
+                            ) {
+                                handle(machine.submit())
+                            }
                         }
                         true
                     }

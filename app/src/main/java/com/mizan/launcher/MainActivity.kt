@@ -337,6 +337,12 @@ class MainActivity : Activity() {
 
     private fun rebuild() {
         stopHeroRotation()
+        // v3.3 (ask 46): re-read the safe-shell decision on every
+        // rebuild, not just onCreate — the Diagnostics "Exit safe
+        // mode" action clears the armed flag mid-process, and a
+        // resumed MainActivity must pick that up instead of
+        // rendering TV from the stale onCreate value.
+        safeShell = StartupHealthStore.safeShellArmed
         buildDegraded = false
         try {
             layout = prefs.layout
@@ -512,12 +518,19 @@ class MainActivity : Activity() {
      * composition crash. The hold is breadcrumbed so Diagnostics
      * shows it. Section-level error tiles do not hold the clear:
      * the intended home rendered and the app opened.
+     * v3.3 (ask 46): the delay comes from StartupHealth
+     * .clearDelayMs — a SAFE-SHELL launch clears IMMEDIATELY on
+     * its full render instead of waiting 10s, because a TV that
+     * kills the process inside the window could never clear and
+     * left him trapped in safe mode. The anti-brick property
+     * survives: the next NORMAL launch still needs the 10s
+     * survival, and two uncleared normal deaths still re-arm.
      */
     private fun onStartupRenderCompleted() {
-        if (buildDegraded) {
-            DiagLog.note("startup health: degraded build — clear held")
-        } else {
-            scheduleStartupClear()
+        when (StartupHealth.clearDelayMs(safeShell, buildDegraded)) {
+            null -> DiagLog.note("startup health: degraded build — clear held")
+            0L -> StartupHealthStore.markCleared(applicationContext)
+            else -> scheduleStartupClear()
         }
     }
 
@@ -1040,13 +1053,23 @@ class MainActivity : Activity() {
     private fun sectionLoading(key: String, continueCards: List<TrackerLogic.ContinueCard>): Boolean {
         val hasData = when (key) {
             TrackerSections.HERO -> false
-            TrackerSections.UPNEXT -> tUpNext.isNotEmpty()
-            TrackerSections.COMINGSOON -> dSoon.isNotEmpty()
+            // v3.3 (ask 47): the merged section has data when
+            // EITHER source does (dedupe can never empty a
+            // non-empty union).
+            TrackerSections.UPNEXT -> tUpNext.isNotEmpty() || dSoon.isNotEmpty()
             TrackerSections.CONTINUE -> continueCards.isNotEmpty()
             TrackerSections.TRENDINGTV -> dTrendTv.isNotEmpty()
             TrackerSections.TRENDINGMOVIES -> dTrendMovies.isNotEmpty()
             TrackerSections.FORYOU -> tPicks.isNotEmpty()
             else -> true
+        }
+        if (key == TrackerSections.UPNEXT) {
+            // v3.3 (ask 47): the merged section loads while
+            // EITHER source worker still runs — tracker-only
+            // routing would hide the placeholder while the
+            // discovery worker (the future tier) is still out.
+            return !hasData &&
+                (TrackerClient.isRefreshing() || !DiscoveryData.isLoaded())
         }
         return com.mizan.launcher.core.SectionModule.isLoading(
             key, hasData,
@@ -1067,6 +1090,17 @@ class MainActivity : Activity() {
         if (::prefs.isInitialized) {
             prefs.lastRefreshAt = System.currentTimeMillis()
             prefs.lastRefreshKind = "retry:$key"
+        }
+        // v3.3 (ask 47): the merged Up Next retries BOTH sources —
+        // a tracker forced fetch AND a discovery worker run (each
+        // lands its own rebuild); retrying one alone would leave
+        // the other tier stale.
+        if (key == TrackerSections.UPNEXT) {
+            TrackerClient.refreshAsync(this, force = true) {
+                if (isTrackerFamily()) rebuild()
+            }
+            DiscoveryData.refreshNow(this)
+            return
         }
         when (com.mizan.launcher.core.SectionModule.retrySource(key)) {
             com.mizan.launcher.core.SectionModule.Source.TRACKER ->
@@ -1101,7 +1135,6 @@ class MainActivity : Activity() {
     private fun trackerTileLabel(key: String): String = when (key) {
         TrackerSections.HERO -> "Hero"
         TrackerSections.UPNEXT -> "Up Next"
-        TrackerSections.COMINGSOON -> "Coming Soon"
         TrackerSections.CONTINUE -> "Continue"
         TrackerSections.TRENDINGTV -> "Trending TV"
         TrackerSections.TRENDINGMOVIES -> "Trending Movies"
@@ -3576,13 +3609,20 @@ class MainActivity : Activity() {
         // profile's order, skipping hidden sections AND data-empty
         // ones — an empty section never renders a bare header. For You
         // additionally needs tracker ≥ 1.14.4: no picks, no section.
+        // v3.3 (ask 47): Up Next + Coming Soon are ONE section.
+        // The merge uses the hero's date-filled Up Next list (the
+        // same conservative TMDB fill), so tiering and dedupe see
+        // the best-known dates and coordinates.
+        val mergedUpNext = TrackerLogic.mergeUpNext(
+            TrackerLogic.fillHeroDates(tUpNext, DiscoveryData.tvFacts()),
+            dSoon, todayIso()
+        )
         val sectionsCfg = prefs.trackerSectionsConfig()
         val available = mapOf(
             TrackerSections.HERO to (hero != null),
-            TrackerSections.UPNEXT to tUpNext.isNotEmpty(),
-            // v2.7 focus rows: Coming Soon + Trending ride the
-            // discovery state (empty until the worker first lands).
-            TrackerSections.COMINGSOON to dSoon.isNotEmpty(),
+            TrackerSections.UPNEXT to mergedUpNext.isNotEmpty(),
+            // v2.7 focus rows: Trending rides the discovery state
+            // (empty until the worker first lands).
             TrackerSections.CONTINUE to continueCards.isNotEmpty(),
             TrackerSections.TRENDINGTV to dTrendTv.isNotEmpty(),
             TrackerSections.TRENDINGMOVIES to dTrendMovies.isNotEmpty(),
@@ -3662,9 +3702,7 @@ class MainActivity : Activity() {
                     TrackerSections.HERO ->
                         hero?.let { content.addView(buildHeroZone(it)) }
                     TrackerSections.UPNEXT ->
-                        content.addView(buildUpNextSection(tUpNext))
-                    TrackerSections.COMINGSOON ->
-                        content.addView(buildComingSoonSection(dSoon))
+                        content.addView(buildMergedUpNextSection(mergedUpNext))
                     TrackerSections.CONTINUE ->
                         buildTrackerContinueSection(continueCards, system)
                             ?.let { content.addView(it) }
@@ -4483,59 +4521,76 @@ class MainActivity : Activity() {
         return col
     }
 
-    private fun buildUpNextSection(items: List<TrackerLogic.UpNextItem>): View {
+    /**
+     * One Up Next card (v3.3, ask 47): the merged section renders
+     * Up Next-sourced items with exactly this card (matched play
+     * badge + play, mark-watched menu, Play in). Extracted
+     * unchanged from the old buildUpNextSection loop body.
+     */
+    private fun upNextCard(item: TrackerLogic.UpNextItem): View {
+        val today = todayIso()
+        val countdown = TrackerLogic.countdownLabel(item.dateIso, today)
+        // v2.3 Watch: a matched card wears the ▶ IPTV badge and
+        // OK plays the episode in place (failing open to details).
+        // v2.9: an unmatched card opens the in-launcher Details
+        // (it used to open the tracker app) — ask F.25.
+        val wMatch = watchMatch("tv", item.tmdbId)
+        // v2.8: Up Next rides the landscape rail (backdrop,
+        // "Sx Ey" pill chip) — the Google-TV card language.
+        val card = landscapeCard(
+            imagePath = item.backdrop.ifBlank { item.poster },
+            imageSize = if (item.backdrop.isNotBlank()) "w780" else "w342",
+            imageLandscape = item.backdrop.isNotBlank(),
+            title = item.title,
+            meta = countdown.ifBlank { item.sub },
+            chip = if (item.season > 0 && item.episode > 0) {
+                "S${item.season} E${item.episode}"
+            } else {
+                null
+            },
+            glyph = "📺",
+            onClick = {
+                // v2.9 (ask F.25): matched plays; unmatched
+                // opens the in-launcher Details — a card press
+                // never lands in the tracker app.
+                if (wMatch != null) playUpNextItem(item, inSnapshot = true)
+                else openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+            },
+            onLong = {
+                openTrackerCardMenu(
+                    item.title,
+                    onMark = {
+                        markWatched(item.tmdbId, item.type, item.season, item.episode)
+                    },
+                    onDetails = {
+                        openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+                    },
+                    // v3.1 (ask 40): matched shows only — the
+                    // entry hands the episode stream over.
+                    onPlayIn = if (wMatch != null) {
+                        { playInEpisode(item) }
+                    } else {
+                        null
+                    }
+                )
+            },
+            badge = WatchMatch.cardBadge(wMatch != null)
+        )
+        return card
+    }
+
+    /**
+     * The merged Up Next section (v3.3, ask 47): one Up Next
+     * row holding the merged tiers (missed, watchable, future;
+     * core TrackerLogic.mergeUpNext). Up Next-sourced items
+     * render as Up Next cards; Soon-only items render as Soon
+     * cards (details-only, as Coming Soon did).
+     */
+    private fun buildMergedUpNextSection(items: List<TrackerLogic.MergedUpNextItem>): View {
         val box = section("Up Next")
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
-        val today = todayIso()
         for (item in items) {
-            val countdown = TrackerLogic.countdownLabel(item.dateIso, today)
-            // v2.3 Watch: a matched card wears the ▶ IPTV badge and
-            // OK plays the episode in place (failing open to details).
-            // v2.9: an unmatched card opens the in-launcher Details
-            // (it used to open the tracker app) — ask F.25.
-            val wMatch = watchMatch("tv", item.tmdbId)
-            // v2.8: Up Next rides the landscape rail (backdrop,
-            // "Sx Ey" pill chip) — the Google-TV card language.
-            val card = landscapeCard(
-                imagePath = item.backdrop.ifBlank { item.poster },
-                imageSize = if (item.backdrop.isNotBlank()) "w780" else "w342",
-                imageLandscape = item.backdrop.isNotBlank(),
-                title = item.title,
-                meta = countdown.ifBlank { item.sub },
-                chip = if (item.season > 0 && item.episode > 0) {
-                    "S${item.season} E${item.episode}"
-                } else {
-                    null
-                },
-                glyph = "📺",
-                onClick = {
-                    // v2.9 (ask F.25): matched plays; unmatched
-                    // opens the in-launcher Details — a card press
-                    // never lands in the tracker app.
-                    if (wMatch != null) playUpNextItem(item, inSnapshot = true)
-                    else openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
-                },
-                onLong = {
-                    openTrackerCardMenu(
-                        item.title,
-                        onMark = {
-                            markWatched(item.tmdbId, item.type, item.season, item.episode)
-                        },
-                        onDetails = {
-                            openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
-                        },
-                        // v3.1 (ask 40): matched shows only — the
-                        // entry hands the episode stream over.
-                        onPlayIn = if (wMatch != null) {
-                            { playInEpisode(item) }
-                        } else {
-                            null
-                        }
-                    )
-                },
-                badge = WatchMatch.cardBadge(wMatch != null)
-            )
-            row.addView(card)
+            row.addView(if (item.upNext != null) upNextCard(item.upNext) else soonCard(item.soon!!))
         }
         box.addView(horizontalScroller(row))
         return box
@@ -4673,51 +4728,44 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Coming Soon (v2.7): tracked shows with a future next episode
-     * + tracked movies with a future release, computed in the
-     * launcher (core/Discovery shapes, data/DiscoveryData fetches).
-     * Poster, title, and the date chip — "today" / "tomorrow" /
-     * "in N days" / the date itself — with the episode coordinates
-     * for shows. OK opens the title's details.
+     * One Soon card (v3.3, ask 47): Soon-only items inside the
+     * merged Up Next section render with exactly this card
+     * (poster complete over its blurred fill, date chip,
+     * details-only). Extracted unchanged from the old
+     * buildComingSoonSection loop body.
      */
-    private fun buildComingSoonSection(items: List<Discovery.SoonItem>): View {
-        val box = section("Coming Soon")
-        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+    private fun soonCard(item: Discovery.SoonItem): View {
         val today = todayIso()
-        for (item in items) {
-            val chip = Discovery.soonChip(item.dateIso, today)
-            val meta = listOf(chip, item.sub).filter { it.isNotBlank() }
-                .joinToString(" · ")
-            // v2.8: Coming Soon rides the landscape rail and the
-            // air/release date is the pill chip. v2.9 (ask C.14):
-            // SoonItem carries NO backdrop — the poster is
-            // portrait, so it renders COMPLETE over its blurred
-            // fill (imageLandscape = false), never cropped.
-            val card = landscapeCard(
-                imagePath = item.poster,
-                imageSize = "w500",
-                imageLandscape = false,
-                title = item.title,
-                meta = meta,
-                chip = Discovery.monthDay(item.dateIso).ifBlank { null },
-                glyph = if (item.type == "movie") "🎬" else "📺",
-                onClick = {
-                    openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
-                },
-                onLong = {
-                    openTrackerCardMenu(
-                        item.title,
-                        onMark = null,
-                        onDetails = {
-                            openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
-                        }
-                    )
-                }
-            )
-            row.addView(card)
-        }
-        box.addView(horizontalScroller(row))
-        return box
+        val chip = Discovery.soonChip(item.dateIso, today)
+        val meta = listOf(chip, item.sub).filter { it.isNotBlank() }
+            .joinToString(" · ")
+        // v2.8: Coming Soon rides the landscape rail and the
+        // air/release date is the pill chip. v2.9 (ask C.14):
+        // SoonItem carries NO backdrop — the poster is
+        // portrait, so it renders COMPLETE over its blurred
+        // fill (imageLandscape = false), never cropped.
+        val card = landscapeCard(
+            imagePath = item.poster,
+            imageSize = "w500",
+            imageLandscape = false,
+            title = item.title,
+            meta = meta,
+            chip = Discovery.monthDay(item.dateIso).ifBlank { null },
+            glyph = if (item.type == "movie") "🎬" else "📺",
+            onClick = {
+                openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+            },
+            onLong = {
+                openTrackerCardMenu(
+                    item.title,
+                    onMark = null,
+                    onDetails = {
+                        openTitleDetails(item.tmdbId, item.type, item.title, item.poster)
+                    }
+                )
+            }
+        )
+        return card
     }
 
     /**

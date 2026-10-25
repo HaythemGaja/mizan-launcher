@@ -48,10 +48,29 @@ object StartupHealth {
     /** The counter after a startup completes + survives: always zero. */
     fun onCleared(): Int = 0
 
+    /**
+     * v3.3 (ask 46): how long after a completed render the clear
+     * waits, or null to HOLD it. A degraded build (whole-home
+     * fallback / emergency root) never clears — that hold is what
+     * keeps a deterministic composition crash arming the safe
+     * shell. A SAFE-SHELL launch clears IMMEDIATELY on its full
+     * render: the safe home is light by design, so its render
+     * proves the process can compose a home, and waiting 10s
+     * under memory pressure is exactly the trap that left him
+     * stuck in safe mode (the TV kills the process inside the
+     * window, so the counter could never clear). This does NOT
+     * weaken the safety net: the next NORMAL launch still needs
+     * the full 10s survival, and two uncleared normal deaths
+     * still re-arm the safe shell via beginLaunch counting.
+     */
+    fun clearDelayMs(safeShell: Boolean, degraded: Boolean): Long? =
+        if (degraded) null else if (safeShell) 0L else SURVIVAL_MS
+
     /** The safe shell's user-facing notice (his language: short, plain, actionable). */
     const val NOTICE_TEXT =
         "Sreeb started in safe mode after repeated start crashes. " +
-            "Your apps are below — Diagnostics has the details."
+            "Your apps are below — Diagnostics (Data & about) has an " +
+            "'Exit safe mode' action to retry your normal home."
 
     /** The diagnostics line: the counter + the shell state, always present. */
     fun diagnosticsLine(unclearedStarts: Int, safeShell: Boolean): String =

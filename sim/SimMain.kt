@@ -24,6 +24,7 @@ import com.mizan.launcher.core.ArrowDir
 import com.mizan.launcher.core.ArrowPinCodec
 import com.mizan.launcher.core.ArrowPinEntry
 import com.mizan.launcher.core.ArrowPinEvent
+import com.mizan.launcher.core.ArrowPinAutoSubmit
 import com.mizan.launcher.core.ArrowPinSetupFlow
 import com.mizan.launcher.core.ArrowPinSetupResult
 import com.mizan.launcher.core.FolderGate
@@ -1842,10 +1843,11 @@ fun main() {
         // RE-PINNED in v2.7: the default order intentionally
         // changed (directive: comingsoon after upnext, trending
         // after continue) — the swap happens over the longer list.
-        // v3.1 RE-PINNED (ask 37): foryou's predecessor is now
-        // trendingmovies (movienight gone), so the swap lands there.
+        // v3.3 RE-PINNED (ask 47): foryou's predecessor is now
+        // trendingmovies (movienight gone in v3.1, comingsoon
+        // merged into upnext in v3.3), so the swap lands there.
         check("sections: move up swaps with the previous row",
-            moved.order == listOf("upnext", "comingsoon", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "allapps"))
+            moved.order == listOf("upnext", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "allapps"))
         check("sections: moves at the edges and for the hero are no-ops",
             ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
                 ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
@@ -1854,14 +1856,14 @@ fun main() {
         // RE-PINNED in v2.7 (new sections in the canonical tail).
         check("sections: compose follows the configured order, hero first",
             ts.compose(reordered) { true } ==
-                // v3.1 RE-PINNED (ask 37): movienight in the input drops via normalize.
-                listOf("hero", "allapps", "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies", "foryou", "favorites"))
+                // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext.
+                listOf("hero", "allapps", "upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites"))
         // RE-PINNED in v2.7 (new sections compose when available).
         // v3.1 RE-PINNED (ask 37): MOVIENIGHT is gone, so the data-empty
         // gate uses foryou; hidden upnext + gated foryou both drop.
         check("sections: hidden + data-empty sections are both skipped",
             ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.FORYOU } ==
-                listOf("hero", "comingsoon", "continue", "trendingtv", "trendingmovies", "favorites", "allapps"))
+                listOf("hero", "continue", "trendingtv", "trendingmovies", "favorites", "allapps"))
         check("sections: unknown keys are dropped by normalize",
             ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
                 ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
@@ -3239,6 +3241,9 @@ fun main() {
     // ---------- (52) v3.2: no refresh on open, sort in one place, first-frame stages ----------
     section52()
 
+    // ---------- (53) v3.3: lock auto-submit, safe mode escapable + visible ----------
+    section53()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3736,23 +3741,24 @@ fun section45() {
 
         // --- sections: the v2.7 set ---
         val tsx = TrackerSections
-        // v3.1 RE-PINNED (ask 37): movienight removed from the canonical order.
+        // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext
+        // (v3.1 had already removed movienight from this order).
         check("sections: v2.7 canonical order is the directive's focus order",
             tsx.CANONICAL == listOf(
-                "hero", "upnext", "comingsoon", "continue", "trendingtv",
+                "hero", "upnext", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "allapps"
             ))
         check("sections: v2.7 labels",
-            tsx.label(tsx.COMINGSOON) == "Coming Soon" &&
-                tsx.label(tsx.TRENDINGTV) == "Trending TV" &&
+            tsx.label(tsx.TRENDINGTV) == "Trending TV" &&
                 tsx.label(tsx.TRENDINGMOVIES) == "Trending Movies")
-        // v3.1 RE-PINNED (ask 37): a stored movienight drops on decode;
-        // the remaining order + appended focus rows are unchanged.
+        // v3.3 RE-PINNED (ask 47): a stored movienight drops on decode;
+        // the remaining order + appended focus rows are unchanged
+        // (comingsoon no longer appends — it is merged into upnext).
         check("sections: a pre-v2.7 stored order keeps its order; the new rows append",
             tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|").order ==
                 listOf(
                     "upnext", "continue", "foryou", "favorites",
-                    "allapps", "comingsoon", "trendingtv", "trendingmovies"
+                    "allapps", "trendingtv", "trendingmovies"
                 ))
 
         // --- source checks: the v2.7 wiring is really in the app ---
@@ -3762,10 +3768,11 @@ fun section45() {
             ""
         }
         val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
-        check("v27src: the Tracker/Watch home composes the three focus rows",
-            mainSrc.contains("buildComingSoonSection") &&
+        // v3.3 RE-PINNED (ask 47): Coming Soon is merged into Up
+        // Next — the home composes the merged section + Trending.
+        check("v27src: the Tracker/Watch home composes the merged Up Next + Trending rows",
+            mainSrc.contains("buildMergedUpNextSection") &&
                 mainSrc.contains("buildTrendingSection") &&
-                mainSrc.contains("TrackerSections.COMINGSOON") &&
                 mainSrc.contains("TrackerSections.TRENDINGTV"))
         check("v27src: the IPTV home carries Trending on your IPTV + its play path",
             mainSrc.contains("buildIptvTrendingSection") &&
@@ -3940,11 +3947,11 @@ fun section42() {
             settingsSrc.contains("Copy diagnostics") &&
                 settingsSrc.contains("anrTail") && settingsSrc.contains("crashTail"))
         val gradleSrc = src("app/build.gradle.kts")
-        // Re-pinned in v3.2 (intentional version bump 3.1/24 → 3.2/25 —
-        // no-refresh-on-open + sort dedup + first-frame stages, spec §32).
-        check("v25src: the app version is 3.2 / code 25 (bumped by v3.2)",
-            gradleSrc.contains("versionName = \"3.2\"") &&
-                gradleSrc.contains("versionCode = 25"))
+        // Re-pinned in v3.3 (intentional version bump 3.2/25 → 3.3/26 —
+        // lock auto-submit + safe-mode exit/disclosure, spec §33).
+        check("v25src: the app version is 3.3 / code 26 (bumped by v3.3)",
+            gradleSrc.contains("versionName = \"3.3\"") &&
+                gradleSrc.contains("versionCode = 26"))
     }
 }
 
@@ -3956,12 +3963,14 @@ fun section46() {
         // --- the section-order migration (why Haythem "didn't see
         // any change" in v2.7: the focus rows appended at the end).
         val preV27 = tsx.decode("upnext,continue,movienight,foryou,favorites,allapps|")
+        // v3.3 RE-PINNED (ask 47): comingsoon is gone (merged
+        // into upnext); only the trending rows still append.
         check("migrate: a pre-v2.7 stored order has the focus rows appended at the end",
-            preV27.order.takeLast(3) == listOf("comingsoon", "trendingtv", "trendingmovies"))
+            preV27.order.takeLast(2) == listOf("trendingtv", "trendingmovies"))
         val migrated = tsx.migrateOrder(preV27)
         check("migrate: the appended rows splice into their canonical slots",
             migrated.order == listOf(
-                "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies",
+                "upnext", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps"
             ))
         check("migrate: idempotent — a second pass changes nothing",
@@ -3971,17 +3980,19 @@ fun section46() {
         val partial = tsx.decode(
             "upnext,comingsoon,continue,movienight,foryou,favorites,allapps,trendingtv,trendingmovies|"
         )
-        check("migrate: only the still-appended rows move (comingsoon already placed stays)",
+        // v3.3 RE-PINNED (ask 47): comingsoon drops on decode, so
+        // only the still-appended trending rows splice.
+        check("migrate: only the still-appended rows move (comingsoon drops on decode)",
             tsx.migrateOrder(partial).order == listOf(
-                "upnext", "comingsoon", "continue", "trendingtv", "trendingmovies",
+                "upnext", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps"
             ))
         val parked = tsx.decode(
-            "upnext,continue,comingsoon,movienight,foryou,favorites,allapps,trendingtv,trendingmovies|"
+            "upnext,continue,trendingtv,foryou,favorites,allapps,trendingmovies|"
         )
         check("migrate: a focus row parked mid-list (before foryou) is never itself moved",
             tsx.migrateOrder(parked).order == listOf(
-                "upnext", "continue", "trendingtv", "trendingmovies", "comingsoon",
+                "upnext", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps"
             ))
         val custom = tsx.decode(
@@ -3989,15 +4000,20 @@ fun section46() {
         )
         check("migrate: the user's other rows keep their relative order exactly",
             tsx.migrateOrder(custom).order == listOf(
-                "upnext", "comingsoon", "continue", "trendingtv",
+                "upnext", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "allapps"
             ))
         val hiddenCfg = tsx.decode(
             "upnext,continue,movienight,foryou,favorites,allapps|comingsoon"
         )
-        check("migrate: the hidden set survives the splice",
-            tsx.migrateOrder(hiddenCfg).hidden == setOf("comingsoon") &&
-                tsx.migrateOrder(hiddenCfg).order.indexOf("comingsoon") == 1)
+        // v3.3 RE-PINNED (ask 47): a removed key drops from the
+        // hidden set on decode; the splice still applies.
+        check("migrate: the hidden set drops removed keys; the splice still applies",
+            tsx.migrateOrder(hiddenCfg).hidden.isEmpty() &&
+                tsx.migrateOrder(hiddenCfg).order == listOf(
+                    "upnext", "continue", "trendingtv", "trendingmovies",
+                    "foryou", "favorites", "allapps"
+                ))
 
         // --- the pill tab model (core/HomeTabs) ---
         val tTabs = HomeTabs.trackerTabs()
@@ -4588,10 +4604,11 @@ fun section49() {
         // ---- tracker section order: half-migrated + garbled ----
         val halfMigrated = TrackerSections.decode("upnext,continue,movienight,foryou,favorites,allapps|")
         val migrated = TrackerSections.migrateOrder(halfMigrated)
+        // v3.3 RE-PINNED (ask 47): comingsoon is gone with the merge.
         check("startup-state: the half-migrated section order migrates without losing sections",
             migrated.order.containsAll(
-                listOf("upnext", "continue", "comingsoon", "trendingtv", "trendingmovies")
-            ))
+                listOf("upnext", "continue", "trendingtv", "trendingmovies")
+            ) && !migrated.order.contains("comingsoon"))
         val garbledSections = TrackerSections.decode("xyz,hero,hero,|bogus,,")
         val composedGarbled = TrackerSections.compose(garbledSections) { true }
         check("startup-state: a garbled section order composes canonically (no dupes, no unknowns)",
@@ -4747,10 +4764,13 @@ fun section50() {
                 !SectionModule.isRetryable(SectionModule.State.LOADING) &&
                 !SectionModule.isRetryable(SectionModule.State.READY) &&
                 !SectionModule.isRetryable(SectionModule.State.EMPTY))
+        // v3.3 RE-PINNED (ask 47): comingsoon is an unknown key now
+        // (NONE); the merged Up Next retry refreshes both sources
+        // via MainActivity's own branch (merge53src pins it).
         check("v31: retry routing — tracker, discovery, iptv, apps, unknown",
             SectionModule.retrySource("upnext") == SectionModule.Source.TRACKER &&
                 SectionModule.retrySource("foryou") == SectionModule.Source.TRACKER &&
-                SectionModule.retrySource("comingsoon") == SectionModule.Source.DISCOVERY &&
+                SectionModule.retrySource("comingsoon") == SectionModule.Source.NONE &&
                 SectionModule.retrySource("trendingmovies") == SectionModule.Source.DISCOVERY &&
                 SectionModule.retrySource("iptv-trending") == SectionModule.Source.DISCOVERY &&
                 SectionModule.retrySource("iptv-row") == SectionModule.Source.IPTV &&
@@ -4832,10 +4852,10 @@ fun section50() {
         check("v31src: discovery Retry forces one TTL-ignoring worker run",
             src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("forceNext") &&
                 src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun refreshNow"))
-        // Re-pinned in v3.2 (intentional version bump 3.1/24 → 3.2/25, spec §32).
-        check("v31src: the version bump is 3.2 / code 25",
-            src("app/build.gradle.kts").contains("versionCode = 25") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.2\""))
+        // Re-pinned in v3.3 (intentional version bump 3.2/25 → 3.3/26, spec §33).
+        check("v31src: the version bump is 3.3 / code 26",
+            src("app/build.gradle.kts").contains("versionCode = 26") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.3\""))
     }
 }
 
@@ -5023,4 +5043,210 @@ fun section52() {
         settingsSrc.contains("last refresh:") && settingsSrc.contains("startup stages:"))
     check("refresh52src: hero schedule rule untouched (missed first, today stays in Coming Soon)",
         mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
+}
+
+/** v3.3 checks — lock auto-submit (ask 45) + safe mode escapable/visible (ask 46, spec §33). */
+fun section53() {
+    run {
+        println("-- section 53: v3.3 lock auto-submit + safe-mode exit")
+
+        // ---- auto-submit rule (core/ArrowPinAutoSubmit) ----
+        for (stored in 4..8) {
+            check("auto53: stored length $stored submits exactly at $stored, never before or after",
+                !ArrowPinAutoSubmit.shouldSubmit(stored - 1, stored) &&
+                    ArrowPinAutoSubmit.shouldSubmit(stored, stored) &&
+                    !ArrowPinAutoSubmit.shouldSubmit(stored + 1, stored))
+        }
+        for (bad in listOf(0, 1, 3, 9, 12)) {
+            check("auto53: invalid stored length $bad never auto-submits",
+                (0..9).none { ArrowPinAutoSubmit.shouldSubmit(it, bad) })
+        }
+        // Machine integration: an unlock entry of the stored length
+        // submits with the exact encoding; a partial entry does not.
+        val unlock = ArrowPinEntry()
+        unlock.append(ArrowDir.UP); unlock.append(ArrowDir.DOWN); unlock.append(ArrowDir.LEFT)
+        check("auto53: partial unlock entry (3 of 4) does not auto-submit",
+            !ArrowPinAutoSubmit.shouldSubmit(unlock.entered, 4))
+        unlock.append(ArrowDir.RIGHT)
+        check("auto53: complete unlock entry (4 of 4) auto-submits with its encoding",
+            ArrowPinAutoSubmit.shouldSubmit(unlock.entered, 4) &&
+                (unlock.submit() as? ArrowPinEvent.Submitted)?.sequence == "UDLR")
+        // The set flow has no stored length: it still needs OK per
+        // phase (auto-submit must not fire without a stored length).
+        check("auto53: set flow keeps OK-driven phases (no stored length, no auto-submit)",
+            !ArrowPinAutoSubmit.shouldSubmit(4, 0))
+
+        // ---- clear-delay rule (core/StartupHealth.clearDelayMs) ----
+        val sh = StartupHealth
+        check("clear53: normal completed render waits the full 10s survival",
+            sh.clearDelayMs(false, false) == 10_000L)
+        check("clear53: safe-shell completed render clears immediately (0ms)",
+            sh.clearDelayMs(true, false) == 0L)
+        check("clear53: degraded build holds the clear in both modes",
+            sh.clearDelayMs(false, true) == null && sh.clearDelayMs(true, true) == null)
+        // Anti-brick, composed with the new rule: two normal deaths
+        // still arm the safe shell; a safe render clears at once;
+        // the next launch is NORMAL; two more deaths re-arm.
+        var counter = 0
+        fun launch(dies: Boolean, degraded: Boolean = false): StartupHealth.Mode {
+            val mode = sh.modeFor(counter)
+            counter = sh.onLaunch(counter)
+            if (!dies) {
+                if (sh.clearDelayMs(mode == StartupHealth.Mode.SAFE_SHELL, degraded) != null) {
+                    counter = sh.onCleared()
+                }
+            }
+            return mode
+        }
+        launch(dies = true); launch(dies = true)
+        val safeMode = launch(dies = false)
+        check("clear53: [die, die] -> safe shell, and its clean render clears immediately",
+            safeMode == StartupHealth.Mode.SAFE_SHELL && counter == 0)
+        check("clear53: after the cleared safe launch the next launch is NORMAL",
+            launch(dies = false) == StartupHealth.Mode.NORMAL)
+        launch(dies = true); launch(dies = true)
+        check("clear53: user-exit or immediate clear never disables re-arming — two more deaths re-arm safe mode",
+            launch(dies = false) == StartupHealth.Mode.SAFE_SHELL || sh.modeFor(counter) == StartupHealth.Mode.SAFE_SHELL)
+        // A degraded safe render must NOT clear (TV build itself broken).
+        counter = 2
+        val heldMode = sh.modeFor(counter)
+        counter = sh.onLaunch(counter)
+        check("clear53: degraded safe render holds the clear (counter stays)",
+            heldMode == StartupHealth.Mode.SAFE_SHELL &&
+                sh.clearDelayMs(true, true) == null && counter == 3)
+        check("clear53: notice names safe mode, Diagnostics, and the exit action",
+            sh.NOTICE_TEXT.contains("safe mode") && sh.NOTICE_TEXT.contains("Diagnostics") &&
+                sh.NOTICE_TEXT.contains("Exit safe mode"))
+
+        // ---- source checks: the wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val dialogSrc = src("app/src/main/java/com/mizan/launcher/ui/ArrowPinDialog.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val storeSrc = src("app/src/main/java/com/mizan/launcher/data/StartupHealthStore.kt")
+        check("auto53src: unlock dialog auto-submits at the stored length",
+            dialogSrc.contains("autoSubmitLength") &&
+                dialogSrc.contains("ArrowPinAutoSubmit.shouldSubmit") &&
+                dialogSrc.contains("Press your arrow pattern · Back deletes"))
+        check("auto53src: set flow passes no auto-submit length (OK-driven phases kept)",
+            dialogSrc.contains("hint = \"Press arrows to build a pattern of 4–8 · OK when done · Back deletes\""))
+        check("safe53src: Diagnostics gains the exit action, gated on the armed flag",
+            settingsSrc.contains("Exit safe mode and retry normal home") &&
+                settingsSrc.contains("exitSafeShell") &&
+                settingsSrc.contains("safeShellArmed"))
+        check("safe53src: style label + picker disclose the safe-mode TV lock",
+            settingsSrc.contains("safe mode is ON: home locked to TV") &&
+                settingsSrc.contains("locked to TV until safe mode exits"))
+        check("safe53src: MainActivity re-reads the armed flag on rebuild and uses the clear-delay rule",
+            mainSrc.contains("safeShell = StartupHealthStore.safeShellArmed") &&
+                mainSrc.contains("clearDelayMs(safeShell, buildDegraded)"))
+        check("safe53src: store offers a user-initiated exit that resets counter + flag",
+            storeSrc.contains("fun exitSafeShell") &&
+                storeSrc.contains("safeShellArmed = false"))
+    }
+    run {
+        println("-- section 53b: v3.3 merged Up Next (ask 47)")
+
+        // Fixtures: today 2026-10-24. Up Next carries the
+        // snapshot dates; Soon carries TMDB next-air dates.
+        val today = "2026-10-24"
+        fun up(
+            id: Long, title: String, date: String, s: Int, e: Int
+        ) = TrackerLogic.UpNextItem(
+            id, title, "S$s E$e", date, "p$id", "b$id", "", s, e, "tv"
+        )
+        fun soon(
+            id: Long, title: String, date: String, sub: String, type: String = "tv"
+        ) = Discovery.SoonItem(id, type, title, "p$id", date, sub)
+        val upItems = listOf(
+            up(1, "Missed Old", "2026-10-20", 1, 5),
+            up(2, "Missed New", "2026-10-23", 2, 3),
+            up(3, "Today Show", "2026-10-24", 1, 1),
+            up(4, "Dateless Show", "", 3, 2),
+            up(5, "Caught Up", "2026-10-30", 2, 6),
+            up(6, "Behind Show", "2026-10-01", 1, 5),
+            up(7, "Future No Twin", "2026-11-02", 1, 9)
+        )
+        val soonItems = listOf(
+            soon(5, "Caught Up", "2026-10-30", "S2 E6"),
+            soon(6, "Behind Show", "2026-11-05", "S1 E8"),
+            soon(7, "Future Only", "2026-10-26", "S1 E1"),
+            soon(8, "Today Only", "2026-10-24", "S4 E2"),
+            soon(9, "Future Movie", "2026-11-14", "", "movie")
+        )
+        val merged = TrackerLogic.mergeUpNext(upItems, soonItems, today)
+        val titles = merged.map { it.title }
+        check("merge53: same episode appears once (Caught Up deduped to its Up Next card)",
+            titles.count { it == "Caught Up" } == 1 &&
+                merged.first { it.title == "Caught Up" }.upNext != null)
+        check("merge53: different episodes of one show both stay (Behind S1E5 + Soon S1E8)",
+            titles.count { it == "Behind Show" } == 2)
+        check("merge53: tier order is missed (oldest first) -> watchable (today, then dateless) -> future (date asc)",
+            titles == listOf(
+                "Behind Show", "Missed Old", "Missed New",
+                "Today Show", "Dateless Show",
+                "Today Only", "Future Only", "Caught Up", "Future No Twin", "Behind Show", "Future Movie"
+            ))
+        check("merge53: missed tier is most-overdue first (Oct 01 before Oct 20 before Oct 23)",
+            merged.take(3).map { it.title } == listOf("Behind Show", "Missed Old", "Missed New"))
+        check("merge53: Soon-only today item leads the future tier (date asc)",
+            merged[5].title == "Today Only" && merged[5].upNext == null)
+        check("merge53: future Up Next item with no Soon twin is kept, in the future tier",
+            merged.first { it.title == "Future No Twin" }.upNext != null &&
+                merged.indexOfFirst { it.title == "Future No Twin" } >
+                    merged.indexOfFirst { it.title == "Dateless Show" })
+        check("merge53: Soon movies never dedupe against shows and land in the future tier",
+            merged.last().title == "Future Movie" && merged.last().type == "movie")
+        // Coord-less pairs never dedupe (sameness unproven — the
+        // hero rule): same show, no coords on either side, twice.
+        val coordless = TrackerLogic.mergeUpNext(
+            listOf(
+                TrackerLogic.UpNextItem(11, "NoCoords", "", "", "p", "b", "", 0, 0, "tv")
+            ),
+            listOf(Discovery.SoonItem(11, "tv", "NoCoords", "p", "2026-10-28", "")),
+            today
+        )
+        check("merge53: coord-less pair keeps both cards (sameness unproven)",
+            coordless.size == 2)
+        // Registry: Coming Soon is gone; stored orders drop it.
+        check("merge53: registry has no Coming Soon key anywhere",
+            !TrackerSections.CANONICAL.contains("comingsoon") &&
+                !TrackerSections.ROWS.contains("comingsoon"))
+        val decoded = TrackerSections.decode("upnext,comingsoon,continue|comingsoon")
+        check("merge53: stored order + hidden set mentioning comingsoon drop it on read",
+            decoded.order == listOf("upnext", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "allapps") &&
+                "comingsoon" !in decoded.hidden)
+        check("merge53: compose never emits comingsoon",
+            !TrackerSections.compose(decoded) { true }.contains("comingsoon"))
+        // Hero rule untouched: future items stay out of the hero,
+        // and the same-episode Soon exclusion still applies.
+        val heroes = TrackerLogic.heroCandidates(
+            upItems, emptyList(), emptyList(), emptyMap(), today, soonItems
+        )
+        check("merge53: hero still excludes future items and same-episode Soon twins",
+            heroes.none { it.title == "Caught Up" } &&
+                heroes.none { it.title == "Future Only" } &&
+                heroes.map { it.title }.contains("Missed Old"))
+        // Source checks: the merged wiring is really in the app.
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val sectionsSrc = src("app/src/main/java/com/mizan/launcher/core/TrackerSections.kt")
+        check("merge53src: home composes the merged section, not two sections",
+            mainSrc.contains("mergeUpNext(") &&
+                mainSrc.contains("buildMergedUpNextSection(mergedUpNext)") &&
+                !mainSrc.contains("buildComingSoonSection(") &&
+                !mainSrc.contains("TrackerSections.COMINGSOON"))
+        check("merge53src: Coming Soon const is gone from the registry",
+            !sectionsSrc.contains("const val COMINGSOON"))
+        check("merge53src: merged retry refreshes both sources",
+            mainSrc.contains("the merged Up Next retries BOTH sources"))
+    }
 }

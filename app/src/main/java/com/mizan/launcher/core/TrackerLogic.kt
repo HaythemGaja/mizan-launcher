@@ -524,6 +524,140 @@ object TrackerLogic {
         }
     }
 
+    /**
+     * One merged Up Next row item (v3.3, ask 47): Up Next +
+     * Coming Soon are ONE section titled "Up Next". [upNext]
+     * is non-null when the tracker has a next-episode item for
+     * the show (the actionable card: play / mark watched); [soon]
+     * is non-null when discovery lists a future airing for it.
+     * Soon-only items (no tracker twin) carry [upNext] == null
+     * and render as details-only cards, as Coming Soon did.
+     */
+    data class MergedUpNextItem(
+        val tmdbId: Long,
+        val title: String,
+        val sub: String,
+        val dateIso: String,
+        val poster: String,
+        val backdrop: String,
+        val overview: String,
+        val season: Int,
+        val episode: Int,
+        val type: String,
+        val upNext: UpNextItem?,
+        val soon: Discovery.SoonItem?
+    )
+
+    /**
+     * Merge Up Next + Coming Soon into one section (v3.3, ask
+     * 47 — the user: the two sections "do the same thing").
+     * Dedupe is episode-precise, mirroring the v3.1 hero
+     * exclusion: a Soon item is consumed by an Up Next item
+     * only when it names the SAME show with the SAME episode
+     * coordinates (Soon sub "S# E#" == the Up Next SxEy). A
+     * coord-less pair never dedupes (sameness unproven — the
+     * hero rule), and different coordinates (behind show:
+     * Up Next S1E5, Soon S1E8) are different episodes, so both
+     * stay. The Up Next card wins a deduped pair (it carries
+     * the backdrop, the match/play path and mark-watched);
+     * its date fills from the Soon twin only when blank (the
+     * conservative fillHeroDates rule).
+     * Tiers, mirroring the v3.1 hero schedule logic plus a
+     * future tier at the end:
+     * 1. Missed — Up Next items already aired, earliest first.
+     * 2. Watchable — Up Next items airing today or dateless;
+     *    dated keep snapshot order, dateless sort last.
+     * 3. Future — everything dated after today (Soon-only
+     *    items, today-airing Soon-only items first by date,
+     *    and future Up Next items with no Soon twin),
+     *    date ascending, title breaking ties.
+     * The hero rule is UNCHANGED by this merge (missed →
+     * up-next only; future stays out of the hero).
+     */
+    fun mergeUpNext(
+        upNext: List<UpNextItem>,
+        soon: List<Discovery.SoonItem>,
+        todayIso: String
+    ): List<MergedUpNextItem> {
+        fun coordsOf(item: UpNextItem): String =
+            if (item.season > 0 && item.episode > 0) {
+                "S${item.season} E${item.episode}"
+            } else {
+                ""
+            }
+        fun coordsOfSoon(sub: String): Pair<Int, Int> {
+            val parts = sub.trim().split(" ")
+            if (parts.size != 2) return 0 to 0
+            val s = parts[0].removePrefix("S").toIntOrNull() ?: return 0 to 0
+            val e = parts[1].removePrefix("E").toIntOrNull() ?: return 0 to 0
+            return if (s > 0 && e > 0) s to e else 0 to 0
+        }
+        val soonByShow = soon.groupBy { it.tmdbId }
+        // Identity, not equals: a show and a movie can share a
+        // numeric TMDB id, and two value-identical Soon cards
+        // must not consume each other.
+        val consumed =
+            java.util.Collections.newSetFromMap<Discovery.SoonItem>(
+                java.util.IdentityHashMap<Discovery.SoonItem, Boolean>()
+            )
+        val merged = ArrayList<MergedUpNextItem>()
+        for (item in upNext) {
+            val coords = coordsOf(item)
+            val twin = if (coords.isBlank()) {
+                null
+            } else {
+                soonByShow[item.tmdbId]?.firstOrNull { s ->
+                    s !in consumed && s.sub == coords
+                }
+            }
+            if (twin != null) consumed.add(twin)
+            val date = item.dateIso.ifBlank { twin?.dateIso ?: "" }
+            merged.add(
+                MergedUpNextItem(
+                    item.tmdbId, item.title, item.sub, date,
+                    item.poster, item.backdrop, item.overview,
+                    item.season, item.episode, item.type, item, twin
+                )
+            )
+        }
+        for (s in soon) {
+            if (s in consumed) continue
+            val (season, episode) = coordsOfSoon(s.sub)
+            merged.add(
+                MergedUpNextItem(
+                    s.tmdbId, s.title, s.sub, s.dateIso,
+                    s.poster, "", "", season, episode, s.type, null, s
+                )
+            )
+        }
+        val todayDay = isoDays(todayIso.trim())
+        fun dayOf(iso: String): Long? = isoDays(iso.trim())
+        val missed = merged.filter { m ->
+            val d = dayOf(m.dateIso)
+            m.upNext != null && d != null && todayDay != null && d < todayDay
+        }.sortedBy { dayOf(it.dateIso) }
+        val future = merged.filter { m ->
+            if (m.upNext == null) {
+                true
+            } else {
+                val d = dayOf(m.dateIso)
+                todayDay != null && d != null && d > todayDay
+            }
+        }.sortedWith(
+            compareBy<MergedUpNextItem> { dayOf(it.dateIso) ?: Long.MAX_VALUE }
+                .thenBy { it.title.lowercase() }
+        )
+        val watchable = merged.filter { m ->
+            if (m.upNext == null) {
+                false
+            } else {
+                val d = dayOf(m.dateIso)
+                d == null || todayDay == null || d == todayDay
+            }
+        }.sortedWith(compareBy<MergedUpNextItem> { dayOf(it.dateIso) == null })
+        return missed + watchable + future
+    }
+
     /** How many Up Next items air today (the hero pill's first number). */
     fun airingTodayCount(upNext: List<UpNextItem>, todayIso: String): Int =
         upNext.count { it.dateIso.trim() == todayIso.trim() && todayIso.isNotBlank() }

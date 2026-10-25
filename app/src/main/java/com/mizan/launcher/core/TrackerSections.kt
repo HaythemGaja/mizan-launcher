@@ -31,12 +31,19 @@ package com.mizan.launcher.core
  * stored order or hidden set still mentioning "movienight" loses
  * it through [normalize] on the next read (no separate migration
  * step: decode() normalizes, and normalize drops unknown keys).
+ *
+ * v3.3 (ask 47): Coming Soon is REMOVED the same way — Up Next
+ * and Coming Soon are ONE section now ("Up Next", core
+ * TrackerLogic.mergeUpNext). The key is gone from
+ * CANONICAL/ROWS/label, so stored orders mentioning
+ * "comingsoon" drop it on read. The discovery data itself
+ * survives (it feeds the merged section and the hero
+ * exclusion); only the standalone section is gone.
  */
 object TrackerSections {
 
     const val HERO = "hero"
     const val UPNEXT = "upnext"
-    const val COMINGSOON = "comingsoon"
     const val CONTINUE = "continue"
     const val TRENDINGTV = "trendingtv"
     const val TRENDINGMOVIES = "trendingmovies"
@@ -44,9 +51,9 @@ object TrackerSections {
     const val FAVORITES = "favorites"
     const val ALLAPPS = "allapps"
 
-    /** Every section, in the order a fresh profile sees them (v3.1: Movie Night removed). */
+    /** Every section, in the order a fresh profile sees them (v3.3: Coming Soon merged into Up Next). */
     val CANONICAL: List<String> = listOf(
-        HERO, UPNEXT, COMINGSOON, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
+        HERO, UPNEXT, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
         FORYOU, FAVORITES, ALLAPPS
     )
 
@@ -61,7 +68,6 @@ object TrackerSections {
     fun label(key: String): String = when (key) {
         HERO -> "Hero"
         UPNEXT -> "Up Next"
-        COMINGSOON -> "Coming Soon"
         CONTINUE -> "Continue Watching"
         TRENDINGTV -> "Trending TV"
         TRENDINGMOVIES -> "Trending Movies"
@@ -124,22 +130,25 @@ object TrackerSections {
 
     /**
      * The v2.8 one-time order migration. A profile whose order was
-     * stored before v2.7 had the three focus rows APPENDED at the
-     * very end by [normalize] (after foryou/favorites/allapps) — on
+     * stored before v2.7 had the focus rows APPENDED at the very
+     * end by [normalize] (after foryou/favorites/allapps) — on
      * Haythem's TV the new rows landed below everything and he
-     * "didn't see any change". When one of the three still sits in
-     * that appended tail position (after any of foryou/favorites/
-     * allapps), splice it into its canonical slot: comingsoon right
-     * after upnext, trendingtv right after continue, trendingmovies
-     * right after trendingtv. ONLY those three ever move; the
-     * relative order of every other row is preserved exactly.
+     * "didn't see any change". When one still sits in that
+     * appended tail position (after any of foryou/favorites/
+     * allapps), splice it into its canonical slot: trendingtv
+     * right after continue, trendingmovies right after
+     * trendingtv. ONLY those ever move; the relative order of
+     * every other row is preserved exactly. (v3.3: the
+     * comingsoon splice is gone with the section itself —
+     * normalize already drops the key on read.)
      *
-     * Idempotent by construction: after one pass none of the three
-     * sits after a tail row any more, so a second pass is a no-op —
-     * and a user who deliberately parks a focus row mid-list (ahead
-     * of foryou) is never touched. (The one-time prefs flag lives in
-     * data/Prefs, so a deliberate move to the very end AFTER the
-     * migration is also respected.)
+     * Idempotent by construction: after one pass none of the
+     * rows sits after a tail row any more, so a second pass is
+     * a no-op — and a user who deliberately parks a focus row
+     * mid-list (ahead of foryou) is never touched. (The
+     * one-time prefs flag lives in data/Prefs, so a deliberate
+     * move to the very end AFTER the migration is also
+     * respected.)
      */
     fun migrateOrder(config: Config): Config {
         val order = config.order.toMutableList()
@@ -152,11 +161,6 @@ object TrackerSections {
             }
         }
         var changed = false
-        if (appended(COMINGSOON)) {
-            order.remove(COMINGSOON)
-            order.add(order.indexOf(UPNEXT) + 1, COMINGSOON)
-            changed = true
-        }
         if (appended(TRENDINGTV)) {
             order.remove(TRENDINGTV)
             order.add(order.indexOf(CONTINUE) + 1, TRENDINGTV)

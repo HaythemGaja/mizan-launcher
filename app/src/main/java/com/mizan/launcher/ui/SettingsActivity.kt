@@ -1115,6 +1115,25 @@ class SettingsActivity : Activity() {
                 failOpen("copyDiagnostics", e)
             }
         })
+        // v3.3 (ask 46): safe-mode EXIT — shown ONLY while the
+        // startup shell is engaged. This is NOT the "Safe mode:
+        // plain launcher" toggle below (prefs.safeMode): this
+        // resets the crash counter and returns to the normal
+        // home style immediately (MainActivity re-reads the
+        // armed flag on rebuild). If the normal home then dies
+        // twice again, safe mode re-engages on its own — the
+        // safety net is not disabled by exiting.
+        if (com.mizan.launcher.data.StartupHealthStore.safeShellArmed) {
+            content.addView(row("Exit safe mode and retry normal home", "Safe mode is on after repeated start crashes — this resets the counter and returns to your normal home style now") {
+                try {
+                    com.mizan.launcher.data.StartupHealthStore.exitSafeShell(this)
+                    toast("Safe mode off — returning to your normal home")
+                } catch (e: Exception) {
+                    failOpen("exitSafeMode", e)
+                }
+                finish()
+            })
+        }
         content.addView(header("Safe mode"))
         content.addView(toggleRow("Safe mode: plain launcher", prefs.safeMode, "Plain launcher — themes/widgets/extras off") {
             prefs.safeMode = it
@@ -1404,7 +1423,12 @@ class SettingsActivity : Activity() {
 
     /** The current home style with its one-line description (v1.7, v1.8, v2.2, v2.3). */
     private fun homeStyleLabel(): String =
-        when {
+        if (com.mizan.launcher.data.StartupHealthStore.safeShellArmed) {
+            // v3.3 (ask 46): disclose, never silently accept — the
+            // home is locked to TV while safe mode is on, whatever
+            // style is picked; the exit lives in Data & about.
+            "TV — safe mode is ON: home locked to TV until safe mode exits (Data & about → Exit safe mode)"
+        } else when {
             com.mizan.launcher.core.HomeStyle.isWatch(prefs.homeStyle) ->
                 "Watch — Tracker view + IPTV playback of your titles"
             com.mizan.launcher.core.HomeStyle.isIptv(prefs.homeStyle) ->
@@ -1436,7 +1460,16 @@ class SettingsActivity : Activity() {
             "Watch — Tracker view + IPTV playback of your titles (needs the tracker AND an IPTV account)"
         )
         val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
-        AlertDialog.Builder(this).setTitle("Home style")
+        val builder = AlertDialog.Builder(this).setTitle("Home style")
+        // v3.3 (ask 46): while safe mode is on, say so in the
+        // picker itself — a picked style is stored and applies
+        // once safe mode exits, but the home stays TV until then.
+        if (com.mizan.launcher.data.StartupHealthStore.safeShellArmed) {
+            builder.setMessage("Safe mode is ON: the home is locked to TV until safe mode exits. " +
+                "Your pick below is still saved and applies once you leave safe mode " +
+                "(Data & about → Exit safe mode and retry normal home).")
+        }
+        builder
             .setSingleChoiceItems(labels, current) { dlg, which ->
                 prefs.homeStyle = keys[which]
                 dlg.dismiss()

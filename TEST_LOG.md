@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-24 23:25 UTC
+Date: 2026-10-25 00:08 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.2 / code 25 (bumped by v3.2)
+PASS  v25src: the app version is 3.3 / code 26 (bumped by v3.3)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -931,7 +931,7 @@ PASS  discovery: diagnostics line is source + counts only
 PASS  sections: v2.7 canonical order is the directive's focus order
 PASS  sections: v2.7 labels
 PASS  sections: a pre-v2.7 stored order keeps its order; the new rows append
-PASS  v27src: the Tracker/Watch home composes the three focus rows
+PASS  v27src: the Tracker/Watch home composes the merged Up Next + Trending rows
 PASS  v27src: the IPTV home carries Trending on your IPTV + its play path
 PASS  v27src: discovery fetches run on the mizan-discovery worker through the funnel
 PASS  v27src: diagnostics carries the discovery line
@@ -940,10 +940,10 @@ PASS  migrate: a pre-v2.7 stored order has the focus rows appended at the end
 PASS  migrate: the appended rows splice into their canonical slots
 PASS  migrate: idempotent ? a second pass changes nothing
 PASS  migrate: an untouched canonical order is a no-op
-PASS  migrate: only the still-appended rows move (comingsoon already placed stays)
+PASS  migrate: only the still-appended rows move (comingsoon drops on decode)
 PASS  migrate: a focus row parked mid-list (before foryou) is never itself moved
 PASS  migrate: the user's other rows keep their relative order exactly
-PASS  migrate: the hidden set survives the splice
+PASS  migrate: the hidden set drops removed keys; the splice still applies
 PASS  tabs: Tracker/Watch = Home ? Library ? Apps
 PASS  tabs: only Home is selected, and it is STAY
 PASS  tabs: Library opens the library; Apps jumps focus to All Apps
@@ -1100,7 +1100,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.2 / code 25
+PASS  v31src: the version bump is 3.3 / code 26
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1129,5 +1129,49 @@ PASS  refresh52src: home build never parses snapshots (memo-only read + worker k
 PASS  refresh52src: Home screen row options lost Move up/down (sort only in Sort sections)
 PASS  refresh52src: diagnostics gains last-refresh + startup-stages lines
 PASS  refresh52src: hero schedule rule untouched (missed first, today stays in Coming Soon)
-RESULT: 915 passed, 0 failed, 915 total
+-- section 53: v3.3 lock auto-submit + safe-mode exit
+PASS  auto53: stored length 4 submits exactly at 4, never before or after
+PASS  auto53: stored length 5 submits exactly at 5, never before or after
+PASS  auto53: stored length 6 submits exactly at 6, never before or after
+PASS  auto53: stored length 7 submits exactly at 7, never before or after
+PASS  auto53: stored length 8 submits exactly at 8, never before or after
+PASS  auto53: invalid stored length 0 never auto-submits
+PASS  auto53: invalid stored length 1 never auto-submits
+PASS  auto53: invalid stored length 3 never auto-submits
+PASS  auto53: invalid stored length 9 never auto-submits
+PASS  auto53: invalid stored length 12 never auto-submits
+PASS  auto53: partial unlock entry (3 of 4) does not auto-submit
+PASS  auto53: complete unlock entry (4 of 4) auto-submits with its encoding
+PASS  auto53: set flow keeps OK-driven phases (no stored length, no auto-submit)
+PASS  clear53: normal completed render waits the full 10s survival
+PASS  clear53: safe-shell completed render clears immediately (0ms)
+PASS  clear53: degraded build holds the clear in both modes
+PASS  clear53: [die, die] -> safe shell, and its clean render clears immediately
+PASS  clear53: after the cleared safe launch the next launch is NORMAL
+PASS  clear53: user-exit or immediate clear never disables re-arming ? two more deaths re-arm safe mode
+PASS  clear53: degraded safe render holds the clear (counter stays)
+PASS  clear53: notice names safe mode, Diagnostics, and the exit action
+PASS  auto53src: unlock dialog auto-submits at the stored length
+PASS  auto53src: set flow passes no auto-submit length (OK-driven phases kept)
+PASS  safe53src: Diagnostics gains the exit action, gated on the armed flag
+PASS  safe53src: style label + picker disclose the safe-mode TV lock
+PASS  safe53src: MainActivity re-reads the armed flag on rebuild and uses the clear-delay rule
+PASS  safe53src: store offers a user-initiated exit that resets counter + flag
+-- section 53b: v3.3 merged Up Next (ask 47)
+PASS  merge53: same episode appears once (Caught Up deduped to its Up Next card)
+PASS  merge53: different episodes of one show both stay (Behind S1E5 + Soon S1E8)
+PASS  merge53: tier order is missed (oldest first) -> watchable (today, then dateless) -> future (date asc)
+PASS  merge53: missed tier is most-overdue first (Oct 01 before Oct 20 before Oct 23)
+PASS  merge53: Soon-only today item leads the future tier (date asc)
+PASS  merge53: future Up Next item with no Soon twin is kept, in the future tier
+PASS  merge53: Soon movies never dedupe against shows and land in the future tier
+PASS  merge53: coord-less pair keeps both cards (sameness unproven)
+PASS  merge53: registry has no Coming Soon key anywhere
+PASS  merge53: stored order + hidden set mentioning comingsoon drop it on read
+PASS  merge53: compose never emits comingsoon
+PASS  merge53: hero still excludes future items and same-episode Soon twins
+PASS  merge53src: home composes the merged section, not two sections
+PASS  merge53src: Coming Soon const is gone from the registry
+PASS  merge53src: merged retry refreshes both sources
+RESULT: 957 passed, 0 failed, 957 total
 ```

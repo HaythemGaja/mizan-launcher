@@ -137,6 +137,22 @@ class ArrowPinEntry {
     fun reset() { buffer.clear() }
 }
 
+/**
+ * v3.3 auto-submit rule (ask 45): an UNLOCK dialog submits by itself
+ * exactly when the entered count reaches the stored pattern length —
+ * no OK press. Pure, so the headless sim pins it (section 53).
+ * Partial entries never submit; a stored length outside 4–8 (an
+ * unset or garbled lock) never auto-submits, so the dialog falls
+ * back to OK-only. The SET flow has no stored length to submit
+ * against, so it still uses OK to confirm each phase — see
+ * ArrowPinDialog: only unlock flows auto-submit.
+ */
+object ArrowPinAutoSubmit {
+    fun shouldSubmit(entered: Int, storedLength: Int): Boolean =
+        storedLength in ArrowPinCodec.MIN_LENGTH..ArrowPinCodec.MAX_LENGTH &&
+            entered == storedLength
+}
+
 /** Outcome of submitting a complete sequence to the set-lock flow. */
 sealed class ArrowPinSetupResult {
     /** First entry accepted; ask for the same sequence again to confirm. */

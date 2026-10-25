@@ -81,6 +81,30 @@ object StartupHealthStore {
         }
     }
 
+    /**
+     * v3.3 (ask 46): USER-initiated safe-mode exit, from the
+     * Diagnostics action. Resets the persisted counter AND clears
+     * this process's armed flag (commit-durable), so the next
+     * rebuild renders the user's normal style immediately. This
+     * does NOT disable the safety net: it sets no "don't re-arm"
+     * flag, so a later pair of uncleared startups re-engages
+     * safe mode through beginLaunch exactly as before.
+     */
+    fun exitSafeShell(ctx: Context) {
+        try {
+            prefs(ctx).edit().putInt(K_UNCLEARED, StartupHealth.onCleared()).commit()
+        } catch (e: Throwable) {
+            // Best-effort on the counter; the flag below still
+            // exits this process's safe shell.
+        }
+        safeShellArmed = false
+        try {
+            DiagLog.note("startup health: user exited safe mode")
+        } catch (e: Throwable) {
+            // Cosmetic only.
+        }
+    }
+
     /** The diagnostics line (core-shaped) for this process's state. */
     fun diagnosticsLine(ctx: Context): String =
         StartupHealth.diagnosticsLine(unclearedCount(ctx), safeShellArmed)

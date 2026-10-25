@@ -60,7 +60,6 @@ object SectionModule {
         TrackerSections.UPNEXT,
         TrackerSections.CONTINUE,
         TrackerSections.FORYOU -> Source.TRACKER
-        TrackerSections.COMINGSOON,
         TrackerSections.TRENDINGTV,
         TrackerSections.TRENDINGMOVIES -> Source.DISCOVERY
         // The IPTV trending row is discovery-computed; catalogue
