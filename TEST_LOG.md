@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-25 04:26 UTC
+Date: 2026-10-25 15:54 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -543,13 +543,13 @@ PASS  redditstatus: success summary shows the photo count
 PASS  redditstatus: failure summary names the last result
 PASS  homestyle: missing/garbage decodes to tv
 PASS  homestyle: saved ipad migrates to tv (v2.2 removal)
-PASS  homestyle: tracker and iptv survive the codec
-PASS  homestyle: value list is tv, tracker, iptv, watch (the Settings picker order)
-PASS  homestyle: watch survives the codec (v2.3)
+PASS  homestyle: saved tracker migrates to watch (v3.8 removal); iptv survives
+PASS  homestyle: value list is tv, iptv, watch (the Settings picker order, v3.8)
+PASS  homestyle: watch survives the codec (v2.3, kept in v3.8)
 PASS  homestyle: root reorder permutes only the root slots
 PASS  homestyle: root reorder keeps nesting intact
 PASS  homestyle: root reorder with the current order is a no-op
-PASS  tracker: codec ? tracker survives, garbage still decodes to tv
+PASS  tracker: codec ? tracker migrates to watch, garbage still decodes to tv
 PASS  tracker: upnext parse ? fields land, id-less item dropped
 PASS  tracker: parse is fail-open ? garbage and null give empty lists
 PASS  tracker: continue parse ? progress counts land
@@ -695,7 +695,7 @@ PASS  poster cache: codec round-trips, garbage dropped
 PASS  movies: numeric-string tmdbId still parses
 PASS  hero pool: missed first, most overdue first (backdrop never reorders)
 PASS  hero pool: missed heroes carry the Missed source + label with date chip
-PASS  hero pool: empty schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)
+PASS  hero pool: empty schedule falls back to Continue (backdrop-first) + For You (no longer backdrop-gated)
 PASS  hero pool: two-source overload keeps the v1.8 order and tags
 PASS  iptv: bare host gains http:// and loses the trailing slash
 PASS  iptv: account needs server + user + pass
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.7 / code 30 (bumped by v3.7)
+PASS  v25src: the app version is 3.8 / code 31 (bumped by v3.8)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -944,12 +944,12 @@ PASS  migrate: only the still-appended rows move (comingsoon drops on decode)
 PASS  migrate: a focus row parked mid-list (before foryou) is never itself moved
 PASS  migrate: the user's other rows keep their relative order exactly
 PASS  migrate: the hidden set drops removed keys; the splice still applies
-PASS  tabs: Tracker/Watch = Home ? Library ? Apps
+PASS  tabs: Watch = Home ? Library ? Apps
 PASS  tabs: only Home is selected, and it is STAY
 PASS  tabs: Library opens the library; Apps jumps focus to All Apps
 PASS  tabs: IPTV = Home ? Live ? Movies ? Series ? Guide ? Apps
 PASS  tabs: IPTV actions map Live/Movies/Series/Guide/Apps
-PASS  tabs: the TV style has no tab bar; tracker+watch share one; iptv gets its own
+PASS  tabs: the TV style has no tab bar; watch (and legacy tracker key) share one; iptv gets its own
 PASS  hero: a matched title's primary is Play (v2.9 rule)
 PASS  hero: an unmatched title's primary is Details ? never the tracker
 PASS  startup: both timings recorded
@@ -1100,12 +1100,12 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.7 / code 30
+PASS  v31src: the version bump is 3.8 / code 31
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
 PASS  hero51: a schedule pool never falls back to Continue/For You
-PASS  hero51: an all-future schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)
+PASS  hero51: an all-future schedule falls back to Continue (backdrop-first) + For You (no longer backdrop-gated)
 PASS  hero51: an empty library yields an empty pool (never a fabricated hero)
 PASS  hero51: a blank today disables schedule shaping (fallback, never a crash)
 PASS  hero51: no title shares an episode with Coming Soon (ties go to Coming Soon; other episodes keep their hero)
@@ -1318,6 +1318,33 @@ PASS  src57: missed row wired end to end (section, filter, worker, chain tail, r
 PASS  src57: local writes are serialized + atomic (one lock, index rewrite, memo install)
 PASS  src57: poster fix ? portrait cards FIT_CENTER, landscape cards poster-first, hero stays backdrop
 PASS  src57: diagnostics library line replaces the tracker line
-PASS  src57: hero rule untouched (missed first, today stays out) + no-refresh untouched (local re-read only)
-RESULT: 1103 passed, 0 failed, 1103 total
+PASS  src57: hero rule (missed first, today/blank tier, fallback) + no-refresh untouched (local re-read only)
+PASS  slim58: version is 2 (v1 files must decode as absent)
+PASS  slim58: round-trip preserves missed items in order
+PASS  slim58: a v1 document decodes as absent (never serves missed-less data)
+PASS  slim58: encode without missed defaults to an empty missed list
+PASS  slim58: Missed composes right after Up Next when available
+PASS  slim58: Missed is hidden when its section is hidden (sort control still works)
+PASS  hero58: today item is a hero even when Coming Soon also lists it today
+PASS  hero58: a future-dated Coming Soon twin still excludes the item from the hero
+PASS  hero58: tier order unchanged ? missed still leads today
+PASS  hero58: future Up Next items never enter the schedule tiers
+PASS  hero58: For You fallback present without a cached backdrop (blank, not invented)
+PASS  poster58: blank Up Next poster fills from the cache; present poster untouched
+PASS  poster58: uncached title keeps a blank poster (card falls back to backdrop)
+PASS  poster58: Continue cards get the same backfill
+PASS  watch58: stored tracker decodes to watch; picker is tv/iptv/watch
+PASS  watch58: migrated profile renders Watch tabs (Home/Library/Apps)
+PASS  bar58: unified bar ends with the Settings tile (never clipped off the end)
+PASS  bar58: unified bar carries tabs + info + glyphs + all action tiles
+PASS  src58: slim snapshot carries missed (trySlimSnap + writer pass it)
+PASS  src58: slim warm never clobbers a store memo
+PASS  src58: missed landing refreshes the memo on every path
+PASS  src58: home fills blank posters from the poster cache before hero/rows
+PASS  src58: no Tracker style branch remains (no isTracker, no TRACKER const use)
+PASS  src58: picker lists exactly TV/IPTV/Watch
+PASS  src58: media-home family is Watch-only
+PASS  src58: both bars use the pill builders + the fit pass (Settings stays on screen)
+PASS  src58: no foreground service anywhere (standing rule)
+RESULT: 1130 passed, 0 failed, 1130 total
 ```

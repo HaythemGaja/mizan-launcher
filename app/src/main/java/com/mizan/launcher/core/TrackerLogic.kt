@@ -419,14 +419,34 @@ object TrackerLogic {
             source = SOURCE_FOR_YOU
         )
         val today = todayIso.trim()
-        val eligible = if (today.isBlank()) {
+        val todayDay = isoDays(today)
+        val eligible = if (today.isBlank() || todayDay == null) {
             emptyList()
         } else {
+            // v3.8: the old rule dropped an Up Next item from the
+            // hero whenever Coming Soon listed the same show at
+            // the same coordinates — regardless of date. On his
+            // TV that emptied the hero: the only today item
+            // (Tracker S4 E4, Oct 25) is also a Coming Soon item
+            // (Coming Soon covers today + future), every other
+            // Up Next item is future-dated (excluded from both
+            // schedule tiers), and the fallback below was empty.
+            // The exclusion's purpose is only to keep a FUTURE
+            // teaser from doubling as the hero — a today twin is
+            // not a teaser, it is today's episode, so it stays
+            // eligible. A twin with a blank/unparseable date
+            // also stays eligible (never drop a hero on a date
+            // that cannot be proven future). Tier order is
+            // unchanged: missed first, then today/blank.
             upNext.filter { item ->
                 val se = coordsOf(item)
-                se.isBlank() || comingSoon.none {
-                    it.tmdbId == item.tmdbId && it.sub.isNotBlank() && it.sub == se
+                if (se.isBlank()) return@filter true
+                val futureTwin = comingSoon.any { soon ->
+                    soon.tmdbId == item.tmdbId && soon.sub.isNotBlank() &&
+                        soon.sub == se &&
+                        (isoDays(soon.dateIso) ?: Long.MIN_VALUE) > todayDay
                 }
+                !futureTwin
             }
         }
         val missed = eligible
@@ -439,9 +459,16 @@ object TrackerLogic {
             .map { it.upNextHero() }
         val schedule = missed + upNextTier
         if (schedule.isNotEmpty()) return schedule
-        val forYouHeroes = picks.mapNotNull { pick ->
-            val bd = backdrops[pick.key()].orEmpty()
-            if (bd.isBlank()) null else pick.hero(bd)
+        // v3.8: the old fallback dropped every For You pick whose
+        // backdrop was not in the backdrop cache (learned only
+        // from details fetches) — so a home with picks but no
+        // cached backdrops and an empty Continue list had NO
+        // hero at all, even though the hero zone renders its
+        // text + buttons fine over the wallpaper when the
+        // backdrop is blank (applyHero fades the layer; no
+        // backdrop is invented here, the field stays blank).
+        val forYouHeroes = picks.map { pick ->
+            pick.hero(backdrops[pick.key()].orEmpty())
         }
         return cont.filter { it.backdrop.isNotBlank() }.map { it.hero() } +
             cont.filter { it.backdrop.isBlank() }.map { it.hero() } +
@@ -765,6 +792,52 @@ object TrackerLogic {
         val keys = marked.map { it.key() }.toHashSet()
         return items.filter {
             markedKey(it.tmdbId, it.type, it.season, it.episode) !in keys
+        }
+    }
+
+    /**
+     * v3.8 (poster backfill): the Up Next / Continue / Missed
+     * cards are poster-first, but they can only show a poster
+     * the item actually carries — a blank poster field falls
+     * back to the backdrop still at the card, which is exactly
+     * the "poster still bad in Up Next" report. The store and
+     * slim codecs preserve whatever poster the snapshot had,
+     * so a blank poster means the snapshot line itself had
+     * none (a title whose poster was never learned from a
+     * details fetch, or a line rewritten by the next-episode
+     * refresh from a poster-less title line). The fix is a
+     * fill, not a card change: a blank poster is replaced
+     * from the launcher's own poster cache (TMDB poster
+     * paths learned from earlier details fetches, keyed
+     * type|tmdbId) — never invented, never fetched from the
+     * tracker app, and a present poster is never overwritten.
+     * An item with no cached poster keeps its blank field and
+     * the card's backdrop fallback, unchanged.
+     */
+    fun fillUpNextPosters(
+        items: List<UpNextItem>,
+        posters: Map<String, String>
+    ): List<UpNextItem> = items.map { item ->
+        if (item.poster.isNotBlank()) item
+        else {
+            val cached = posters[LibraryLogic.posterKey(
+                if (item.type == "movie") "movie" else "tv", item.tmdbId
+            )].orEmpty()
+            if (cached.isBlank()) item else item.copy(poster = cached)
+        }
+    }
+
+    /** Same backfill for Continue items (same poster-first cards, same drop). */
+    fun fillContinuePosters(
+        items: List<ContinueItem>,
+        posters: Map<String, String>
+    ): List<ContinueItem> = items.map { item ->
+        if (item.poster.isNotBlank()) item
+        else {
+            val cached = posters[LibraryLogic.posterKey(
+                if (item.type == "movie") "movie" else "tv", item.tmdbId
+            )].orEmpty()
+            if (cached.isBlank()) item else item.copy(poster = cached)
         }
     }
 

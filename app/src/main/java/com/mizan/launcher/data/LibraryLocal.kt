@@ -537,7 +537,20 @@ object LibraryLocal {
                         }
                     }
                     val titles = TrackerStoreDisk.readTitles(appCtx)
+                    // v3.8: poster cache is the third source — a
+                    // title line with no poster must not rewrite
+                    // the upnext line poster-less (that is how a
+                    // poster-first card ends up showing a still).
+                    val posterCache = try {
+                        TrackerClient.posterCache(appCtx)
+                    } catch (e: Exception) {
+                        emptyMap()
+                    }
                     val poster = title.poster.ifBlank { details.poster }
+                        .ifBlank {
+                            posterCache[com.mizan.launcher.core.LibraryLogic.posterKey("tv", tmdbId)]
+                                .orEmpty()
+                        }
                     val backdrop = title.backdrop.ifBlank { details.backdrop }
                     var upNext = TrackerStoreDisk.readUpNext(appCtx)
                         .filterNot { it.tmdbId == tmdbId }
@@ -653,6 +666,12 @@ object LibraryLocal {
                         val missed = TrackerStoreDisk.readMissed(appCtx)
                             .filterNot { it.tmdbId == tmdbId }
                         if (TrackerStoreDisk.writeMissed(appCtx, missed)) {
+                            // v3.8: every missed write refreshes the
+                            // memo, like the other two paths below —
+                            // without it the home's rebuild reads a
+                            // stale (slim) memo and the removed line
+                            // keeps rendering.
+                            TrackerClient.installStoreMemo(appCtx)
                             onMissedChanged?.invoke()
                         }
                     }
@@ -677,10 +696,22 @@ object LibraryLocal {
                         .filterNot { it.tmdbId == tmdbId }
                     if (missedEp != null) {
                         val (s, e, date) = missedEp
+                        // v3.8: poster cache fills a poster-less
+                        // title line (same reason as the
+                        // next-episode refresh below).
+                        val missedPoster = freshTitle.poster.ifBlank {
+                            try {
+                                TrackerClient.posterCache(appCtx)[
+                                    com.mizan.launcher.core.LibraryLogic.posterKey("tv", tmdbId)
+                                ].orEmpty()
+                            } catch (e: Exception) {
+                                ""
+                            }
+                        }
                         missed = missed + TrackerLogic.UpNextItem(
                             tmdbId = tmdbId, title = freshTitle.title,
                             sub = "S$s E$e", dateIso = date,
-                            poster = freshTitle.poster, backdrop = freshTitle.backdrop,
+                            poster = missedPoster, backdrop = freshTitle.backdrop,
                             overview = "", season = s, episode = e, type = "tv"
                         )
                     }
@@ -739,6 +770,13 @@ object LibraryLocal {
                 val today = todayIso()
                 val previous = TrackerStoreDisk.readMissed(appCtx)
                     .associateBy { it.tmdbId }
+                // v3.8: poster cache read once for the whole pass
+                // (same backfill as the one-show path above).
+                val missedPosterCache = try {
+                    TrackerClient.posterCache(appCtx)
+                } catch (e: Exception) {
+                    emptyMap()
+                }
                 val out = ArrayList<TrackerLogic.UpNextItem>()
                 for (show in tvTitles) {
                     val epFile = TrackerStoreDisk.readEpisode(appCtx, show.tmdbId)
@@ -765,7 +803,12 @@ object LibraryLocal {
                             TrackerLogic.UpNextItem(
                                 tmdbId = show.tmdbId, title = show.title,
                                 sub = "S$s E$e", dateIso = date,
-                                poster = show.poster, backdrop = show.backdrop,
+                                poster = show.poster.ifBlank {
+                                    missedPosterCache[
+                                        com.mizan.launcher.core.LibraryLogic.posterKey("tv", show.tmdbId)
+                                    ].orEmpty()
+                                },
+                                backdrop = show.backdrop,
                                 overview = "", season = s, episode = e, type = "tv"
                             )
                         )

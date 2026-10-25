@@ -11,8 +11,8 @@ android {
         applicationId = "com.mizan.launcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "3.7"
+        versionCode = 31
+        versionName = "3.8"
     }
     signingConfigs {
         // Pinned debug keystore in persistent workspace storage. The default

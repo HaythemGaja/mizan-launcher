@@ -1436,17 +1436,20 @@ fun main() {
         // data is reinterpreted (iPad never owned layout data).
         check("homestyle: saved ipad migrates to tv (v2.2 removal)",
             HomeStyle.normalize("ipad") == "tv" && HomeStyle.normalize("IPAD") == "tv")
-        check("homestyle: tracker and iptv survive the codec",
-            HomeStyle.normalize("tracker") == "tracker" && HomeStyle.isTracker("tracker") &&
+        // v3.8 RE-PINNED (Tracker-only style removed — Haythem:
+        // Tracker and Watch views are exactly the same, keep
+        // Watch only): a saved "tracker" migrates to Watch
+        // through the codec, and the picker lists TV / IPTV /
+        // Watch only. isTracker() no longer exists.
+        check("homestyle: saved tracker migrates to watch (v3.8 removal); iptv survives",
+            HomeStyle.normalize("tracker") == "watch" &&
                 HomeStyle.normalize("iptv") == "iptv" && HomeStyle.isIptv("iptv") &&
-                !HomeStyle.isIptv("tv") && !HomeStyle.isTracker("iptv"))
-        // v2.3 in-place update: the Watch style joins the picker,
-        // so the value list legitimately grows a fourth entry.
-        check("homestyle: value list is tv, tracker, iptv, watch (the Settings picker order)",
-            HomeStyle.VALUES == listOf("tv", "tracker", "iptv", "watch"))
-        check("homestyle: watch survives the codec (v2.3)",
+                !HomeStyle.isIptv("tv") && !HomeStyle.isIptv("watch"))
+        check("homestyle: value list is tv, iptv, watch (the Settings picker order, v3.8)",
+            HomeStyle.VALUES == listOf("tv", "iptv", "watch"))
+        check("homestyle: watch survives the codec (v2.3, kept in v3.8)",
             HomeStyle.normalize("watch") == "watch" && HomeStyle.isWatch("watch") &&
-                !HomeStyle.isWatch("tracker") && !HomeStyle.isTracker("watch") &&
+                !HomeStyle.isWatch("tv") &&
                 !HomeStyle.isIptv("watch"))
 
         // Root reorder (core/FolderTree write-back machinery —
@@ -1478,11 +1481,13 @@ fun main() {
 
     // ---------- (33) Tracker view: codec v2, parsing, hero, dates, merge, movies, marked-set, search (v1.8) ----------
     run {
-        // Codec: "tracker" is its own style (v2.2: "iptv" is too;
-        // the removed "ipad" is not — section 32 checks its migration).
-        check("tracker: codec — tracker survives, garbage still decodes to tv",
-            HomeStyle.normalize("tracker") == "tracker" && HomeStyle.isTracker("tracker") &&
-                !HomeStyle.isTracker("tv") && !HomeStyle.isTracker("iptv") &&
+        // Codec (v3.8 RE-PINNED): "tracker" is no longer its own
+        // style — it migrates to Watch (section 32 checks the
+        // migration); garbage still decodes to TV.
+        check("tracker: codec — tracker migrates to watch, garbage still decodes to tv",
+            HomeStyle.normalize("tracker") == "watch" &&
+                HomeStyle.isWatch(HomeStyle.normalize("tracker")) &&
+                !HomeStyle.isWatch("tv") && !HomeStyle.isWatch("iptv") &&
                 HomeStyle.normalize("Tracker") == "tv" && HomeStyle.normalize("bogus") == "tv")
 
         // Snapshot parsing (JsonMini): full item, defaults, garbage.
@@ -2394,12 +2399,17 @@ fun main() {
         val fallbackPool = TrackerLogic.heroCandidates(
             emptyList(), hCont, hPicks, mapOf("tv|6" to "/p6-back.jpg"), "2026-11-03"
         )
-        check("hero pool: empty schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)",
-            fallbackPool.map { it.title } == listOf("C-Art", "P-Art") &&
-                fallbackPool.map { it.source } == listOf("Continue Watching", "For You") &&
+        // v3.8 RE-PINNED: the For You fallback is no longer
+        // backdrop-gated — a pick without a cached backdrop is
+        // a hero with a blank backdrop (the hero zone renders
+        // text + buttons over the wallpaper), not a dropped
+        // hero. Continue stays backdrop-first in order.
+        check("hero pool: empty schedule falls back to Continue (backdrop-first) + For You (no longer backdrop-gated)",
+            fallbackPool.map { it.title } == listOf("C-Art", "P-Art", "P-NoArt") &&
+                fallbackPool.map { it.source } == listOf("Continue Watching", "For You", "For You") &&
                 fallbackPool.first { it.title == "P-Art" }.backdrop == "/p6-back.jpg" &&
                 fallbackPool.first { it.title == "P-Art" }.sub == "Because you watched X" &&
-                fallbackPool.none { it.title == "P-NoArt" })
+                fallbackPool.first { it.title == "P-NoArt" }.backdrop.isBlank())
         // v3.1 DELETED (ask 37): movie heroes no longer exist — the
         // pool is Up Next → Continue → For You, and movies data
         // itself still parses (see the numeric-string check above).
@@ -3995,9 +4005,11 @@ fun section42() {
         // indexed tracker store + paged/visible-first, spec §36).
         // Re-pinned in v3.7 (intentional version bump 3.6/29 → 3.7/30 —
         // launcher IS the tracker + Missed row + poster fix, spec §37).
-        check("v25src: the app version is 3.7 / code 30 (bumped by v3.7)",
-            gradleSrc.contains("versionName = \"3.7\"") &&
-                gradleSrc.contains("versionCode = 30"))
+        // Re-pinned in v3.8 (intentional version bump 3.7/30 → 3.8/31 —
+        // slim Missed + hero + poster backfill + Watch-only + bar fit, spec §38).
+        check("v25src: the app version is 3.8 / code 31 (bumped by v3.8)",
+            gradleSrc.contains("versionName = \"3.8\"") &&
+                gradleSrc.contains("versionCode = 31"))
     }
 }
 
@@ -4074,8 +4086,11 @@ fun section46() {
                 ))
 
         // --- the pill tab model (core/HomeTabs) ---
-        val tTabs = HomeTabs.trackerTabs()
-        check("tabs: Tracker/Watch = Home · Library · Apps",
+        // v3.8 RE-PINNED: trackerTabs() is renamed watchTabs()
+        // (Tracker-only style removed); the tabs themselves are
+        // unchanged, and a raw "tracker" key still lands on them.
+        val tTabs = HomeTabs.watchTabs()
+        check("tabs: Watch = Home · Library · Apps",
             tTabs.map { it.id } == listOf("home", "library", "apps") &&
                 tTabs.map { it.label } == listOf("Home", "Library", "Apps"))
         check("tabs: only Home is selected, and it is STAY",
@@ -4094,7 +4109,7 @@ fun section46() {
                 iTabs[4].action == HomeTabs.Action.OPEN_GUIDE &&
                 iTabs[5].action == HomeTabs.Action.FOCUS_ALL_APPS &&
                 iTabs.count { it.selected } == 1)
-        check("tabs: the TV style has no tab bar; tracker+watch share one; iptv gets its own",
+        check("tabs: the TV style has no tab bar; watch (and legacy tracker key) share one; iptv gets its own",
             HomeTabs.forStyle("tv").isEmpty() &&
                 HomeTabs.forStyle("tracker") == tTabs &&
                 HomeTabs.forStyle("watch") == tTabs &&
@@ -4939,9 +4954,10 @@ fun section50() {
         // Re-pinned in v3.5 (intentional version bump 3.4/27 → 3.5/28, spec §35).
         // Re-pinned in v3.6 (intentional version bump 3.5/28 → 3.6/29, spec §36).
         // Re-pinned in v3.7 (intentional version bump 3.6/29 → 3.7/30, spec §37).
-        check("v31src: the version bump is 3.7 / code 30",
-            src("app/build.gradle.kts").contains("versionCode = 30") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.7\""))
+        // Re-pinned in v3.8 (intentional version bump 3.7/30 → 3.8/31, spec §38).
+        check("v31src: the version bump is 3.8 / code 31",
+            src("app/build.gradle.kts").contains("versionCode = 31") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.8\""))
     }
 }
 
@@ -4999,9 +5015,12 @@ fun section51() {
             listOf(up(16, "2026-11-20", 1, 1)),
             listOf(cont(3, "/b3.jpg"), cont(4, "")), picks, backdrops, today
         )
-        check("hero51: an all-future schedule falls back to Continue (backdrop-first) + For You (backdrop-gated)",
-            fallback.map { it.tmdbId } == listOf(3L, 4L, 6L) &&
-                fallback.map { it.source } == listOf("Continue Watching", "Continue Watching", "For You"))
+        // v3.8 RE-PINNED: For You fallback no longer drops the
+        // backdrop-less pick (id 7) — see the hero-pool re-pin
+        // above. Continue order (backdrop-first) is unchanged.
+        check("hero51: an all-future schedule falls back to Continue (backdrop-first) + For You (no longer backdrop-gated)",
+            fallback.map { it.tmdbId } == listOf(3L, 4L, 6L, 7L) &&
+                fallback.map { it.source } == listOf("Continue Watching", "Continue Watching", "For You", "For You"))
         check("hero51: an empty library yields an empty pool (never a fabricated hero)",
             TrackerLogic.heroCandidates(emptyList(), emptyList(), emptyList(), emptyMap(), today).isEmpty())
         check("hero51: a blank today disables schedule shaping (fallback, never a crash)",
@@ -5391,8 +5410,10 @@ fun section54() {
             TrackerSlim.decode("not json at all {{{", fp) == null &&
                 TrackerSlim.decode("", fp) == null &&
                 TrackerSlim.decode(null, fp) == null)
+        // v3.8: the slim version is 2 now (missed rides along);
+        // the mismatch fixture tracks the current version.
         check("slim54: version mismatch reads as absent",
-            TrackerSlim.decode(encoded.orEmpty().replace("\"v\":1", "\"v\":99"), fp) == null)
+            TrackerSlim.decode(encoded.orEmpty().replace("\"v\":2", "\"v\":99"), fp) == null)
         check("slim54: oversize reads as absent",
             TrackerSlim.decode("x".repeat(TrackerSlim.MAX_BYTES + 1), fp) == null)
         val credentialUp = listOf(
@@ -6268,7 +6289,14 @@ fun section57() {
             settingsSrc.contains("library: \" +") &&
                 settingsSrc.contains("TrackerClient.libraryDiag") &&
                 !settingsSrc.contains("TrackerClient.status"))
-        check("src57: hero rule untouched (missed first, today stays out) + no-refresh untouched (local re-read only)",
+        // v3.8 RE-PINNED (see §58): the hero tier order is untouched
+        // (missed first, then today/blank, then fallback), but a
+        // today item is no longer excluded merely for also
+        // appearing in Coming Soon — only a FUTURE-dated twin
+        // excludes it. The body below still pins the schedule
+        // inputs + the local-only refresh; the new exclusion
+        // rule itself is pinned in §58.
+        check("src57: hero rule (missed first, today/blank tier, fallback) + no-refresh untouched (local re-read only)",
             mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon") &&
                 clientSrc.contains("fun refreshAsync") &&
                 run {
@@ -6277,5 +6305,180 @@ fun section57() {
                     body.contains("storeSnapshots") && body.contains("runOneTimeImport") &&
                         !body.contains("queryPath(appCtx")
                 })
+    }
+
+    // ---------- (58) v3.8: slim Missed, hero empty, poster backfill, Watch-only, status-bar fit ----------
+    run {
+        // ---- (1) Slim v2 carries missed; v1 slim files are rejected ----
+        check("slim58: version is 2 (v1 files must decode as absent)",
+            TrackerSlim.VERSION == 2)
+        val missedA = TrackerLogic.UpNextItem(
+            100L, "Show A", "S2 E3", "2026-10-20", "/pa.jpg", "/ba.jpg", "", 2, 3, "tv")
+        val missedB = TrackerLogic.UpNextItem(
+            200L, "Show B", "S1 E1", "2026-10-19", "/pb.jpg", "/bb.jpg", "", 1, 1, "tv")
+        val upA = TrackerLogic.UpNextItem(
+            100L, "Show A", "S3 E1", "2026-10-28", "/pa.jpg", "/ba.jpg", "", 3, 1, "tv")
+        val slimDoc = TrackerSlim.encode(
+            listOf(upA), emptyList(), emptyList(), emptyList(), emptyList(),
+            1000L, 1000L, 2000L, "fp58", listOf(missedA, missedB)
+        ) ?: ""
+        val slimBack = TrackerSlim.decode(slimDoc, "fp58")
+        check("slim58: round-trip preserves missed items in order",
+            slimBack != null && slimBack.missed == listOf(missedA, missedB) &&
+                slimBack.upNext == listOf(upA))
+        check("slim58: a v1 document decodes as absent (never serves missed-less data)",
+            TrackerSlim.decode(slimDoc.replace("\"v\":2", "\"v\":1"), "fp58") == null)
+        check("slim58: encode without missed defaults to an empty missed list",
+            TrackerSlim.decode(
+                TrackerSlim.encode(
+                    emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
+                    1L, 1L, 2L, "fp58b"
+                ) ?: "", "fp58b"
+            )?.missed == emptyList<TrackerLogic.UpNextItem>())
+        // Home with a slim snap carrying 12 missed items renders
+        // the Missed section right after Up Next (compose order
+        // + availability): the section registry already places
+        // MISSED after UPNEXT, and compose keeps that order.
+        val cfg58 = TrackerSections.Config(
+            hidden = emptySet(),
+            order = TrackerSections.ROWS
+        )
+        check("slim58: Missed composes right after Up Next when available",
+            TrackerSections.compose(cfg58) {
+                it == TrackerSections.UPNEXT || it == TrackerSections.MISSED
+            } == listOf("upnext", "missed"))
+        check("slim58: Missed is hidden when its section is hidden (sort control still works)",
+            TrackerSections.compose(
+                TrackerSections.Config(
+                    hidden = setOf(TrackerSections.MISSED),
+                    order = TrackerSections.ROWS
+                )
+            ) { true }.none { it == TrackerSections.MISSED })
+
+        // ---- (2) Hero: today item survives a today Soon twin; future twin still excludes ----
+        val todayItem = TrackerLogic.UpNextItem(
+            300L, "Tracker", "S4 E4", "2026-10-25", "/p.jpg", "/b.jpg", "", 4, 4, "tv")
+        val futureItem = TrackerLogic.UpNextItem(
+            400L, "Fire", "S15 E4", "2026-10-28", "/p.jpg", "/b.jpg", "", 15, 4, "tv")
+        val missedItem = TrackerLogic.UpNextItem(
+            500L, "Old", "S1 E2", "2026-10-20", "/p.jpg", "/b.jpg", "", 1, 2, "tv")
+        val todayTwin = Discovery.SoonItem(300L, "tv", "Tracker", "/p.jpg", "2026-10-25", "S4 E4")
+        val futureTwin = Discovery.SoonItem(300L, "tv", "Tracker", "/p.jpg", "2026-10-28", "S4 E4")
+        val heroesTodayTwin = TrackerLogic.heroCandidates(
+            listOf(todayItem, futureItem), emptyList(), emptyList(), emptyMap(),
+            "2026-10-25", listOf(todayTwin))
+        check("hero58: today item is a hero even when Coming Soon also lists it today",
+            heroesTodayTwin.any { it.tmdbId == 300L })
+        val heroesFutureTwin = TrackerLogic.heroCandidates(
+            listOf(todayItem, futureItem), emptyList(), emptyList(), emptyMap(),
+            "2026-10-25", listOf(futureTwin))
+        check("hero58: a future-dated Coming Soon twin still excludes the item from the hero",
+            heroesFutureTwin.none { it.tmdbId == 300L })
+        val heroesOrder = TrackerLogic.heroCandidates(
+            listOf(todayItem, missedItem), emptyList(), emptyList(), emptyMap(),
+            "2026-10-25", emptyList())
+        check("hero58: tier order unchanged — missed still leads today",
+            heroesOrder.size >= 2 && heroesOrder[0].tmdbId == 500L &&
+                heroesOrder[1].tmdbId == 300L)
+        check("hero58: future Up Next items never enter the schedule tiers",
+            TrackerLogic.heroCandidates(
+                listOf(futureItem), emptyList(), emptyList(), emptyMap(),
+                "2026-10-25", emptyList()).none { it.tmdbId == 400L })
+        // Fallback: For You picks without a cached backdrop are heroes now.
+        val pickNoBd = TrackerLogic.ForYouPick(
+            600L, "tv", "Pick", "/pp.jpg", 8.0, "Because you watched X", emptyList(), 9.0)
+        val heroesFallback = TrackerLogic.heroCandidates(
+            emptyList(), emptyList(), listOf(pickNoBd), emptyMap(),
+            "2026-10-25", emptyList())
+        check("hero58: For You fallback present without a cached backdrop (blank, not invented)",
+            heroesFallback.size == 1 && heroesFallback[0].tmdbId == 600L &&
+                heroesFallback[0].backdrop.isBlank())
+
+        // ---- (3) Poster backfill from the poster cache ----
+        val blankUp = TrackerLogic.UpNextItem(
+            700L, "NoPoster", "S1 E1", "2026-10-25", "", "/bd.jpg", "", 1, 1, "tv")
+        val keptUp = TrackerLogic.UpNextItem(
+            701L, "HasPoster", "S1 E1", "2026-10-25", "/real.jpg", "/bd.jpg", "", 1, 1, "tv")
+        val cache58 = mapOf("tv|700" to "/cached.jpg", "tv|701" to "/other.jpg")
+        val filled = TrackerLogic.fillUpNextPosters(listOf(blankUp, keptUp), cache58)
+        check("poster58: blank Up Next poster fills from the cache; present poster untouched",
+            filled[0].poster == "/cached.jpg" && filled[1].poster == "/real.jpg")
+        check("poster58: uncached title keeps a blank poster (card falls back to backdrop)",
+            TrackerLogic.fillUpNextPosters(listOf(blankUp), emptyMap())[0].poster.isBlank())
+        val blankCont = TrackerLogic.ContinueItem(
+            702L, "Cont", "Next S1 E2", 1, 10, "", "/bd.jpg", "", "tv")
+        check("poster58: Continue cards get the same backfill",
+            TrackerLogic.fillContinuePosters(
+                listOf(blankCont), mapOf("tv|702" to "/cc.jpg"))[0].poster == "/cc.jpg")
+
+        // ---- (4) Watch-only: codec, tabs, picker, family ----
+        check("watch58: stored tracker decodes to watch; picker is tv/iptv/watch",
+            HomeStyle.normalize("tracker") == "watch" &&
+                HomeStyle.VALUES == listOf("tv", "iptv", "watch"))
+        check("watch58: migrated profile renders Watch tabs (Home/Library/Apps)",
+            HomeTabs.forStyle(HomeStyle.normalize("tracker")) ==
+                HomeTabs.watchTabs() &&
+                HomeTabs.forStyle("watch") == HomeTabs.watchTabs())
+
+        // ---- (5) Status bar: Settings is last, pills are the builders ----
+        val barItems = UnifiedBar.items(
+            "watch", StatusBarConfig(), guest = false, safeMode = false)
+        check("bar58: unified bar ends with the Settings tile (never clipped off the end)",
+            barItems.isNotEmpty() && barItems.last() == UnifiedBar.Item.TILE_SETTINGS)
+        check("bar58: unified bar carries tabs + info + glyphs + all action tiles",
+            barItems.contains(UnifiedBar.Item.TAB) &&
+                barItems.contains(UnifiedBar.Item.INFO) &&
+                barItems.contains(UnifiedBar.Item.GLYPHS) &&
+                barItems.contains(UnifiedBar.Item.TILE_ALL_APPS) &&
+                barItems.contains(UnifiedBar.Item.TILE_SEARCH) &&
+                barItems.contains(UnifiedBar.Item.TILE_PROFILE) &&
+                barItems.contains(UnifiedBar.Item.TILE_SETTINGS))
+
+        // ---- Source checks: the app-side wirings ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        val localSrc = src("app/src/main/java/com/mizan/launcher/data/LibraryLocal.kt")
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        val styleSrc = src("app/src/main/java/com/mizan/launcher/core/HomeStyle.kt")
+        check("src58: slim snapshot carries missed (trySlimSnap + writer pass it)",
+            clientSrc.contains("missed = slim.missed") &&
+                clientSrc.contains("fingerprint, missed") &&
+                clientSrc.contains("TrackerSlim.encode"))
+        check("src58: slim warm never clobbers a store memo",
+            clientSrc.contains("memo.storeFingerprint.isNotBlank()"))
+        check("src58: missed landing refreshes the memo on every path",
+            localSrc.contains("TrackerClient.installStoreMemo(appCtx)") &&
+                localSrc.contains("onMissedChanged?.invoke()"))
+        check("src58: home fills blank posters from the poster cache before hero/rows",
+            mainSrc.contains("TrackerLogic.fillUpNextPosters(tUpNext, posterCache)") &&
+                mainSrc.contains("TrackerLogic.fillContinuePosters(tCont, posterCache)") &&
+                mainSrc.contains("TrackerClient.posterCache(this)"))
+        check("src58: no Tracker style branch remains (no isTracker, no TRACKER const use)",
+            !styleSrc.contains("isTracker") && !styleSrc.contains("TRACKER =") &&
+                !mainSrc.contains("fun isTrackerStyle") &&
+                !settingsSrc.contains("HomeStyle.TRACKER"))
+        check("src58: picker lists exactly TV/IPTV/Watch",
+            settingsSrc.contains("HomeStyle.IPTV") &&
+                settingsSrc.contains("HomeStyle.WATCH") &&
+                !settingsSrc.contains("HomeStyle.TRACKER"))
+        check("src58: media-home family is Watch-only",
+            mainSrc.contains("private fun isTrackerFamily(): Boolean = isWatchStyle()"))
+        check("src58: both bars use the pill builders + the fit pass (Settings stays on screen)",
+            mainSrc.contains("fitBarRow(row)") && mainSrc.contains("fitBarRow(right)") &&
+                mainSrc.contains("unifiedActionPill(\"⚙  Settings\")") &&
+                run {
+                    val topBar = mainSrc.substringAfter("private fun buildTopBar")
+                    topBar.contains("unifiedActionPill") &&
+                        !topBar.contains("panel.addView")
+                })
+        check("src58: no foreground service anywhere (standing rule)",
+            !mainSrc.contains("startForegroundService(") &&
+                !clientSrc.contains("startForegroundService(") &&
+                !localSrc.contains("startForegroundService("))
     }
 }

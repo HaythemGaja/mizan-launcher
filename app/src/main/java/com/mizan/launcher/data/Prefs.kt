@@ -102,12 +102,14 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putInt(k("columns"), v.coerceIn(3, 10)).apply() }
 
     /**
-     * Home-screen style (v1.7, extended v1.8, reworked v2.2): "tv"
-     * (default) | "tracker" | "iptv". Per profile. Reads and writes
-     * both pass through the HomeStyle codec, so a missing or garbled
-     * stored value always resolves to TV (never a crash, and old
-     * backups restore as TV). v2.2 removed the iPad style — a stored
-     * "ipad" decodes to TV (see core/HomeStyle).
+     * Home-screen style (v1.7, extended v1.8, reworked v2.2, v3.8):
+     * "tv" (default) | "iptv" | "watch". Per profile. Reads and
+     * writes both pass through the HomeStyle codec, so a missing
+     * or garbled stored value always resolves to TV (never a
+     * crash, and old backups restore as TV). v2.2 removed the
+     * iPad style — a stored "ipad" decodes to TV; v3.8 removed
+     * the Tracker-only style — a stored "tracker" decodes to
+     * Watch (see core/HomeStyle).
      */
     var homeStyle: String
         get() = com.mizan.launcher.core.HomeStyle.normalize(PrefsSafe.strOrNull(sp, k("home_style")))

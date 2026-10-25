@@ -1191,7 +1191,7 @@ class SettingsActivity : Activity() {
         content.addView(header("Status bar"))
         val sb = layout.statusBar
         content.addView(toggleRow("Show status bar", sb.showBar, "Off = clean Apple-TV style, no top bar at all") { updateStatusBar { c -> c.copy(showBar = it) } })
-        content.addView(toggleRow("Sticky status bar", prefs.stickyStatusBar, "The bar stays pinned at the top while the home scrolls — in the TV, Tracker and IPTV views") {
+        content.addView(toggleRow("Sticky status bar", prefs.stickyStatusBar, "The bar stays pinned at the top while the home scrolls — in the TV, Watch and IPTV views") {
             prefs.stickyStatusBar = it
             rebuild()
         })
@@ -1261,8 +1261,8 @@ class SettingsActivity : Activity() {
         // is core/TrackerSections). Placed in this category because it
         // sits next to the Home style picker it belongs to. The hero
         // is always first when shown; the other sections reorder.
-        content.addView(header("Tracker sections"))
-        content.addView(info("Only applies when Home style is Tracker or Watch. A section with nothing in it never appears, even when switched on. For You also needs TV Shows & Movies Tracker 1.14.4 or newer."))
+        content.addView(header("Library sections"))
+        content.addView(info("Only applies when Home style is Watch. A section with nothing in it never appears, even when switched on."))
         val sectionsCfg = prefs.trackerSectionsConfig()
         val ts = com.mizan.launcher.core.TrackerSections
         content.addView(toggleRow(
@@ -1283,7 +1283,7 @@ class SettingsActivity : Activity() {
             })
         }
         content.addView(row(
-            "Reorder tracker sections…",
+            "Reorder library sections…",
             sectionsCfg.order.joinToString(" › ") { ts.label(it) }
         ) { trackerSectionOrder() })
     }
@@ -1310,7 +1310,7 @@ class SettingsActivity : Activity() {
         val hs = com.mizan.launcher.core.HomeStyle
         content.addView(header("Sort home sections"))
         when {
-            hs.isTracker(prefs.homeStyle) || hs.isWatch(prefs.homeStyle) -> {
+            hs.isWatch(prefs.homeStyle) -> {
                 val cfg = prefs.trackerSectionsConfig()
                 content.addView(info(
                     "Home style: ${homeStyleLabel()} — tap a section, then Move up, " +
@@ -1587,7 +1587,7 @@ class SettingsActivity : Activity() {
         val ts = com.mizan.launcher.core.TrackerSections
         val cfg = prefs.trackerSectionsConfig()
         val labels = cfg.order.map { ts.label(it) }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("Reorder tracker sections")
+        AlertDialog.Builder(this).setTitle("Reorder library sections")
             .setItems(labels) { _, which ->
                 val key = cfg.order[which]
                 AlertDialog.Builder(this).setTitle(ts.label(key))
@@ -1611,11 +1611,9 @@ class SettingsActivity : Activity() {
             "TV — safe mode is ON: home locked to TV until safe mode exits (Data & about → Exit safe mode)"
         } else when {
             com.mizan.launcher.core.HomeStyle.isWatch(prefs.homeStyle) ->
-                "Watch — Tracker view + IPTV playback of your titles"
+                "Watch — your library + IPTV playback of your titles"
             com.mizan.launcher.core.HomeStyle.isIptv(prefs.homeStyle) ->
                 "IPTV — live TV, movies & series from your IPTV account"
-            com.mizan.launcher.core.HomeStyle.isTracker(prefs.homeStyle) ->
-                "Tracker — Netflix-style view of your shows & movies"
             else ->
                 "TV — rows of apps under the hero bar"
         }
@@ -1628,17 +1626,17 @@ class SettingsActivity : Activity() {
      * profile still set to it reads as TV — see core/HomeStyle.)
      */
     private fun pickHomeStyle() {
+        // v3.8: Tracker-only style removed (Watch is the only
+        // library home) — picker lists TV / IPTV / Watch only.
         val keys = listOf(
             com.mizan.launcher.core.HomeStyle.TV,
-            com.mizan.launcher.core.HomeStyle.TRACKER,
             com.mizan.launcher.core.HomeStyle.IPTV,
             com.mizan.launcher.core.HomeStyle.WATCH
         )
         val labels = arrayOf(
             "TV — rows of apps under the hero bar",
-            "Tracker — Netflix-style view of your shows & movies (needs TV Shows & Movies Tracker)",
             "IPTV — live TV, movies & series (set up your account in Settings › IPTV)",
-            "Watch — Tracker view + IPTV playback of your titles (needs the tracker AND an IPTV account)"
+            "Watch — your library + IPTV playback of your titles (needs an IPTV account for playback)"
         )
         val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
         val builder = AlertDialog.Builder(this).setTitle("Home style")

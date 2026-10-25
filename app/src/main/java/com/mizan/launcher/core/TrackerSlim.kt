@@ -33,7 +33,18 @@ package com.mizan.launcher.core
  */
 object TrackerSlim {
 
-    const val VERSION = 1
+    /**
+     * v3.8: VERSION 2 — the slim file now carries the Missed
+     * row's items ("miss", same UpNext shape as "up"). v1 files
+     * are REJECTED (decode returns null), not upgraded in
+     * place: a v1 slim has no missed field, so serving it
+     * would keep the v3.7 bug alive (home paints from the
+     * slim, tMissed = empty, no Missed row — while
+     * missed.txt holds 12). Rejection falls through to the
+     * full store parse, which carries missed, and the next
+     * slim write is v2 with missed included.
+     */
+    const val VERSION = 2
 
     /** Slim documents past this are refused (the real one is tens of KB). */
     const val MAX_BYTES = 512 * 1024
@@ -45,6 +56,8 @@ object TrackerSlim {
         val movies: List<TrackerLogic.MovieItem>,
         val tracked: List<TrackerLogic.TrackedShow>,
         val forYou: List<TrackerLogic.ForYouPick>,
+        /** v3.8: the Missed row's items (missed.txt, UpNext shape). */
+        val missed: List<TrackerLogic.UpNextItem> = emptyList(),
         val updated: Long,
         val forYouUpdated: Long,
         val fetchedAt: Long
@@ -95,7 +108,8 @@ object TrackerSlim {
         updated: Long,
         forYouUpdated: Long,
         fetchedAt: Long,
-        fingerprint: String
+        fingerprint: String,
+        missed: List<TrackerLogic.UpNextItem> = emptyList()
     ): String? {
         val sb = StringBuilder()
         sb.append("{\"v\":").append(VERSION)
@@ -155,6 +169,22 @@ object TrackerSlim {
             sb.append(",\"name\":").append(q(it.name))
             sb.append(",\"watchedCount\":").append(it.watchedCount)
             sb.append(",\"planned\":").append(it.planned).append("}")
+        }
+        sb.append("],\"miss\":[")
+        var mFirst = true
+        for (it in missed) {
+            if (!mFirst) sb.append(",")
+            mFirst = false
+            sb.append("{\"tmdbId\":").append(it.tmdbId)
+            sb.append(",\"title\":").append(q(it.title))
+            sb.append(",\"sub\":").append(q(it.sub))
+            sb.append(",\"sort\":").append(q(it.dateIso))
+            sb.append(",\"poster\":").append(q(it.poster))
+            sb.append(",\"backdrop\":").append(q(it.backdrop))
+            sb.append(",\"overview\":").append(q(it.overview))
+            sb.append(",\"season\":").append(it.season)
+            sb.append(",\"episode\":").append(it.episode)
+            sb.append(",\"type\":").append(q(it.type)).append("}")
         }
         sb.append("],\"fy\":[")
         first = true
@@ -262,6 +292,28 @@ object TrackerSlim {
                     )
                 )
             }
+            // v3.8: a v2 file without "miss" (written by a caller
+            // that did not pass missed) decodes to an empty
+            // Missed list — the row then waits for the next
+            // full parse / missed landing, exactly like the
+            // other sections on a partial slim.
+            val missed = ArrayList<TrackerLogic.UpNextItem>()
+            for (raw in root["miss"].asArr() ?: emptyList()) {
+                val o = raw.asObj() ?: continue
+                val id = num(o["tmdbId"])
+                val title = str(o, "title")
+                if (id <= 0L || title.isBlank()) continue
+                missed.add(
+                    TrackerLogic.UpNextItem(
+                        tmdbId = id, title = title, sub = str(o, "sub"),
+                        dateIso = str(o, "sort"), poster = str(o, "poster"),
+                        backdrop = str(o, "backdrop"), overview = str(o, "overview"),
+                        season = num(o["season"]).toInt(),
+                        episode = num(o["episode"]).toInt(),
+                        type = str(o, "type").ifBlank { "tv" }
+                    )
+                )
+            }
             val forYou = ArrayList<TrackerLogic.ForYouPick>()
             for (raw in root["fy"].asArr() ?: emptyList()) {
                 val o = raw.asObj() ?: continue
@@ -283,7 +335,7 @@ object TrackerSlim {
             }
             Data(
                 upNext = upNext, cont = cont, movies = movies,
-                tracked = tracked, forYou = forYou,
+                tracked = tracked, forYou = forYou, missed = missed,
                 updated = num(root["updated"]),
                 forYouUpdated = num(root["fyUpdated"]),
                 fetchedAt = num(root["fetchedAt"])

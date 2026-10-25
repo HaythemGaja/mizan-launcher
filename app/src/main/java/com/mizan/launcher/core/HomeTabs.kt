@@ -4,7 +4,7 @@ package com.mizan.launcher.core
  * The Google-TV-style pill tab bar model (v2.8, spec §28) — pure
  * decisions, no Android imports.
  *
- * Both media home styles (Tracker/Watch and IPTV) carry a pill tab
+ * Both media home styles (Watch and IPTV) carry a pill tab
  * bar under the status bar, modelled on the stock Google TV home
  * (Haythem's reference photos): a row of rounded pills, the current
  * page's pill filled white with dark text, the rest translucent.
@@ -22,7 +22,7 @@ object HomeTabs {
         /** The home page itself — the selected pill; tapping is a no-op. */
         STAY,
 
-        /** Open ui/LibraryActivity (Tracker/Watch styles). */
+        /** Open ui/LibraryActivity (Watch style). */
         OPEN_LIBRARY,
 
         /** Open ui/IptvActivity on its Live tab. */
@@ -56,8 +56,8 @@ object HomeTabs {
     const val ID_GUIDE = "guide"
     const val ID_APPS = "apps"
 
-    /** Tracker + Watch: Home · Library · Apps. */
-    fun trackerTabs(): List<Tab> = listOf(
+    /** Watch (v3.8: the Tracker-only style is gone — Watch is the only media-library home): Home · Library · Apps. */
+    fun watchTabs(): List<Tab> = listOf(
         Tab(ID_HOME, "Home", Action.STAY, selected = true),
         Tab(ID_LIBRARY, "Library", Action.OPEN_LIBRARY, selected = false),
         Tab(ID_APPS, "Apps", Action.FOCUS_ALL_APPS, selected = false)
@@ -80,7 +80,10 @@ object HomeTabs {
      */
     fun forStyle(styleKey: String): List<Tab> = when {
         HomeStyle.isIptv(styleKey) -> iptvTabs()
-        HomeStyle.isTracker(styleKey) || HomeStyle.isWatch(styleKey) -> trackerTabs()
+        // v3.8: a raw "tracker" key that bypassed HomeStyle.normalize
+        // (e.g. a caller holding a stored string) still lands on the
+        // Watch tabs — the Tracker-only home no longer exists.
+        HomeStyle.isWatch(styleKey) || styleKey == "tracker" -> watchTabs()
         else -> emptyList()
     }
 }
@@ -88,7 +91,7 @@ object HomeTabs {
 /**
  * The UNIFIED bar model (v2.9, spec §29) — ask C.13 (2026-10-23):
  * "place status bar in the pill tab bar with the same design".
- * In the Tracker/Watch and IPTV homes there is no longer a
+ * In the Watch and IPTV homes there is no longer a
  * plain-text status row above a separate tab row: ONE bar whose
  * every element is a pill of one design — the style's tab pills
  * on the left, then the status group on the right: the info pill

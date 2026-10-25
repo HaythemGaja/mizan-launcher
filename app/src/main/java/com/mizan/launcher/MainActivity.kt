@@ -665,6 +665,8 @@ class MainActivity : Activity() {
         // selection must exist before any view is added.
         // v2.3: the Watch style is the same composition + the IPTV
         // link, so every "trackerStyle" gate below is family-wide.
+        // v3.8: family-wide now means Watch only (Tracker style
+        // removed); the local name is kept to keep the diff small.
         val trackerStyle = isTrackerFamily()
         // v3.0: the safe shell composes like safe mode (plain
         // frame, favorites + apps rows only, no wallpaper work) —
@@ -1310,6 +1312,23 @@ class MainActivity : Activity() {
             },
             todayIso()
         )
+        // v3.8 (poster backfill): blank posters on Up Next /
+        // Continue / Missed items are filled from the
+        // launcher's poster cache (same prefs read the hero
+        // already does for the backdrop cache — cheap, no
+        // network, no tracker app). This runs before the
+        // hero pool is computed, so filled posters ride into
+        // the hero and the merged row alike; a present poster
+        // is never overwritten, and an uncached title keeps
+        // its blank field (card falls back to backdrop).
+        val posterCache = try {
+            TrackerClient.posterCache(this)
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        tUpNext = TrackerLogic.fillUpNextPosters(tUpNext, posterCache)
+        tCont = TrackerLogic.fillContinuePosters(tCont, posterCache)
+        tMissed = TrackerLogic.fillUpNextPosters(tMissed, posterCache)
         // v3.7: a missed landing (worker thread) rebuilds
         // the home once — the Missed row appears when its
         // worker finishes, not only on the next navigation.
@@ -1706,17 +1725,20 @@ class MainActivity : Activity() {
     private fun homeStyleKey(): String =
         if (prefs.safeMode || safeShell) com.mizan.launcher.core.HomeStyle.TV else prefs.homeStyle
 
-    private fun isTrackerStyle(): Boolean =
-        com.mizan.launcher.core.HomeStyle.isTracker(homeStyleKey())
-
     private fun isIptvStyle(): Boolean =
         com.mizan.launcher.core.HomeStyle.isIptv(homeStyleKey())
 
     private fun isWatchStyle(): Boolean =
         com.mizan.launcher.core.HomeStyle.isWatch(homeStyleKey())
 
-    /** Tracker + Watch share one composition (v2.3: Watch adds behaviour, not a layout). */
-    private fun isTrackerFamily(): Boolean = isTrackerStyle() || isWatchStyle()
+    /**
+     * v3.8: the media-library home family is Watch ONLY — the
+     * Tracker-only style is removed (HomeStyle migrates stored
+     * "tracker" to "watch"), so this helper is Watch by
+     * definition. Kept under its old name to keep the diff
+     * small; every call site below now means Watch.
+     */
+    private fun isTrackerFamily(): Boolean = isWatchStyle()
 
     /** The icon shape home tiles render with (the profile's preference, unmodified). */
     private fun effectiveIconShape(): String = prefs.iconShape
@@ -2314,6 +2336,96 @@ class MainActivity : Activity() {
     // TV style has no tabs and keeps buildTopBar unchanged.
     // ---------------------------------------------------------------
 
+    /**
+     * v3.8 (status-bar fit): shrink a bar row's children
+     * proportionally when they overflow the row's parent.
+     * Compacting paddings (below) is not enough on its own:
+     * at 1080p TV density the unified bar's pills sum well past
+     * the screen width, and a plain LinearLayout then lays the
+     * last child (Settings) past the right edge, clipped — the
+     * reported bug. This pass runs after the first layout: if
+     * the children already fit, it does nothing (wide screens
+     * keep their natural pill widths); if they overflow, every
+     * child gets a weight proportional to its measured width,
+     * so the row sums to exactly the parent width and every
+     * tile — Settings included — stays on screen and D-pad
+     * reachable. Labels truncate (ellipsize) instead of
+     * vanishing when the screen is truly too narrow for full
+     * labels; the plain spacer View (if any) collapses to
+     * zero in the shrink. Fail-open: any exception leaves the
+     * row as built. Never hides or drops a tile, never
+     * scrolls: the bar still fits, it does not scroll.
+     */
+    private fun fitBarRow(row: LinearLayout) {
+        row.post {
+            try {
+                val parent = row.parent as? View ?: return@post
+                val avail = parent.width - row.paddingLeft - row.paddingRight
+                if (avail <= 0) return@post
+                var total = 0
+                var anyText = false
+                for (i in 0 until row.childCount) {
+                    val child = row.getChildAt(i)
+                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+                    total += child.measuredWidth + lp.leftMargin + lp.rightMargin
+                }
+                if (total <= avail) return@post
+                fun ellipsizeDeep(v: View) {
+                    if (v is TextView) {
+                        v.maxLines = 1
+                        v.ellipsize = android.text.TextUtils.TruncateAt.END
+                        anyText = true
+                    } else if (v is ViewGroup) {
+                        for (j in 0 until v.childCount) ellipsizeDeep(v.getChildAt(j))
+                    }
+                }
+                var weightedTotal = 0
+                for (i in 0 until row.childCount) {
+                    val child = row.getChildAt(i)
+                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+                    if (child !is TextView && child !is ViewGroup) {
+                        // Plain spacer: collapses when shrinking.
+                        lp.width = 0
+                        lp.weight = 0f
+                        child.layoutParams = lp
+                        continue
+                    }
+                    weightedTotal += child.measuredWidth
+                }
+                if (weightedTotal <= 0) return@post
+                var margins = 0
+                for (i in 0 until row.childCount) {
+                    val child = row.getChildAt(i)
+                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+                    if (lp.weight > 0f || child is TextView || child is ViewGroup) {
+                        margins += lp.leftMargin + lp.rightMargin
+                    }
+                }
+                val remaining = (avail - margins).coerceAtLeast(0)
+                for (i in 0 until row.childCount) {
+                    val child = row.getChildAt(i)
+                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+                    if (child is TextView || child is ViewGroup) {
+                        ellipsizeDeep(child)
+                        lp.width = 0
+                        lp.weight = child.measuredWidth.toFloat() /
+                            weightedTotal.toFloat() * remaining
+                        // Weight is a share, not pixels: scale the
+                        // shares so they sum to the remaining width.
+                        // (LinearLayout normalizes weights, so the
+                        // absolute scale is irrelevant — only the
+                        // ratios matter; the factor above keeps
+                        // them proportional to measured widths.)
+                        child.layoutParams = lp
+                    }
+                }
+                if (anyText) row.requestLayout()
+            } catch (e: Exception) {
+                // Bar stays as built; a fit failure never breaks home.
+            }
+        }
+    }
+
     /** The pill fill shared by every element of the unified bar. */
     private fun pillBackground(focused: Boolean): GradientDrawable {
         val d = GradientDrawable()
@@ -2336,7 +2448,10 @@ class MainActivity : Activity() {
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
         val rlp = LinearLayout.LayoutParams(-1, -2)
-        rlp.setMargins(Ui.dp(this, 28), Ui.dp(this, 12), Ui.dp(this, 28), Ui.dp(this, 4))
+        // v3.8: tighter side margins (28 → 16dp) — part of the
+        // Settings-clipping fix; the fit pass below guarantees
+        // the rest.
+        rlp.setMargins(Ui.dp(this, 16), Ui.dp(this, 12), Ui.dp(this, 16), Ui.dp(this, 4))
         row.layoutParams = rlp
         val items = UnifiedBar.items(homeStyleKey(), cfg, guestActive(), prefs.safeMode)
         val tabs = HomeTabs.forStyle(homeStyleKey())
@@ -2359,7 +2474,7 @@ class MainActivity : Activity() {
                         shell.gravity = Gravity.CENTER_VERTICAL
                         shell.background = pillBackground(false)
                         shell.setPadding(
-                            Ui.dp(this, 10), Ui.dp(this, 6), Ui.dp(this, 10), Ui.dp(this, 6)
+                            Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6)
                         )
                         val slp = LinearLayout.LayoutParams(-2, -2)
                         slp.setMargins(0, 0, Ui.dp(this, 8), 0)
@@ -2403,6 +2518,11 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // v3.8: fit pass — Settings is the last tile, so it is
+        // the one clipped when the bar overflows; this pass
+        // shrinks the row proportionally instead, on both the
+        // normal bar and the sticky bar (same builder).
+        fitBarRow(row)
         wrap.addView(row)
         buildHomeHint()?.let { wrap.addView(it) }
         updateClock()
@@ -2423,7 +2543,7 @@ class MainActivity : Activity() {
         val shell = LinearLayout(this)
         shell.orientation = LinearLayout.HORIZONTAL
         shell.gravity = Gravity.CENTER_VERTICAL
-        shell.setPadding(Ui.dp(this, 16), Ui.dp(this, 6), Ui.dp(this, 16), Ui.dp(this, 6))
+        shell.setPadding(Ui.dp(this, 12), Ui.dp(this, 6), Ui.dp(this, 12), Ui.dp(this, 6))
         shell.isFocusable = true
         shell.isClickable = true
         shell.background = pillBackground(false)
@@ -2448,7 +2568,7 @@ class MainActivity : Activity() {
         tv.textSize = 15f
         tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
         tv.gravity = Gravity.CENTER
-        tv.setPadding(Ui.dp(this, 16), Ui.dp(this, 6), Ui.dp(this, 16), Ui.dp(this, 6))
+        tv.setPadding(Ui.dp(this, 12), Ui.dp(this, 6), Ui.dp(this, 12), Ui.dp(this, 6))
         tv.background = pillBackground(false)
         val lp = LinearLayout.LayoutParams(-2, -2)
         lp.setMargins(0, 0, Ui.dp(this, 8), 0)
@@ -2464,7 +2584,8 @@ class MainActivity : Activity() {
         tv.textSize = 15f
         tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
         tv.gravity = Gravity.CENTER
-        tv.setPadding(Ui.dp(this, 18), Ui.dp(this, 6), Ui.dp(this, 18), Ui.dp(this, 6))
+        // v3.8: 18 -> 12dp horizontal — part of the bar fit fix.
+        tv.setPadding(Ui.dp(this, 12), Ui.dp(this, 6), Ui.dp(this, 12), Ui.dp(this, 6))
         tv.isFocusable = true
         tv.isClickable = true
         tv.background = pillBackground(false)
@@ -2483,7 +2604,7 @@ class MainActivity : Activity() {
 
     /**
      * The unified Wi-Fi action pill — null when the Wi-Fi settings
-     * screen doesn't resolve on this box (same rule as barTileWifi).
+     * screen doesn't resolve on this box (same resolve rule as the old TV-bar Wi-Fi tile).
      */
     private fun unifiedWifiPill(): TextView? {
         return try {
@@ -2520,7 +2641,8 @@ class MainActivity : Activity() {
         tv.textSize = 15f
         tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
         tv.gravity = Gravity.CENTER
-        tv.setPadding(Ui.dp(this, 18), Ui.dp(this, 6), Ui.dp(this, 18), Ui.dp(this, 6))
+        // v3.8: 18 -> 12dp horizontal — part of the bar fit fix.
+        tv.setPadding(Ui.dp(this, 12), Ui.dp(this, 6), Ui.dp(this, 12), Ui.dp(this, 6))
         tv.isFocusable = true
         tv.isClickable = true
         tv.tag = "tab:" + tab.id
@@ -2844,50 +2966,66 @@ class MainActivity : Activity() {
             // (Bar hidden → the pill moves to the top-left corner;
             // see buildRoot.)
             if (!prefs.safeMode && guestActive()) {
-                right.addView(guestPill())
+                right.addView(unifiedGuestPill())
             }
             // v2.9 extraction: the glyph cluster is shared with
             // the unified bar's glyph pill (buildGlyphCluster).
             buildGlyphCluster(cfg, scale, overHero)?.let { right.addView(it) }
 
-            val panel = LinearLayout(this)
-            panel.orientation = LinearLayout.HORIZONTAL
-            panel.gravity = Gravity.CENTER_VERTICAL
-            val panelBg = GradientDrawable()
-            panelBg.cornerRadius = Ui.dp(this, com.mizan.launcher.core.Design.RADIUS_PANEL).toFloat()
-            panelBg.setColor(com.mizan.launcher.core.Design.PANEL_FILL)
-            panel.background = panelBg
-            panel.setPadding(Ui.dp(this, 10), Ui.dp(this, 8), Ui.dp(this, 10), Ui.dp(this, 8))
+            // v3.8: one bar language — the TV bar's tiles are
+            // now the same pill builders as the unified bar
+            // (pillBackground fill + white focus ring), not the
+            // old translucent panel + quickTile chips. Click and
+            // hold-OK behaviour is unchanged per tile.
             for (tile in com.mizan.launcher.core.StatusBarLogic.barTiles(cfg, prefs.safeMode)) {
                 when (tile) {
                     com.mizan.launcher.core.StatusBarLogic.BarTile.ALL_APPS ->
-                        panel.addView(barTileAllApps())
+                        right.addView(unifiedActionPill("▦ All Apps") {
+                            try {
+                                startActivity(
+                                    Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java)
+                                )
+                            } catch (e: Exception) {
+                                Prefs.noteError(this, "allAppsTile", e)
+                            }
+                        })
                     com.mizan.launcher.core.StatusBarLogic.BarTile.SEARCH ->
-                        panel.addView(barTileSearch())
+                        right.addView(unifiedActionPill("Search") {
+                            try {
+                                startActivity(Intent(this, SearchActivity::class.java))
+                            } catch (e: Exception) {
+                                Prefs.noteError(this, "searchTile", e)
+                            }
+                        })
                     com.mizan.launcher.core.StatusBarLogic.BarTile.WIFI ->
-                        barTileWifi()?.let { panel.addView(it) }
+                        unifiedWifiPill()?.let { right.addView(it) }
                     // Profile tile (v1.4): the one consistent place
                     // profile switching lives on the home screen.
                     // Click or hold-OK opens the switch menu;
                     // switching TO Guest is instant, switching AWAY
                     // may ask for the pattern (core/GuestGate).
                     com.mizan.launcher.core.StatusBarLogic.BarTile.PROFILE -> {
-                        val profileTile = quickTile(
+                        val profileTile = unifiedActionPill(
                             "👤 " + prefs.profileDisplayName(prefs.currentProfile)
                         ) { showProfileSwitchMenu() }
                         profileTile.setOnLongClickListener { showProfileSwitchMenu(); true }
-                        panel.addView(profileTile)
+                        right.addView(profileTile)
                     }
                     // The bar's Settings tile (v2.0: hold-OK opens
                     // the Quick settings popover).
                     com.mizan.launcher.core.StatusBarLogic.BarTile.SETTINGS -> {
-                        val settingsTile = quickTile("⚙  Settings") { openSettings() }
+                        val settingsTile = unifiedActionPill("⚙  Settings") { openSettings() }
                         settingsTile.setOnLongClickListener { showQuickSettings(); true }
-                        panel.addView(settingsTile)
+                        right.addView(settingsTile)
                     }
                 }
             }
-            right.addView(panel)
+            // v3.8: fit pass for the TV bar's right container —
+            // the left info cluster already shrinks (weight 1),
+            // but the tile group alone can still exceed a narrow
+            // screen; the pass shrinks it proportionally so
+            // Settings (last) stays visible here too.
+            fitBarRow(right)
             hero.addView(right)
             wrap.addView(hero)
         }
@@ -3039,40 +3177,10 @@ class MainActivity : Activity() {
      * intent resolves nowhere, and (v1.3) each is gated by its own
      * per-tile switch under the showQuickTiles master.
      */
-    /** v2.1 bar tile: All Apps — opens the full-screen tab (v1.5). */
-    private fun barTileAllApps(): View = quickTile("▦ All Apps") {
-        try {
-            startActivity(Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java))
-        } catch (e: Exception) { Prefs.noteError(this, "allAppsTile", e) }
-    }
-
-    /** v2.1 bar tile: Search — opens Sreeb's own Search screen (v1.4). */
-    private fun barTileSearch(): View = quickTile("Search") {
-        try { startActivity(Intent(this, SearchActivity::class.java)) }
-        catch (e: Exception) { Prefs.noteError(this, "searchTile", e) }
-    }
-
-    /**
-     * v2.1 bar tile: Wi-Fi settings. Default OFF since v2.1 (the
-     * status glyph + the gear's quick-settings popover cover it);
-     * renders only when the profile re-enabled the tile switch, and
-     * only when the settings screen resolves (fail-open).
-     */
-    private fun barTileWifi(): View? {
-        return try {
-            val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
-            if (intent.resolveActivity(packageManager) == null) {
-                null
-            } else {
-                quickTile("Wi-Fi") {
-                    try { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                    catch (e: Exception) { Prefs.noteError(this, "quickTile:Wi-Fi", e) }
-                }
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
+    // v3.8: the old barTileAllApps/Search/Wifi quickTile builders
+    // are deleted — the TV bar uses the unified pill builders
+    // (unifiedActionPill / unifiedWifiPill) with identical
+    // click behaviour, so the bar has one pill language.
 
     /**
      * The Bluetooth status glyph for the bar/strip clusters (v2.1):
@@ -3260,7 +3368,12 @@ class MainActivity : Activity() {
         val stats = MostUsed.cachedStats()
         if (stats == null) {
             MostUsed.refreshAsync(this, appsByPkg.mapValues { it.value.label }) {
-                if (!isTrackerStyle()) rebuild()
+                // v3.8: the old !isTrackerStyle() guard is vacuous
+                // now — the Tracker style is gone, and this TV-only
+                // section rebuilds on every remaining style exactly
+                // as it did on Watch before (the guard was true for
+                // Watch too, since it only excluded Tracker).
+                rebuild()
             }
             return null
         }
@@ -3286,7 +3399,10 @@ class MainActivity : Activity() {
         val result = LiveTv.cached()
         if (result == null) {
             // First build: probe in the background, rebuild when it lands.
-            LiveTv.refreshAsync(this) { if (!isTrackerStyle() && !isIptvStyle()) rebuild() }
+            // v3.8: Tracker style removed — the old !isTrackerStyle()
+            // guard is vacuous (it was true for Watch too); the
+            // IPTV exclusion is the live one.
+            LiveTv.refreshAsync(this) { if (!isIptvStyle()) rebuild() }
             return null
         }
         if (result.state != LiveTvLogic.State.OK || result.channels.isEmpty()) return null
@@ -3783,8 +3899,9 @@ class MainActivity : Activity() {
             TrackerSections.HERO to (hero != null),
             TrackerSections.UPNEXT to mergedUpNext.isNotEmpty(),
             // v3.7: the Missed row (passed, unmarked
-            // episodes) — Tracker + Watch only, via the
-            // same compose() path as every other row.
+            // episodes) — Watch only (v3.8: Tracker style
+            // removed), via the same compose() path as
+            // every other row.
             TrackerSections.MISSED to tMissed.isNotEmpty(),
             // v2.7 focus rows: Trending rides the discovery state
             // (empty until the worker first lands).

@@ -209,6 +209,16 @@ object TrackerClient {
             val key = memoKeyFor(inputs)
             val memo = cachedMemo
             if (memo != null && cachedMemoKey == key) return true
+            // v3.8: NEVER let a slim warm clobber a store memo.
+            // The store snapshot carries missed (and is refreshed
+            // by every local write via installStoreMemo); the
+            // pre-v3.8 slim carried no missed at all, so a slim
+            // warm landing after the cold chain ran silently
+            // emptied tMissed on the home — the v3.7 Missed-row
+            // bug on his TV (slim: hit, library missed 12, no
+            // row). A store memo wins; the slim is only a bridge
+            // when no store memo exists.
+            if (memo != null && memo.storeFingerprint.isNotBlank()) return true
             val slimSnap = trySlimSnap(ctx, inputs) ?: return false
             cachedMemo = slimSnap
             cachedMemoKey = key
@@ -263,6 +273,11 @@ object TrackerClient {
             upNext = slim.upNext, cont = slim.cont,
             movies = slim.movies, tracked = slim.tracked,
             forYou = slim.forYou,
+            // v3.8: the slim carries missed now (TrackerSlim v2).
+            // A v1 slim file decodes as null (version mismatch),
+            // so this line can never serve the old missed-less
+            // slim to the home again.
+            missed = slim.missed,
             trackedJson = inputs.tracked ?: "",
             updated = slim.updated,
             forYouUpdated = slim.forYouUpdated,
@@ -694,10 +709,26 @@ object TrackerClient {
         val appCtx = ctx.applicationContext
         thread(name = "mizan-tracker-slim") {
             try {
+                // v3.8: the slim must carry missed. A legacy
+                // prefs parse has no missed (it lives only in
+                // the store), so fall back to the store's
+                // missed.txt when the snapshot's list is empty
+                // — the store is the missed record, and an
+                // empty list there means genuinely none, not a
+                // missing field.
+                val missed = if (snap.missed.isNotEmpty()) {
+                    snap.missed
+                } else {
+                    try {
+                        TrackerStoreDisk.readMissed(appCtx)
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
+                }
                 val encoded = TrackerSlim.encode(
                     snap.upNext, snap.cont, snap.movies, snap.tracked,
                     snap.forYou, snap.updated, snap.forYouUpdated,
-                    snap.fetchedAt, fingerprint
+                    snap.fetchedAt, fingerprint, missed
                 ) ?: return@thread
                 val dir = File(appCtx.filesDir, "home_cache")
                 if (!dir.exists()) dir.mkdirs()
