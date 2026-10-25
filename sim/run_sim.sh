@@ -71,6 +71,8 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/StartupStages.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerSlim.kt \
   app/src/main/java/com/mizan/launcher/core/SortGrab.kt \
+  app/src/main/java/com/mizan/launcher/core/ColdChain.kt \
+  app/src/main/java/com/mizan/launcher/core/DeathCapture.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
 {

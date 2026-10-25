@@ -205,8 +205,8 @@ object IptvClient {
         }
         indexMemo = null
         indexMemoStamp = ""
-        tuplesMemo = null
-        tuplesStamp = Long.MIN_VALUE
+        // v3.5: no tuples memo remains to clear — the key-only
+        // catalogue is transient per match run, never retained.
         epgIndexCache = null
     }
 
@@ -435,67 +435,77 @@ object IptvClient {
         }
     }
 
-    @Volatile
-    private var tuplesMemo: Pair<List<IptvStore.Tuple>, List<IptvStore.Tuple>>? = null
-
-    @Volatile
-    private var tuplesStamp: Long = Long.MIN_VALUE
-
     /**
-     * The (series, vod) match tuples if they are already loaded
-     * for the current store generation, else null. WatchMatch
-     * retains ONLY these (id, title, year) — never item objects.
-     */
-    fun tuplesIfLoaded(ctx: Context): Pair<List<IptvStore.Tuple>, List<IptvStore.Tuple>>? {
-        val stamp = storeStamp(ctx)
-        if (stamp == 0L) return null
-        val memo = tuplesMemo
-        return if (memo != null && tuplesStamp == stamp) memo else null
-    }
-
-    /**
-     * Load (or return the memoized) match tuples, scanning both
-     * store files end to end. WORKER THREADS ONLY.
+     * v3.5 (spec §35): the match catalogue, streamed key-only.
      *
-     * v2.5: this replaces tuplesAsync, whose callback was posted
-     * to the MAIN thread carrying these UNBOUNDED lists (one
-     * tuple per catalogue entry — tens of thousands on a real
-     * panel) — and its one consumer, data/WatchPlay, ran the
-     * whole tracker↔IPTV match inside that callback. That is the
-     * proven 2026-10-22 22:50 ANR: main thread inside
-     * WatchMatch.normalizeKey under WatchPlay.computeMatches
-     * under the tuplesAsync Handler delivery, 545 MB allocated
-     * in the stall. The rule from here on: unbounded data never
+     * This REPLACES tuplesBlocking + its permanent tuplesMemo.
+     * The old shape memoized ~47k (id, title, year) tuples
+     * FOREVER (fresh name strings decoded from disk), and the
+     * match then built a second 47k keyed list on top — tuples +
+     * keyed + index held at once, and the tuples never left.
+     * That permanent retention, stacked on the tracker parse +
+     * discovery hydration running in parallel, is the cold-start
+     * peak that gets the process low-memory-killed.
+     *
+     * The new shape streams each store file ONCE per call and
+     * keys each line immediately (core/WatchMatch.keyOnlyOf),
+     * dropping the name at key time: the caller holds ONLY
+     * (iptvId, squash key, year) triples, transiently, for the
+     * duration of its match run — never memoized, never shared.
+     * The returned lists are caller-owned and released when the
+     * run ends. WORKER THREADS ONLY.
+     *
+     * v2.5's rule survives unchanged: unbounded data never
      * crosses to the main thread — consumers load on their own
-     * worker thread and only FINISHED, bounded results are
-     * posted back.
+     * worker thread and only FINISHED, bounded results (the
+     * ~60-entry match table) are posted back.
      */
-    fun tuplesBlocking(ctx: Context): Pair<List<IptvStore.Tuple>, List<IptvStore.Tuple>> {
-        tuplesIfLoaded(ctx)?.let { return it }
-        var series: List<IptvStore.Tuple> = emptyList()
-        var vods: List<IptvStore.Tuple> = emptyList()
-        try {
+    fun keyedCatalogue(ctx: Context): Pair<List<com.mizan.launcher.core.WatchMatch.KeyOnly>, List<com.mizan.launcher.core.WatchMatch.KeyOnly>>? {
+        return try {
+            if (storeIndex(ctx) == null) return null
+            val series = ArrayList<com.mizan.launcher.core.WatchMatch.KeyOnly>()
+            val vods = ArrayList<com.mizan.launcher.core.WatchMatch.KeyOnly>()
             val sf = storeFile(ctx, IptvStore.FILE_SERIES)
             if (sf.isFile) {
-                series = sf.bufferedReader().use { r ->
-                    IptvStore.seriesTuples(r.lineSequence())
+                sf.bufferedReader().use { r ->
+                    for (line in r.lineSequence()) {
+                        val s = IptvStore.decodeSeries(line) ?: continue
+                        // The name string dies here: only the key survives.
+                        series.add(com.mizan.launcher.core.WatchMatch.keyOnlyOf(s.id, s.name, s.year))
+                    }
                 }
             }
             val vf = storeFile(ctx, IptvStore.FILE_VOD)
             if (vf.isFile) {
-                vods = vf.bufferedReader().use { r ->
-                    IptvStore.vodTuples(r.lineSequence())
+                vf.bufferedReader().use { r ->
+                    for (line in r.lineSequence()) {
+                        val v = IptvStore.decodeVod(line) ?: continue
+                        vods.add(com.mizan.launcher.core.WatchMatch.keyOnlyOf(v.id, v.name, v.year))
+                    }
                 }
             }
+            Pair(series, vods)
         } catch (e: Exception) {
-            // Tuples are an optimization for matching; empty is safe.
+            // A catalogue read failure degrades to "no matches", never a crash.
+            null
         }
-        val stamp = storeStamp(ctx)
-        if (stamp != 0L) {
-            tuplesMemo = Pair(series, vods)
-            tuplesStamp = stamp
+    }
+
+    /**
+     * v3.5 (spec §35): cheap catalogue counts for the
+     * fingerprint-first match check (data/WatchPlay): the index
+     * already carries series/vod counts + fetchedAt, so a match
+     * recompute can prove "nothing moved" WITHOUT streaming
+     * either catalogue file. Null = no store. WORKER or any
+     * thread (the index read is a small stat + small JSON).
+     */
+    fun catalogueCounts(ctx: Context): Triple<Int, Int, Long>? {
+        return try {
+            val idx = storeIndex(ctx) ?: return null
+            Triple(idx.seriesCount, idx.vodCount, idx.fetchedAt)
+        } catch (e: Exception) {
+            null
         }
-        return Pair(series, vods)
     }
 
     // ------------------------------------------------------------ status + last error
@@ -1112,8 +1122,7 @@ object IptvClient {
         }
         indexMemo = null
         indexMemoStamp = ""
-        tuplesMemo = null
-        tuplesStamp = Long.MIN_VALUE
+        // v3.5: no tuples memo remains to clear (see keyedCatalogue).
         epgIndexCache = null
 
         val kind = IptvStatus.classify(

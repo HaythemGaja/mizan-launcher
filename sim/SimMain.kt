@@ -36,6 +36,8 @@ import com.mizan.launcher.core.SwitchLogic
 import com.mizan.launcher.core.TileLayout
 import com.mizan.launcher.core.TrackerSlim
 import com.mizan.launcher.core.SortGrab
+import com.mizan.launcher.core.ColdChain
+import com.mizan.launcher.core.DeathCapture
 import com.mizan.launcher.core.WifiLabel
 import com.mizan.launcher.core.WeatherCondition
 import com.mizan.launcher.core.WeatherLogic
@@ -3253,6 +3255,9 @@ fun main() {
     // ---------- (54) v3.4: slim tracker cache, folders on media homes, hold-and-drop sort, smaller row posters ----------
     section54()
 
+    // ---------- (55) v3.5: sequential cold chain, key-only streaming match, last-death capture ----------
+    section55()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3946,8 +3951,11 @@ fun section42() {
         check("v25src: WatchPlay never calls the deleted main-thread tuplesAsync",
             watchPlaySrc.isNotEmpty() && !watchPlaySrc.contains("tuplesAsync("))
         val clientSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
+        // Re-pinned in v3.5 (intentional change, spec §35): the
+        // memoized tuples read is gone — the key-only stream
+        // replaces it (same matches, nothing retained).
         check("v25src: tuples are a worker-only blocking read now (tuplesBlocking)",
-            clientSrc.contains("fun tuplesBlocking"))
+            clientSrc.contains("fun keyedCatalogue"))
         check("v25src: the legacy purge lands via a single commit()",
             clientSrc.contains("commit()"))
         val manifest = src("app/src/main/AndroidManifest.xml")
@@ -3960,9 +3968,11 @@ fun section42() {
         val gradleSrc = src("app/build.gradle.kts")
         // Re-pinned in v3.4 (intentional version bump 3.3/26 → 3.4/27 —
         // slim cache + media-home folders + hold-and-drop + row posters, spec §34).
-        check("v25src: the app version is 3.4 / code 27 (bumped by v3.4)",
-            gradleSrc.contains("versionName = \"3.4\"") &&
-                gradleSrc.contains("versionCode = 27"))
+        // Re-pinned in v3.5 (intentional version bump 3.4/27 → 3.5/28 —
+        // sequential cold chain + key-only match + last-death capture, spec §35).
+        check("v25src: the app version is 3.5 / code 28 (bumped by v3.5)",
+            gradleSrc.contains("versionName = \"3.5\"") &&
+                gradleSrc.contains("versionCode = 28"))
     }
 }
 
@@ -4111,8 +4121,12 @@ fun section46() {
         // call is unchanged semantically (tracker style, warm builds
         // only) but now sits inside the v3.0 Throwable guard, so the
         // pinned line is the guard's try form (spec §30).
+        // Re-pinned AGAIN in v3.5 (intentional change, spec §35):
+        // the colddwarm threads are deleted — the cold chain
+        // replaces them (see section 55); the staged shell +
+        // deferred prepares + shell lines below still hold.
         check("v28src: cold start is staged (warm worker + deferred prepares + shell lines)",
-            mainSrc.contains("mizan-coldwarm") &&
+            mainSrc.contains("ColdChainRunner.kickAfterSurvival(appCtx)") &&
                 mainSrc.contains("if (trackerStyle && !coldStart) {") &&
                 mainSrc.contains("try { prepareTrackerData() } catch (e: Throwable)") &&
                 mainSrc.contains("Loading your library…") &&
@@ -4871,9 +4885,10 @@ fun section50() {
             src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("forceNext") &&
                 src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun refreshNow"))
         // Re-pinned in v3.4 (intentional version bump 3.3/26 → 3.4/27, spec §34).
-        check("v31src: the version bump is 3.4 / code 27",
-            src("app/build.gradle.kts").contains("versionCode = 27") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.4\""))
+        // Re-pinned in v3.5 (intentional version bump 3.4/27 → 3.5/28, spec §35).
+        check("v31src: the version bump is 3.5 / code 28",
+            src("app/build.gradle.kts").contains("versionCode = 28") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.5\""))
     }
 }
 
@@ -5052,8 +5067,11 @@ fun section52() {
     check("refresh52src: discovery worker fetches only on force-or-empty-cache",
         discSrc.contains("val allowFetch = force || !hasCoreCache") &&
             discSrc.contains("if (!loaded) kick(ctx)"))
+    // Re-pinned in v3.5 (intentional change, spec §35): the home
+    // build's guarded kick is slim-only now — warmMemoAsync (a
+    // full parse on the first home build) is deleted.
     check("refresh52src: home build never parses snapshots (memo-only read + worker kick)",
-        mainSrc.contains("TrackerClient.memoOrNull()") && mainSrc.contains("warmMemoAsync"))
+        mainSrc.contains("TrackerClient.memoOrNull()") && mainSrc.contains("warmSlimAsync"))
     check("refresh52src: Home screen row options lost Move up/down (sort only in Sort sections)",
         !settingsSrc.contains("\"Move row up\"") && !settingsSrc.contains("\"Move row down\"") &&
             settingsSrc.contains("Sorting lives ONLY in \"Sort sections\""))
@@ -5424,15 +5442,27 @@ fun section54() {
         check("src54: IPTV home rows pass the 0.75 scale, browser keeps default",
             mainSrc.contains("scale = TileLayout.HOME_ROW_CARD_SCALE") &&
                 cardsSrc.contains("scale: Float = 1f"))
+        // Re-pinned in v3.5 (intentional refactor, same semantics):
+        // the slim attempt moved into trySlimSnap with the shared
+        // fingerprint helper — slim still runs before the full
+        // parse, and the full parse still rewrites the slim.
         check("src54: TrackerClient tries the slim before the full parse and writes it after",
-            clientSrc.contains("readSlim(ctx, slimFp)") &&
-                clientSrc.contains("writeSlimAsync(ctx, snap, slimFp)"))
+            clientSrc.contains("trySlimSnap(ctx, inputs)") &&
+                clientSrc.contains("writeSlimAsync(ctx, snap, slimFpFor(inputs))"))
+        // Re-pinned in v3.5 (intentional change, spec §35):
+        // App.onCreate warms slim ONLY — the full memo parse +
+        // discovery preload at process start stacked the
+        // cold-start peak; both moved to the post-survival chain.
         check("src54: App.onCreate kicks the memo warm and the discovery preload",
-            appSrc.contains("warmMemoAsync(this)") && appSrc.contains("DiscoveryData.preload(this)"))
+            appSrc.contains("warmSlimAsync(this)") && !appSrc.contains("DiscoveryData.preload(this)"))
         check("src54: discovery preload exists as a single-flight kick",
             discSrc.contains("fun preload(ctx: Context)"))
+        // Re-pinned in v3.5 (intentional change, spec §35): the
+        // parallel colddwarm-store thread is deleted with the
+        // rest of the parallel warms — one sequential chain
+        // thread replaces them (see section 55).
         check("src54: cold-warm runs tracker and store warms in parallel",
-            mainSrc.contains("mizan-coldwarm-store"))
+            !mainSrc.contains("mizan-coldwarm-store"))
         check("src54: sort page holds, moves, drops and cancels a grab",
             settingsSrc.contains("sortGrabStart(key, \"tracker\")") &&
                 settingsSrc.contains("sortGrabStart(key, \"tv\")") &&
@@ -5445,6 +5475,268 @@ fun section54() {
         check("src54: diagnostics gains the slim proof line",
             settingsSrc.contains("slim: \" +"))
         check("src54: hero rule untouched (missed first, today stays out)",
+            mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
+    }
+}
+
+/** v3.5 checks — the sequential cold chain, the key-only streaming match, the last-death line (spec §35). */
+fun section55() {
+    run {
+        // ---- ColdChain: ordering, gates, cancel, diagnostics ----
+        val chain = ColdChain()
+        check("chain55: fresh chain waits for survival, first step is tracker",
+            chain.next() == ColdChain.Step.TRACKER_FULL && chain.diag() == "waiting survival")
+        check("chain55: no heavy step before survival unless on-demand",
+            !chain.canStart(ColdChain.Step.TRACKER_FULL, false, false) &&
+                chain.canStart(ColdChain.Step.TRACKER_FULL, false, true) &&
+                !ColdChain.heavyStepAllowedBeforeSurvival(false) &&
+                ColdChain.heavyStepAllowedBeforeSurvival(true))
+        check("chain55: out-of-order starts refused",
+            !chain.canStart(ColdChain.Step.MATCH, true, false) &&
+                !chain.canStart(ColdChain.Step.DISCOVERY, true, false))
+        check("chain55: start tracker, in-flight blocks the next step",
+            chain.start(ColdChain.Step.TRACKER_FULL, true, false) &&
+                chain.next() == null &&
+                !chain.canStart(ColdChain.Step.MATCH, true, false) &&
+                chain.diag() == "running: tracker_full")
+        check("chain55: completing the wrong step is a no-op",
+            run {
+                chain.complete(ColdChain.Step.MATCH)
+                chain.inFlight() == ColdChain.Step.TRACKER_FULL && chain.next() == null
+            })
+        check("chain55: completing tracker advances to match",
+            run {
+                chain.complete(ColdChain.Step.TRACKER_FULL)
+                chain.next() == ColdChain.Step.MATCH && chain.diag() == "waiting: match"
+            })
+        check("chain55: full run ends done",
+            run {
+                chain.start(ColdChain.Step.MATCH, true, false)
+                chain.complete(ColdChain.Step.MATCH)
+                chain.start(ColdChain.Step.DISCOVERY, true, false)
+                chain.complete(ColdChain.Step.DISCOVERY)
+                chain.isDone() && chain.next() == null && chain.diag() == "done" &&
+                    !chain.canStart(ColdChain.Step.TRACKER_FULL, true, false)
+            })
+        check("chain55: arm resets for a fresh run (fetch reason)",
+            run {
+                chain.arm(ColdChain.Reason.FETCH)
+                chain.next() == ColdChain.Step.TRACKER_FULL && chain.diag() == "waiting survival" &&
+                    chain.reason == ColdChain.Reason.FETCH
+            })
+        check("chain55: cancel blocks starts and ends the run",
+            run {
+                val c = ColdChain()
+                c.cancel()
+                !c.canStart(ColdChain.Step.TRACKER_FULL, true, false) &&
+                    c.next() == null && c.diag() == "cancelled" && c.isCancelled()
+            })
+        check("chain55: cancel mid-run finishes the in-flight step only",
+            run {
+                val c = ColdChain()
+                c.start(ColdChain.Step.TRACKER_FULL, true, false)
+                c.cancel()
+                c.complete(ColdChain.Step.TRACKER_FULL)
+                c.next() == null && c.diag() == "cancelled" && !c.isDone()
+            })
+
+        // ---- DeathCapture: trim names, line states, codec ----
+        check("death55: running trim levels named, others numeric",
+            DeathCapture.trimName(5) == "RUNNING_MODERATE" &&
+                DeathCapture.trimName(10) == "RUNNING_LOW" &&
+                DeathCapture.trimName(15) == "RUNNING_CRITICAL" &&
+                DeathCapture.trimName(99) == "trim 99")
+        val trimRec = DeathCapture.DeathRecord(15, "chain: match", true, 1729800000000L)
+        check("death55: survived previous process ignores a stale record",
+            DeathCapture.lastDeathLine(0, trimRec, "chain: match") == "last death: none recorded")
+        check("death55: trim line names level, stage, after-first-frame",
+            DeathCapture.lastDeathLine(1, trimRec, null) ==
+                "last death: RUNNING_CRITICAL at chain: match (after first frame)")
+        check("death55: trim line before first frame",
+            DeathCapture.lastDeathLine(2, DeathCapture.DeathRecord(10, "composition done", false, 1L), null) ==
+                "last death: RUNNING_LOW at composition done (before first frame)")
+        check("death55: unknown line names the last persisted stage",
+            DeathCapture.lastDeathLine(2, null, "composition done") ==
+                "last death: unknown (last stage: composition done)")
+        check("death55: unknown line with no stage stays unknown, never invented",
+            DeathCapture.lastDeathLine(1, null, null) ==
+                "last death: unknown (last stage: unknown stage)" &&
+                DeathCapture.lastDeathLine(1, null, "") ==
+                "last death: unknown (last stage: unknown stage)")
+        check("death55: empty trim stage reads as unknown stage",
+            DeathCapture.lastDeathLine(1, DeathCapture.DeathRecord(5, "", true, 1L), null) ==
+                "last death: RUNNING_MODERATE at unknown stage (after first frame)")
+        check("death55: record codec round-trips and strips pipes",
+            run {
+                val rec = DeathCapture.DeathRecord(15, "a|b", false, 42L)
+                DeathCapture.decode(DeathCapture.encode(rec)) ==
+                    DeathCapture.DeathRecord(15, "a b", false, 42L)
+            })
+        check("death55: malformed records decode to null (fail-open)",
+            DeathCapture.decode(null) == null &&
+                DeathCapture.decode("") == null &&
+                DeathCapture.decode("1|2") == null &&
+                DeathCapture.decode("x|a|1|2") == null &&
+                DeathCapture.decode("5|a|2|100") == null &&
+                DeathCapture.decode("-1|a|1|2") == null &&
+                DeathCapture.decode("5|a|1|-3") == null)
+
+        // ---- KeyOnly streaming match == classic matchAll ----
+        val seriesLines = listOf(
+            IptvStore.encodeSeries(IptvLogic.SeriesItem(101, "Reacher", "", "c1", "Drama", "", "", 0)),
+            IptvStore.encodeSeries(IptvLogic.SeriesItem(102, "Preacher", "", "c1", "Drama", "", "", 0)),
+            IptvStore.encodeSeries(IptvLogic.SeriesItem(103, "Dune", "", "c1", "SciFi", "", "", 2021)),
+            IptvStore.encodeSeries(IptvLogic.SeriesItem(104, "Dune", "", "c1", "SciFi", "", "", 1984))
+        )
+        val vodLines = listOf(
+            IptvStore.encodeVod(IptvLogic.VodItem(201, "Dune 2021 1080p", "", "c2", "Movies", "", "", 2021)),
+            IptvStore.encodeVod(IptvLogic.VodItem(202, "Dune 1984", "", "c2", "Movies", "", "", 1984))
+        )
+        // The classic candidates (names retained) vs the key-only stream (names dropped at key time).
+        val classicSeries = seriesLines.mapNotNull { IptvStore.decodeSeries(it) }
+            .map { WatchMatch.Candidate(it.id, it.name, it.year) }
+        val classicVod = vodLines.mapNotNull { IptvStore.decodeVod(it) }
+            .map { WatchMatch.Candidate(it.id, it.name, it.year) }
+        // The streaming shape: decode each line, key it, drop the name — no Tuple list is ever built.
+        val keyedSeries = seriesLines.mapNotNull { line ->
+            IptvStore.decodeSeries(line)?.let { WatchMatch.keyOnlyOf(it.id, it.name, it.year) }
+        }
+        val keyedVod = vodLines.mapNotNull { line ->
+            IptvStore.decodeVod(line)?.let { WatchMatch.keyOnlyOf(it.id, it.name, it.year) }
+        }
+        check("key55: keyOnlyOf drops the name, keeps id + squash + year",
+            // A known year wins over the title token; with no known
+            // year, "2021" inside "Dune 2021 1080p" is NOT standalone
+            // (neither wrapped nor last/first token), so no year is
+            // extracted — the key is the same either way.
+            WatchMatch.keyOnlyOf(7, "Dune 2021 1080p", 2021) ==
+                WatchMatch.KeyOnly(7, "dune20211080p", 2021) &&
+                WatchMatch.keyOnlyOf(7, "Dune 2021 1080p", 0) ==
+                WatchMatch.KeyOnly(7, "dune20211080p", 0))
+        val titles = listOf(
+            WatchMatch.TrackerTitle(1, "tv", "Reacher", 0),
+            WatchMatch.TrackerTitle(2, "tv", "Dune", 2021),
+            WatchMatch.TrackerTitle(3, "tv", "Dune", 0),
+            WatchMatch.TrackerTitle(4, "movie", "Dune", 2021),
+            WatchMatch.TrackerTitle(5, "tv", "Zzzzz No Such Show", 0)
+        )
+        val classicTv = WatchMatch.matchAll(titles.filter { it.type == "tv" }, classicSeries)
+        val keyedTv = WatchMatch.matchAllKeyed(titles.filter { it.type == "tv" }, keyedSeries)
+        val classicMovies = WatchMatch.matchAll(titles.filter { it.type == "movie" }, classicVod)
+        val keyedMovies = WatchMatch.matchAllKeyed(titles.filter { it.type == "movie" }, keyedVod)
+        check("key55: key-only match == classic match (tv + movies)",
+            classicTv == keyedTv && classicMovies == keyedMovies)
+        check("key55: exact tier beats contains — Reacher finds exact Reacher, not Preacher",
+            keyedTv[1]?.iptvId == 101L && keyedTv[1]?.exact == true)
+        check("key55: repo contains case — Reacher finds catalogue Preacher when no exact exists",
+            WatchMatch.matchOneKeyOnly(
+                WatchMatch.TrackerTitle(1, "tv", "Reacher", 0),
+                listOf(WatchMatch.keyOnlyOf(102, "Preacher", 0)),
+                WatchMatch.exactIndexKeys(listOf(WatchMatch.keyOnlyOf(102, "Preacher", 0)))
+            )?.let { it.iptvId == 102L && it.exact == false } == true)
+        check("key55: exact tier wins and year narrows the pool",
+            keyedTv[2]?.iptvId == 103L && keyedTv[2]?.exact == true && keyedTv[2]?.possible == false)
+        check("key55: undated Dune hits the exact tier on both years, flagged possible",
+            // Both series squash to "dune", so the exact tier (not
+            // contains) fires with a 2-entry pool: first in
+            // catalogue order, possible because unresolved.
+            keyedTv[3]?.iptvId == 103L && keyedTv[3]?.exact == false && keyedTv[3]?.possible == true)
+        check("key55: contains tier orders shortest first when years tie",
+            // Undated movie Dune vs the two VODs: neither key equals
+            // "dune", so contains fires; both year penalties tie at
+            // 0, so the shortest squash ("dune1984") wins.
+            WatchMatch.matchAllKeyed(
+                listOf(WatchMatch.TrackerTitle(6, "movie", "Dune", 0)), keyedVod
+            )[6]?.let { it.iptvId == 202L && it.exact == false && it.possible == true } == true)
+        check("key55: movie Dune finds the 2021 VOD exactly enough (contains, year-agreeing)",
+            keyedMovies[4]?.iptvId == 201L)
+        check("key55: no match stays no match",
+            keyedTv[5] == null)
+        check("key55: empty title never matches, empty catalogue never matches",
+            WatchMatch.matchAllKeyed(listOf(WatchMatch.TrackerTitle(9, "tv", "", 0)), keyedSeries).isEmpty() &&
+                WatchMatch.matchAllKeyed(titles, emptyList()).isEmpty())
+
+        // ---- Source checks: every wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val appSrc = src("app/src/main/java/com/mizan/launcher/App.kt")
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        val iptvSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
+        val watchSrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+        val discSrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+        val cacheSrc = src("app/src/main/java/com/mizan/launcher/data/HomeCacheDisk.kt")
+        val chainSrc = src("app/src/main/java/com/mizan/launcher/data/ColdChainRunner.kt")
+        val deathSrc = src("app/src/main/java/com/mizan/launcher/data/DeathStore.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("src55: App.onCreate warms slim only — no full parse, no discovery preload",
+            appSrc.contains("warmSlimAsync(this)") &&
+                !appSrc.contains("warmMemoAsync(this)") &&
+                !appSrc.contains("DiscoveryData.preload(this)"))
+        check("src55: App captures trim warnings for the death record",
+            appSrc.contains("override fun onTrimMemory") &&
+                appSrc.contains("DeathStore.record(this, level, stage, afterFirst)"))
+        check("src55: parallel colddwarm threads are gone; the chain kick replaces them",
+            !mainSrc.contains("mizan-coldwarm") &&
+                !mainSrc.contains("scheduleColdWarm") &&
+                mainSrc.contains("ColdChainRunner.kickAfterSurvival(appCtx)"))
+        check("src55: home build reads the cached match table, never kicks a recompute",
+            mainSrc.contains("wMatches = WatchPlay.cachedMatches(this)") &&
+                !mainSrc.contains("WatchPlay.matches(appCtx)"))
+        check("src55: home tracker kick is slim-only",
+            mainSrc.contains("TrackerClient.warmSlimAsync(this)"))
+        check("src55: chain landing + destroy wiring in MainActivity",
+            mainSrc.contains("ColdChainRunner.onLanded") &&
+                mainSrc.contains("ColdChainRunner.cancel()"))
+        check("src55: TrackerClient slim warm exists, full-parse warm is gone, fetch kicks the chain",
+            clientSrc.contains("fun warmSlimAsync") &&
+                !clientSrc.contains("fun warmMemoAsync") &&
+                clientSrc.contains("ColdChainRunner.kickAfterFetch(appCtx)"))
+        check("src55: tracker mirror fallback reads disk on demand with a context",
+            clientSrc.contains("HomeCacheDisk.mirrored(ctx,"))
+        check("src55: tuples memo + blocking read are gone; key-only stream + counts replace them",
+            iptvSrc.contains("fun keyedCatalogue") &&
+                iptvSrc.contains("fun catalogueCounts") &&
+                !iptvSrc.contains("fun tuplesBlocking") &&
+                !iptvSrc.contains("private var tuplesMemo"))
+        check("src55: match recompute is fingerprint-first, then key-only",
+            watchSrc.contains("fun recomputeSyncNow") &&
+                watchSrc.contains("matchAllKeyed") &&
+                run {
+                    // Order inside the recompute body only (the doc
+                    // comment above it mentions the stream first).
+                    val body = watchSrc.substringAfter("private fun recomputeOnWorker")
+                    body.indexOf("catalogueCounts") < body.indexOf("keyedCatalogue")
+                } &&
+                !watchSrc.contains("tuplesBlocking"))
+        check("src55: discovery snapshot no longer kicks; runNow is the chain entry",
+            discSrc.substringAfter("fun snapshot").substringBefore("fun peek").contains("kick(ctx)") == false &&
+                discSrc.contains("fun runNow"))
+        check("src55: discovery worker never parses on an automatic run (memo-only unless forced)",
+            discSrc.contains("TrackerClient.memoOrNull()") &&
+                discSrc.contains("if (force) TrackerClient.cached(appCtx) else return false"))
+        check("src55: home-cache mirror is metadata-only, contents read on demand",
+            cacheSrc.contains("mirrorMeta") &&
+                cacheSrc.contains("fun hasMirror") &&
+                cacheSrc.contains("fun mirrored(ctx: Context") &&
+                !cacheSrc.contains("mirror = loaded"))
+        check("src55: chain runner is one sequential thread with survival + fetch kicks",
+            chainSrc.contains("mizan-coldchain") &&
+                chainSrc.contains("fun kickAfterSurvival") &&
+                chainSrc.contains("fun kickAfterFetch") &&
+                chainSrc.contains("fun cancel()"))
+        check("src55: death store commits trim records to its own tiny prefs file",
+            deathSrc.contains("\"mizan_death\"") &&
+                deathSrc.contains(".commit()") &&
+                deathSrc.contains("fun diagLine"))
+        check("src55: diagnostics gains last-death + cold-chain lines",
+            settingsSrc.contains("DeathStore") &&
+                settingsSrc.contains("cold chain: \" +") &&
+                settingsSrc.contains("ColdChainRunner.diagState"))
+        check("src55: hero rule untouched (missed first, today stays out)",
             mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
     }
 }

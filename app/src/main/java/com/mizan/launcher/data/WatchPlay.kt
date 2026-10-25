@@ -126,12 +126,32 @@ object WatchPlay {
     @Volatile
     private var recomputeInFlight = false
 
+    /** Single-flight acquire shared by the thread kick and the chain's synchronous run. */
+    private fun tryAcquireRecompute(): Boolean {
+        synchronized(this) {
+            if (recomputeInFlight) return false
+            recomputeInFlight = true
+            return true
+        }
+    }
+
+    private fun releaseRecompute() {
+        synchronized(this) { recomputeInFlight = false }
+    }
+
+    private fun announceIfChanged(changed: Boolean) {
+        if (!changed) return
+        DiagLog.note("watch matches recomputed")
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try { onMatchesChanged?.invoke() } catch (e: Exception) {
+                // The home's rebuild guard handles dead activities.
+            }
+        }
+    }
+
     /** Kick the single-flight worker recompute (no-op while one is running). */
     fun kickRecompute(ctx: Context) {
-        synchronized(this) {
-            if (recomputeInFlight) return
-            recomputeInFlight = true
-        }
+        if (!tryAcquireRecompute()) return
         val appCtx = ctx.applicationContext
         thread(name = "mizan-watch-match") {
             var changed = false
@@ -143,35 +163,60 @@ object WatchPlay {
                 // table and is recorded — never a silent thread death.
                 Prefs.noteError(appCtx, "watchMatch", e)
             } finally {
-                synchronized(this) { recomputeInFlight = false }
+                releaseRecompute()
             }
-            if (changed) {
-                DiagLog.note("watch matches recomputed")
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    try { onMatchesChanged?.invoke() } catch (e: Exception) {
-                        // The home's rebuild guard handles dead activities.
-                    }
-                }
-            }
+            announceIfChanged(changed)
         }
     }
 
     /**
-     * Worker-thread recompute (this IS the worker — every call
-     * site is inside [kickRecompute]'s thread): load the store
-     * tuples blocking, derive the fingerprint, and only when it
-     * moved run the match — core/WatchMatch keys the catalogue
-     * once per run. Persists table + fingerprint. Returns true
-     * when a NEW table landed.
+     * v3.5 (spec §35): run the recompute SYNCHRONOUSLY on the
+     * caller's worker thread — the cold chain's MATCH step calls
+     * this on the chain thread so the match never runs beside
+     * another heavy step. Same single-flight flag as
+     * [kickRecompute]: false when a recompute is already running
+     * (the in-flight run covers this one). Never call on the
+     * main thread: it may stream both catalogue files.
+     */
+    fun recomputeSyncNow(ctx: Context): Boolean {
+        if (!tryAcquireRecompute()) return false
+        val appCtx = ctx.applicationContext
+        var changed = false
+        try {
+            changed = recomputeOnWorker(appCtx)
+        } catch (e: Throwable) {
+            Prefs.noteError(appCtx, "watchMatch", e)
+        } finally {
+            releaseRecompute()
+        }
+        announceIfChanged(changed)
+        return true
+    }
+
+    /**
+     * Worker-thread recompute.
+     *
+     * v3.5 (spec §35): FINGERPRINT FIRST. The old shape streamed
+     * both catalogue files into memoized tuples BEFORE checking
+     * whether anything moved — every cold start paid the full
+     * scan even when the table was already fresh. Now the
+     * fingerprint comes from the small store index (counts +
+     * fetchedAt) plus the tracker stamps, and the catalogue
+     * streams ONLY when the fingerprint moved. The stream itself
+     * is key-only (data/IptvClient.keyedCatalogue): names are
+     * dropped at key time, the key lists are worker-local and
+     * released when the run ends — nothing is memoized any more.
+     * Persists table + fingerprint. Returns true when a NEW
+     * table landed.
      */
     private fun recomputeOnWorker(appCtx: Context): Boolean {
-        val (seriesTuples, vodTuples) = IptvClient.tuplesBlocking(appCtx)
         val snap = TrackerClient.cached(appCtx)
         val titles = trackerTitles(snap)
         val keyHash = titles.map { "${it.type}:${it.tmdbId}" }.sorted().joinToString(",").hashCode()
+        val counts = IptvClient.catalogueCounts(appCtx)
         val fp = WatchMatch.fingerprint(
-            seriesTuples.size, vodTuples.size,
-            IptvClient.fetchedAt(appCtx), snap.updated, keyHash
+            counts?.first ?: 0, counts?.second ?: 0,
+            counts?.third ?: 0L, snap.updated, keyHash
         )
         val p = prefs(appCtx)
         val storedFp = try { PrefsSafe.strOrNull(p, K_MATCH_FP) } catch (e: Exception) { null }
@@ -183,13 +228,13 @@ object WatchPlay {
             // Fingerprint claims fresh but the cache is empty while
             // titles exist — fall through and recompute.
         }
-        val shows = WatchMatch.matchAll(
-            titles.filter { it.type == "tv" },
-            seriesTuples.map { WatchMatch.Candidate(it.id, it.name, it.year) }
+        // Fingerprint moved (or the cache is empty): stream key-only, match, release.
+        val keyed = IptvClient.keyedCatalogue(appCtx) ?: Pair(emptyList(), emptyList())
+        val shows = WatchMatch.matchAllKeyed(
+            titles.filter { it.type == "tv" }, keyed.first
         )
-        val movies = WatchMatch.matchAll(
-            titles.filter { it.type == "movie" },
-            vodTuples.map { WatchMatch.Candidate(it.id, it.name, it.year) }
+        val movies = WatchMatch.matchAllKeyed(
+            titles.filter { it.type == "movie" }, keyed.second
         )
         val all = shows.values + movies.values
         try {

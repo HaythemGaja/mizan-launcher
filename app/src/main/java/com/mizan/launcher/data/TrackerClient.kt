@@ -123,7 +123,7 @@ object TrackerClient {
             val p = prefs(ctx)
             listOf(K_UPNEXT, K_CONTINUE, K_MOVIES, K_TRACKED, K_FORYOU).any {
                 !PrefsSafe.strOrNull(p, it).isNullOrBlank() ||
-                    !HomeCacheDisk.mirrored(it.removePrefix("tracker_cache_")).isNullOrBlank()
+                    HomeCacheDisk.hasMirror(it.removePrefix("tracker_cache_"))
             }
         } catch (e: Exception) {
             false
@@ -141,26 +141,35 @@ object TrackerClient {
     fun memoOrNull(): Snapshots? = cachedMemo
 
     @Volatile
-    private var memoWarmInFlight = false
+    private var memoSlimInFlight = false
 
     /**
-     * v3.2: parse on a worker and report back on the caller's
-     * thread via [onWarmed] (which rebuilds). Single-flight.
-     * Never parses on the calling thread.
+     * v3.5 (spec §35): warm the memo from the SLIM file ONLY and
+     * report back via [onWarmed] (which rebuilds). Single-flight.
+     * This REPLACES warmMemoAsync: the old shape parsed the full
+     * multi-megabyte snapshots on this worker — at App.onCreate
+     * and on the first home build, beside discovery and the
+     * match. The slim file (<= 512 KB, home-consumed fields
+     * only) paints the same rows in milliseconds; when it misses
+     * (first run, stale fingerprint) the memo simply stays empty
+     * and the home shows its shell/LOADING rows until the cold
+     * chain's TRACKER_FULL step parses post-survival. A slim
+     * warm NEVER parses — that is the first-frame guarantee.
+     * Never runs on the calling thread.
      */
-    fun warmMemoAsync(ctx: Context, onWarmed: () -> Unit) {
+    fun warmSlimAsync(ctx: Context, onWarmed: () -> Unit) {
         synchronized(this) {
-            if (memoWarmInFlight) return
-            memoWarmInFlight = true
+            if (memoSlimInFlight) return
+            memoSlimInFlight = true
         }
         val appCtx = ctx.applicationContext
-        kotlin.concurrent.thread(name = "mizan-tracker-memo") {
+        kotlin.concurrent.thread(name = "mizan-tracker-slimwarm") {
             try {
-                cached(appCtx)
+                trySlimOnly(appCtx)
             } catch (e: Exception) {
-                // A failed parse just leaves the memo empty; the home renders the shell.
+                // A failed slim read just leaves the memo empty; the home renders the shell.
             } finally {
-                synchronized(this) { memoWarmInFlight = false }
+                synchronized(this) { memoSlimInFlight = false }
             }
             try {
                 onWarmed()
@@ -168,6 +177,80 @@ object TrackerClient {
                 // The caller's rebuild guard handles dead activities.
             }
         }
+    }
+
+    /**
+     * Slim-only memo fill (worker threads only): read the raw
+     * inputs, and when the slim file matches their fingerprint,
+     * install the slim snapshots as the memo. Returns true on a
+     * hit. NEVER parses the full documents — a miss returns
+     * false and leaves the memo untouched.
+     */
+    private fun trySlimOnly(ctx: Context): Boolean {
+        return try {
+            val inputs = readRawInputs(ctx)
+            val key = memoKeyFor(inputs)
+            val memo = cachedMemo
+            if (memo != null && cachedMemoKey == key) return true
+            val slimSnap = trySlimSnap(ctx, inputs) ?: return false
+            cachedMemo = slimSnap
+            cachedMemoKey = key
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** The five raw snapshot documents + stamps, from prefs (or the disk mirror fallback). */
+    private data class RawInputs(
+        val up: String?,
+        val cont: String?,
+        val movies: String?,
+        val tracked: String?,
+        val forYou: String?,
+        val updated: Long,
+        val forYouUpdated: Long,
+        val fetchedAt: Long
+    )
+
+    private fun readRawInputs(ctx: Context): RawInputs {
+        val p = prefs(ctx)
+        return RawInputs(
+            up = PrefsSafe.strOrNull(p, K_UPNEXT) ?: HomeCacheDisk.mirrored(ctx, "upnext"),
+            cont = PrefsSafe.strOrNull(p, K_CONTINUE) ?: HomeCacheDisk.mirrored(ctx, "continue"),
+            movies = PrefsSafe.strOrNull(p, K_MOVIES) ?: HomeCacheDisk.mirrored(ctx, "movies"),
+            tracked = PrefsSafe.strOrNull(p, K_TRACKED) ?: HomeCacheDisk.mirrored(ctx, "tracked"),
+            forYou = PrefsSafe.strOrNull(p, K_FORYOU) ?: HomeCacheDisk.mirrored(ctx, "foryou"),
+            updated = PrefsSafe.long(p, K_UPDATED, 0L),
+            forYouUpdated = PrefsSafe.long(p, K_FORYOU_UPDATED, 0L),
+            fetchedAt = PrefsSafe.long(p, K_FETCHED, 0L)
+        )
+    }
+
+    private fun memoKeyFor(inputs: RawInputs): List<Any?> = listOf(
+        inputs.up, inputs.cont, inputs.movies, inputs.tracked, inputs.forYou,
+        inputs.updated, inputs.forYouUpdated, inputs.fetchedAt
+    )
+
+    private fun slimFpFor(inputs: RawInputs): String = TrackerSlim.fingerprint(
+        inputs.updated, inputs.fetchedAt,
+        inputs.up?.length ?: 0, inputs.cont?.length ?: 0,
+        inputs.movies?.length ?: 0, inputs.tracked?.length ?: 0,
+        inputs.forYou?.length ?: 0
+    )
+
+    /** The slim snapshots for these inputs, or null on a slim miss (caller falls through to the full parse). */
+    private fun trySlimSnap(ctx: Context, inputs: RawInputs): Snapshots? {
+        val slim = readSlim(ctx, slimFpFor(inputs)) ?: return null
+        return Snapshots(
+            upNext = slim.upNext, cont = slim.cont,
+            movies = slim.movies, tracked = slim.tracked,
+            forYou = slim.forYou,
+            trackedJson = inputs.tracked ?: "",
+            updated = slim.updated,
+            forYouUpdated = slim.forYouUpdated,
+            fetchedAt = slim.fetchedAt
+        )
     }
 
     /** The persisted fetch state, for diagnostics + the fallback line. */
@@ -318,75 +401,51 @@ object TrackerClient {
     /**
      * The last-good snapshots, parsed. Never blocks on the provider.
      * v3.1 (ask 38, local-first): each path falls back to the
-     * on-disk home-cache mirror (data/HomeCacheDisk, worker-loaded
-     * into memory) when prefs hold nothing for it — a prefs wipe
-     * or corrupt prefs file no longer empties the home. The memo
-     * key includes the mirror values so a late mirror load
-     * invalidates a prefs-empty memo. The home build reads only
-     * this (memory) — zero network, zero disk IO on its path.
+     * on-disk home-cache mirror (data/HomeCacheDisk, read from
+     * disk on demand) when prefs hold nothing for it — a prefs
+     * wipe or corrupt prefs file no longer empties the home.
+     *
+     * v3.5 CALL CONTRACT — this parses, so it is NOT a home-build
+     * call any more. Allowed callers: the cold chain's
+     * TRACKER_FULL step, the tracker fetch worker, on-demand
+     * screens (Details/Library/diagnostics), and a forced
+     * discovery run. The home build reads ONLY memoOrNull() plus
+     * the slim warm (warmSlimAsync) — a full parse on the open
+     * path is exactly the spike v3.5 removes.
+     *
+     * v3.4 (ask 49): the slim path — the slim file holds only
+     * the home-consumed fields, so it parses in milliseconds;
+     * the full parse below still runs whenever the fingerprint
+     * moved (a fetch landing) and rewrites the slim for the next
+     * cold start. trackedJson still rides the raw string (a
+     * reference, never a parse) so Library screens keep their
+     * watched sets.
      */
     fun cached(ctx: Context): Snapshots {
         return try {
-            val p = prefs(ctx)
-            val rawUp = PrefsSafe.strOrNull(p, K_UPNEXT) ?: HomeCacheDisk.mirrored("upnext")
-            val rawCont = PrefsSafe.strOrNull(p, K_CONTINUE) ?: HomeCacheDisk.mirrored("continue")
-            val rawMovies = PrefsSafe.strOrNull(p, K_MOVIES) ?: HomeCacheDisk.mirrored("movies")
-            val rawTracked = PrefsSafe.strOrNull(p, K_TRACKED) ?: HomeCacheDisk.mirrored("tracked")
-            val rawForYou = PrefsSafe.strOrNull(p, K_FORYOU) ?: HomeCacheDisk.mirrored("foryou")
-            val updated = PrefsSafe.long(p, K_UPDATED, 0L)
-            val forYouUpdated = PrefsSafe.long(p, K_FORYOU_UPDATED, 0L)
-            val fetchedAt = PrefsSafe.long(p, K_FETCHED, 0L)
-            val key = listOf<Any?>(
-                rawUp, rawCont, rawMovies, rawTracked, rawForYou,
-                updated, forYouUpdated, fetchedAt
-            )
+            val inputs = readRawInputs(ctx)
+            val key = memoKeyFor(inputs)
             val memo = cachedMemo
             if (memo != null && cachedMemoKey == key) return memo
-            // v3.4 (ask 49): the slim path — a cold start after a
-            // crash used to re-parse the multi-megabyte snapshot
-            // documents here before any tracker row could render.
-            // The slim file holds only the home-consumed fields,
-            // so it parses in milliseconds; the full parse below
-            // still runs behind it whenever the fingerprint moved
-            // (a fetch landing) and rewrites the slim for the
-            // next cold start. trackedJson still rides the raw
-            // string (a reference, never a parse) so Library
-            // screens keep their watched sets.
-            val slimFp = TrackerSlim.fingerprint(
-                updated, fetchedAt,
-                rawUp?.length ?: 0, rawCont?.length ?: 0,
-                rawMovies?.length ?: 0, rawTracked?.length ?: 0,
-                rawForYou?.length ?: 0
-            )
-            val slim = readSlim(ctx, slimFp)
-            if (slim != null) {
-                val slimSnap = Snapshots(
-                    upNext = slim.upNext, cont = slim.cont,
-                    movies = slim.movies, tracked = slim.tracked,
-                    forYou = slim.forYou,
-                    trackedJson = rawTracked ?: "",
-                    updated = slim.updated,
-                    forYouUpdated = slim.forYouUpdated,
-                    fetchedAt = slim.fetchedAt
-                )
+            trySlimSnap(ctx, inputs)?.let { slimSnap ->
                 cachedMemo = slimSnap
                 cachedMemoKey = key
                 return slimSnap
             }
             val snap = Snapshots(
-                upNext = TrackerLogic.parseUpNext(rawUp),
-                cont = TrackerLogic.parseContinue(rawCont),
-                movies = TrackerLogic.parseMovies(rawMovies),
-                tracked = TrackerLogic.parseTrackedShows(rawTracked),
-                forYou = TrackerLogic.parseForYou(rawForYou),
-                trackedJson = rawTracked ?: "",
-                updated = updated,
-                forYouUpdated = forYouUpdated,
-                fetchedAt = fetchedAt
+                upNext = TrackerLogic.parseUpNext(inputs.up),
+                cont = TrackerLogic.parseContinue(inputs.cont),
+                movies = TrackerLogic.parseMovies(inputs.movies),
+                tracked = TrackerLogic.parseTrackedShows(inputs.tracked),
+                forYou = TrackerLogic.parseForYou(inputs.forYou),
+                trackedJson = inputs.tracked ?: "",
+                updated = inputs.updated,
+                forYouUpdated = inputs.forYouUpdated,
+                fetchedAt = inputs.fetchedAt
             )
             cachedMemo = snap
             cachedMemoKey = key
-            writeSlimAsync(ctx, snap, slimFp)
+            writeSlimAsync(ctx, snap, slimFpFor(inputs))
             snap
         } catch (e: Exception) {
             Snapshots.EMPTY
@@ -506,6 +565,15 @@ object TrackerClient {
                     results[4].json ?: before?.get(4)
                 )
                 if (after != before || kind != kindBefore) {
+                    // v3.5 (spec §35): a fetch landing re-runs the
+                    // cold chain (TRACKER_FULL re-parses since the
+                    // memo key moved, MATCH re-fingerprints and
+                    // re-streams only on change) — this is how a
+                    // post-survival fetch refreshes the home
+                    // without any home build ever parsing. The
+                    // chain is single-flight, so a landing during
+                    // the survival run dedupes against it.
+                    ColdChainRunner.kickAfterFetch(appCtx)
                     Handler(Looper.getMainLooper()).post {
                         try { onChanged() } catch (e: Exception) {
                             // A caller's rebuild must never kill the poster.

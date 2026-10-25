@@ -222,6 +222,92 @@ object WatchMatch {
         return matchOneKeyed(t, keyed, exactIndex(keyed))
     }
 
+    // ------------------------------------------------------------ key-only streaming match (v3.5, spec §35)
+    //
+    // The v2.5 matcher keyed the catalogue into KeyedCandidate
+    // objects that still carried the full Candidate (name string)
+    // — and data/IptvClient memoized the 47k raw Tuples FOREVER,
+    // so a match run held tuples + keyed + index at once, and the
+    // tuples never left. The key-only path drops the name at key
+    // time: a catalogue entry survives ONLY as (iptvId, squash
+    // key, year) — the match never needs the name again, and the
+    // list is transient (the caller's worker-local), never
+    // memoized. Same tiers, same ordering, same flags as
+    // matchOneKeyed; the sim pins matchAllKeyed == matchAll over
+    // shared fixtures (including the repo 'Preacher'->'Reacher'
+    // contains case).
+    //
+    // A catalogue entry reduced to its match key at ingest — the
+    // raw name is dropped immediately and is NOT retained here.
+    data class KeyOnly(val iptvId: Long, val key: String, val year: Int)
+
+    /** Key one catalogue entry, dropping its name (id + squash + year only). */
+    fun keyOnlyOf(id: Long, name: String, year: Int): KeyOnly {
+        val (key, effYear) = keyOf(name, year)
+        return KeyOnly(id, key, effYear)
+    }
+
+    /** The exact-tier index over key-only entries (same rule as [exactIndex]: empty keys excluded). */
+    fun exactIndexKeys(keyed: List<KeyOnly>): Map<String, List<KeyOnly>> {
+        val map = HashMap<String, ArrayList<KeyOnly>>()
+        for (k in keyed) {
+            if (k.key.isEmpty()) continue
+            map.getOrPut(k.key) { ArrayList() }.add(k)
+        }
+        return map
+    }
+
+    /**
+     * Repo-method matching for one title against PRE-KEYED
+     * key-only entries — the exact mirror of [matchOneKeyed]:
+     * tier 1 exact (year-narrowed pool, first in catalogue order,
+     * possible unless uniquely resolved with no year conflict),
+     * tier 2 contains (year-agreeing first, then shortest squash,
+     * then catalogue order — stable sort; possible when multiple
+     * distinct titles or a year conflict).
+     */
+    fun matchOneKeyOnly(
+        t: TrackerTitle,
+        keyed: List<KeyOnly>,
+        exact: Map<String, List<KeyOnly>>
+    ): Match? {
+        if (keyed.isEmpty()) return null
+        val (tKey, tYear) = keyOf(t.title, t.year)
+        if (tKey.isEmpty()) return null
+        val exactTier = exact[tKey] ?: emptyList()
+        if (exactTier.isNotEmpty()) {
+            val yearHits = if (tYear > 0) exactTier.filter { it.year == tYear } else emptyList()
+            val pool = if (yearHits.isNotEmpty()) yearHits else exactTier
+            val chosen = pool.first()
+            val yearConflict = tYear > 0 && chosen.year > 0 && chosen.year != tYear
+            val resolved = pool.size == 1 && !yearConflict
+            return Match(t.tmdbId, t.type, chosen.iptvId, resolved, !resolved)
+        }
+        val containing = keyed.filter { it.key.contains(tKey) }
+        if (containing.isEmpty()) return null
+        val distinctTitles = containing.map { it.key }.distinct().size
+        // sortedWith is stable: equal (penalty, length) pairs keep
+        // catalogue order — the tier's final tie-break.
+        val chosen = containing.sortedWith(
+            compareBy<KeyOnly> { yearPenalty(it.year, tYear) }
+                .thenBy { it.key.length }
+        ).first()
+        val yearConflict = tYear > 0 && chosen.year > 0 && chosen.year != tYear
+        val possible = distinctTitles > 1 || yearConflict
+        return Match(t.tmdbId, t.type, chosen.iptvId, false, possible)
+    }
+
+    /** Match every tracker title against a key-only catalogue (transient; never memoized). */
+    fun matchAllKeyed(tracker: List<TrackerTitle>, keyed: List<KeyOnly>): Map<Long, Match> {
+        val out = LinkedHashMap<Long, Match>()
+        if (tracker.isEmpty() || keyed.isEmpty()) return out
+        val exact = exactIndexKeys(keyed)
+        for (t in tracker) {
+            matchOneKeyOnly(t, keyed, exact)?.let { out[t.tmdbId] = it }
+        }
+        return out
+    }
+
     /**
      * Match every tracker title against one catalogue, keyed by
      * tmdbId. The catalogue is keyed + indexed ONCE for the whole

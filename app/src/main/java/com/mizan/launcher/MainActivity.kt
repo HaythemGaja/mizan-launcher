@@ -160,7 +160,6 @@ class MainActivity : Activity() {
      * exactly as they did before v2.8.
      */
     private var coldStart = true
-    private var coldWarmScheduled = false
 
     /** v3.2: the memo-parse kick guard for prepareTrackerData (see there). */
     private var trackerMemoKickDone = false
@@ -276,7 +275,35 @@ class MainActivity : Activity() {
         // (data/StartupHealthStore.beginLaunch) — read it before
         // the first build so homeStyleKey() can force TV.
         safeShell = StartupHealthStore.safeShellArmed
+        // v3.5: the cold chain's landing — the old colddwarm
+        // threads flipped coldStart off + rebuilt once when the
+        // tracker memo landed; the chain does the same when ALL
+        // its steps land (tracker, match, discovery), on the
+        // chain thread — this posts it to the main thread.
+        // Cleared in onDestroy so a dead activity is never kept
+        // alive by the runner's single-slot callback.
+        com.mizan.launcher.data.ColdChainRunner.onLanded = {
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                coldStart = false
+                if (isTrackerFamily() || isIptvStyle()) {
+                    frameProbeStage = 2
+                    rebuild()
+                }
+            }
+        }
         rebuild()
+    }
+
+    override fun onDestroy() {
+        // v3.5: stop the chain between steps (the in-flight step
+        // finishes; the next never starts) and drop this
+        // activity from the runner's callback slot.
+        try { com.mizan.launcher.data.ColdChainRunner.cancel() } catch (e: Exception) {
+            // Teardown only.
+        }
+        com.mizan.launcher.data.ColdChainRunner.onLanded = null
+        super.onDestroy()
     }
 
     override fun onResume() {
@@ -354,12 +381,18 @@ class MainActivity : Activity() {
             setContentView(buildRoot())
             DiagLog.markStage("composition done")
             // v2.8 cold-start staging: the shell's first frame is
-            // probed (DiagLog's startup timings), and the warm
-            // worker is kicked — the data reads the shell skipped
-            // run THERE, never on this thread.
+            // probed (DiagLog's startup timings). v3.5: NO warm
+            // worker is kicked here any more — the v2.8–v3.4
+            // colddwarm threads (tracker parse + store stamp +
+            // match kick, in parallel) stacked the open-path peak
+            // that gets the process killed. The first frame paints
+            // from the App.onCreate slim warm; the heavy work runs
+            // sequentially in the cold chain after first frame +
+            // survival (see scheduleStartupClear), and its landing
+            // flips coldStart off + rebuilds once (see onCreate's
+            // ColdChainRunner.onLanded wiring).
             if (coldStart) {
                 attachFrameProbe(homeRoot, 1)
-                scheduleColdWarm()
             } else if (frameProbeStage == 2) {
                 frameProbeStage = 0
                 attachFrameProbe(homeRoot, 2)
@@ -544,65 +577,31 @@ class MainActivity : Activity() {
      * activity; later rebuilds don't re-arm (the counter is
      * already 0 by then in the normal case).
      */
+    /**
+     * v3.5: the survival runnable does three things at once —
+     * it clears the startup-health counter (the process proved
+     * healthy for 10 s), it clears the `last death:` record (a
+     * normal launch surviving is what retires death evidence —
+     * NOT the safe-shell immediate clear, which must not hide
+     * the death it evidences), and it kicks the cold chain
+     * (data/ColdChainRunner): the heavy post-survival work runs
+     * sequentially on ONE worker thread from here. The runnable
+     * rides the main looper — a process that dies first takes
+     * the message with it, which is exactly the semantics the
+     * safe shell needs.
+     */
     private fun scheduleStartupClear() {
         if (startupClearScheduled) return
         startupClearScheduled = true
         val appCtx = applicationContext
         handler.postDelayed(
-            { StartupHealthStore.markCleared(appCtx) },
+            {
+                StartupHealthStore.markCleared(appCtx)
+                com.mizan.launcher.data.DeathStore.clear(appCtx)
+                com.mizan.launcher.data.ColdChainRunner.kickAfterSurvival(appCtx)
+            },
             StartupHealth.SURVIVAL_MS
         )
-    }
-
-    /**
-     * The cold-warm worker (v2.8): runs the first-build data reads
-     * the staged shell skipped — the tracker snapshot parse, the
-     * IPTV store index load, the Watch match-table read — purely
-     * to warm the data layer's memos off the main thread. Landing
-     * flips [coldStart] off and rebuilds ONCE with everything
-     * warm; per-source async landings (discovery, tracker refresh,
-     * IPTV slices, match recompute) fill further from there, as
-     * they always have.
-     */
-    private fun scheduleColdWarm() {
-        if (coldWarmScheduled) return
-        coldWarmScheduled = true
-        val appCtx = applicationContext
-        // v3.4 (ask 49): the cold-warm steps run in PARALLEL now.
-        // They used to serialize on one thread — tracker memo
-        // parse, then store stamp, then the matches kick — so the
-        // warm rebuild (and with it every tracker row) waited for
-        // the slowest step. Now the tracker memo thread flips
-        // coldStart the moment IT lands (the store stamp never
-        // gated the home; it warms beside it), and the matches
-        // kick was always async. The flip semantics are
-        // unchanged: cached() returns instantly when the memo is
-        // already warm (App.onCreate kick or the slim path), and
-        // parses on this thread otherwise.
-        kotlin.concurrent.thread(name = "mizan-coldwarm") {
-            try { TrackerClient.cached(appCtx) } catch (e: Exception) {
-                // Warm-up is an optimisation; the full build re-reads fail-open.
-            }
-            DiagLog.markStage("warm: tracker read")
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                coldStart = false
-                if (isTrackerFamily() || isIptvStyle()) {
-                    frameProbeStage = 2
-                    rebuild()
-                }
-            }
-        }
-        kotlin.concurrent.thread(name = "mizan-coldwarm-store") {
-            try { IptvClient.storeStamp(appCtx) } catch (e: Exception) {
-                // As above.
-            }
-            DiagLog.markStage("warm: store read")
-        }
-        try { WatchPlay.matches(appCtx) } catch (e: Exception) {
-            // As above.
-        }
-        DiagLog.markStage("warm: matches read")
     }
 
     /** Theme colours for this profile, with Dynamic accent and Safe mode applied. */
@@ -1223,15 +1222,19 @@ class MainActivity : Activity() {
 
     private fun prepareTrackerData() {
         // v3.2: the home build NEVER parses snapshots — it reads
-        // only the worker-warmed memo. Cold memo + stored data →
-        // one worker parse kick (guarded per activity instance,
-        // so its landing rebuild cannot re-kick into a loop);
-        // cold memo + no stored data → the shell's empty set
-        // until first-run seeding lands (see buildTrackerHome).
+        // only the worker-warmed memo. v3.5: the guarded kick
+        // below is SLIM-ONLY (warmSlimAsync) — the old shape
+        // kicked a full worker parse (warmMemoAsync) on the first
+        // home build, which is exactly the open-path spike v3.5
+        // removes. Cold memo + stored data → one slim warm
+        // (guarded per activity instance, so its landing rebuild
+        // cannot re-kick into a loop); a slim miss leaves the
+        // shell's empty set until the cold chain's TRACKER_FULL
+        // step parses post-survival (see buildTrackerHome).
         val snap = TrackerClient.memoOrNull() ?: run {
             if (!trackerMemoKickDone && TrackerClient.hasStoredData(this)) {
                 trackerMemoKickDone = true
-                TrackerClient.warmMemoAsync(this) {
+                TrackerClient.warmSlimAsync(this) {
                     runOnUiThread { if (!isFinishing && !isDestroyed) rebuild() }
                 }
             }
@@ -1294,15 +1297,19 @@ class MainActivity : Activity() {
      * rebuilds once with the resolved hero/cards.
      */
     private fun prepareWatchData() {
-        // v2.4: matches() returns the best table available NOW
-        // (the prefs cache while the store tuples load in the
-        // background); when the tuples land and the table is
-        // recomputed, onMatchesChanged rebuilds once with fresh
-        // badges — no catalogue is ever materialized here.
+        // v3.5: the home build reads ONLY the prefs-cached table
+        // (cachedMatches — no kick, no compute). The old shape
+        // called matches(), which kicked a worker recompute on
+        // EVERY home build — a full catalogue scan stacked on
+        // the open path. Fresh tables now arrive from the cold
+        // chain's MATCH step (post-survival) or an on-demand
+        // Details kick; when one lands, onMatchesChanged rebuilds
+        // once with fresh badges — no catalogue is ever
+        // materialized here.
         WatchPlay.onMatchesChanged = {
             runOnUiThread { if (isWatchStyle()) rebuild() }
         }
-        wMatches = WatchPlay.matches(this)
+        wMatches = WatchPlay.cachedMatches(this)
         // v2.9 (ask F.25): the warm-up set is WHAT IS DISPLAYED —
         // the hero pool first (in pool order), then the Up Next
         // row, then Continue Watching's shows — every matched

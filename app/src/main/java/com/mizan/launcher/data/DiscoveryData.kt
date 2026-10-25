@@ -98,8 +98,18 @@ object DiscoveryData {
      * (force) or a brand-new empty cache (seeding) fetches.
      * Never blocks.
      */
+    /**
+     * v3.5 (spec §35): the current state WITHOUT kicking. The
+     * old shape kicked the worker on first read — and the home
+     * build reads this on every build, so the discovery worker
+     * (trend + details parses + shaping) used to start on the
+     * open path beside the tracker parse and the match. Now the
+     * kick belongs to the cold chain (post-survival) and to
+     * explicit requests (preload callers, section Retry via
+     * refreshNow); a home build that finds nothing loaded shows
+     * the section LOADING placeholders until the chain lands.
+     */
     fun snapshot(ctx: Context): State {
-        if (!loaded) kick(ctx)
         return state
     }
 
@@ -107,15 +117,48 @@ object DiscoveryData {
     fun peek(): State = state
 
     /**
-     * Start the first-run disk hydration early (v3.4, ask 49):
-     * App.onCreate calls this so the discovery disk caches are
-     * in memory by the first home build instead of starting on
-     * it. Same single-flight kick as [snapshot] — no behaviour
-     * change, only an earlier start. Network fetching inside
+     * Start the disk hydration worker (v3.5: the cold chain's
+     * DISCOVERY step calls this post-survival — App.onCreate no
+     * longer does, since the v3.4 process-start kick stacked the
+     * discovery parse on top of the tracker parse and the match).
+     * Same single-flight kick as before; network fetching inside
      * the worker is still gated exactly as in runWorker.
      */
     fun preload(ctx: Context) {
         if (!loaded) kick(ctx)
+    }
+
+    /**
+     * v3.5 (spec §35): run the worker SYNCHRONOUSLY on the
+     * caller's worker thread — the cold chain's DISCOVERY step
+     * calls this on the chain thread so discovery never runs
+     * beside the tracker parse or the match. Same single-flight
+     * flag as [kick]: false when a run is already in flight.
+     * Never call on the main thread: it parses cache files.
+     */
+    fun runNow(ctx: Context): Boolean {
+        synchronized(this) {
+            if (inFlight) return false
+            inFlight = true
+        }
+        val appCtx = ctx.applicationContext
+        var changed = false
+        try {
+            changed = runWorker(appCtx)
+        } catch (e: Throwable) {
+            Prefs.noteError(appCtx, "discovery", e)
+        } finally {
+            synchronized(this) { inFlight = false }
+        }
+        if (changed) {
+            DiagLog.note("discovery refreshed")
+            Handler(Looper.getMainLooper()).post {
+                try { onChanged?.invoke() } catch (e: Exception) {
+                    // The home's rebuild guard handles dead activities.
+                }
+            }
+        }
+        return true
     }
 
     /**
@@ -331,7 +374,19 @@ object DiscoveryData {
         }
 
         // --- facts for every tracked title (details TTL 24 h) ---
-        val snap = TrackerClient.cached(appCtx)
+        // v3.5 (spec §35): NEVER parse here on an automatic run.
+        // The old shape called cached(), which full-parses the
+        // multi-megabyte snapshots when the memo is cold — so the
+        // discovery worker used to parse the tracker documents a
+        // second time, beside the tracker warm. The chain runs
+        // TRACKER_FULL before DISCOVERY, so the memo is warm by
+        // chain time; when it is not (and this run was not
+        // explicitly forced by the user), the shaping pass is
+        // skipped — the sections stay LOADING until the chain
+        // lands. A forced run (manual Refresh / section Retry)
+        // is user-initiated and may parse, as before.
+        val snap = TrackerClient.memoOrNull()
+            ?: if (force) TrackerClient.cached(appCtx) else return false
         val libShows = LibraryLogic.parseLibShows(snap.trackedJson)
         val tvFacts = HashMap<Long, Discovery.TvFacts?>()
         val movieFacts = HashMap<Long, Discovery.MovieFacts?>()
@@ -571,28 +626,31 @@ object DiscoveryData {
 
     /**
      * Match the trending/all list into the IPTV catalogue with the
-     * repo-method matcher (core/WatchMatch over the store tuples —
-     * worker thread, keyed once). Titles already tracked are kept:
-     * the row is "trending on YOUR IPTV", not a discovery gate.
+     * repo-method matcher (core/WatchMatch over the key-only
+     * stream — worker thread, keyed once, released after the
+     * run). Titles already tracked are kept: the row is
+     * "trending on YOUR IPTV", not a discovery gate.
+     * v3.5: the old shape read the memoized tuples; the key-only
+     * stream replaces them (same matches, no retained catalogue).
      */
     private fun matchTrending(
         appCtx: Context,
         trending: List<Discovery.TrendItem>
     ): List<TrendPlay> {
         if (trending.isEmpty()) return emptyList()
-        val (seriesTuples, vodTuples) = IptvClient.tuplesBlocking(appCtx)
-        if (seriesTuples.isEmpty() && vodTuples.isEmpty()) return emptyList()
-        val shows = WatchMatch.matchAll(
+        val keyed = IptvClient.keyedCatalogue(appCtx) ?: return emptyList()
+        if (keyed.first.isEmpty() && keyed.second.isEmpty()) return emptyList()
+        val shows = WatchMatch.matchAllKeyed(
             trending.filter { it.type == "tv" }.map {
                 WatchMatch.TrackerTitle(it.id, "tv", it.title, it.year.toIntOrNull() ?: 0)
             },
-            seriesTuples.map { WatchMatch.Candidate(it.id, it.name, it.year) }
+            keyed.first
         )
-        val movies = WatchMatch.matchAll(
+        val movies = WatchMatch.matchAllKeyed(
             trending.filter { it.type == "movie" }.map {
                 WatchMatch.TrackerTitle(it.id, "movie", it.title, it.year.toIntOrNull() ?: 0)
             },
-            vodTuples.map { WatchMatch.Candidate(it.id, it.name, it.year) }
+            keyed.second
         )
         val out = ArrayList<TrendPlay>()
         for (item in trending) {

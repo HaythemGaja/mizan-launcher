@@ -1918,6 +1918,22 @@ class SettingsActivity : Activity() {
                 "\n" + com.mizan.launcher.data.StartupHealthStore
                     .diagnosticsLine(this@SettingsActivity)
             )
+            // v3.5 (spec §35): the death proof — what killed the
+            // last process that died mid-startup (trim level +
+            // last stage + before/after first frame), or
+            // "unknown" when it died with no trim warning, or
+            // "none recorded" when the last process survived.
+            // Never fabricated: unknown stays unknown.
+            append(
+                "\n" + com.mizan.launcher.data.DeathStore
+                    .diagLine(this@SettingsActivity)
+            )
+            // v3.5: the cold chain's state — waiting survival /
+            // running: <step> / done / cancelled — so a photo
+            // shows whether the post-survival work finished.
+            append(
+                "\ncold chain: " + com.mizan.launcher.data.ColdChainRunner.diagState
+            )
             // v1.7: the profile's home style (safe mode renders TV
             // regardless — noted so a report isn't misread).
             append("\nhome style: ${prefs.homeStyle}" +

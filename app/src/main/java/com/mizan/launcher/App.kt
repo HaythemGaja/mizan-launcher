@@ -50,25 +50,48 @@ class App : Application() {
             // A prefs hiccup must never block process start.
         }
         IptvClient.ensureStore(this)
-        // v3.1 (ask 38): warm the home-cache mirror on its own
-        // worker so a prefs wipe still leaves last-known tracker
-        // data for the first home build of this process.
+        // v3.1 (ask 38): warm the home-cache mirror metadata on
+        // its own worker so a prefs wipe still leaves last-known
+        // tracker data for the first home build of this process.
+        // v3.5: metadata only (section -> length) — the old shape
+        // read all five documents into memory here, duplicating
+        // the prefs copies before the first frame.
         com.mizan.launcher.data.TrackerClient.warmDiskMirror(this)
-        // v3.4 (ask 49): start the two worker warms at process
-        // start, not at the first home build — the tracker memo
-        // parse (now slim-accelerated) and the discovery disk
-        // hydration overlap process startup instead of queuing
-        // behind the first frame. Both are single-flight, so the
-        // home's own kicks below dedupe against these.
+        // v3.5 (spec §35): the ONLY process-start data warm is the
+        // SLIM warm — a <= 512 KB read + small parse on its worker
+        // that lets the first frame paint tracker rows. The v3.4
+        // shape also kicked the full memo parse + the discovery
+        // hydration here, stacking them on the open path beside
+        // each other; both now belong to the cold chain, which
+        // runs them sequentially AFTER first frame + survival.
+        // A slim miss simply leaves the memo empty (shell rows
+        // until the chain lands) — it never parses.
         try {
-            com.mizan.launcher.data.TrackerClient.warmMemoAsync(this) { }
+            com.mizan.launcher.data.TrackerClient.warmSlimAsync(this) { }
         } catch (e: Exception) {
-            // Warm-up is an optimisation; the home warms on demand.
+            // Warm-up is an optimisation; the chain warms on survival.
         }
+    }
+
+    /**
+     * v3.5 (spec §35): the death evidence tap. Application
+     * implements ComponentCallbacks2, so the system delivers
+     * memory-pressure warnings here BEFORE it kills the process.
+     * Every warning is committed to the tiny death prefs with the
+     * last startup stage + whether the first frame drew — the
+     * next launch's `last death:` line reads it. No warning
+     * before a kill is itself evidence: the line then says
+     * "unknown" instead of inventing a cause.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
         try {
-            com.mizan.launcher.data.DiscoveryData.preload(this)
+            val stage = com.mizan.launcher.data.DiagLog.lastStage() ?: "unknown stage"
+            val afterFirst = com.mizan.launcher.data.DiagLog.firstFrameRecorded()
+            com.mizan.launcher.data.DeathStore.record(this, level, stage, afterFirst)
+            DiagLog.note("trim: level=$level stage=$stage afterFirst=$afterFirst")
         } catch (e: Exception) {
-            // As above.
+            // Evidence only; never break the trim callback.
         }
     }
 }

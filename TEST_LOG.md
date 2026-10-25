@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-25 01:04 UTC
+Date: 2026-10-25 02:21 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.4 / code 27 (bumped by v3.4)
+PASS  v25src: the app version is 3.5 / code 28 (bumped by v3.5)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1100,7 +1100,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.4 / code 27
+PASS  v31src: the version bump is 3.5 / code 28
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1214,5 +1214,51 @@ PASS  src54: sort page holds, moves, drops and cancels a grab
 PASS  src54: sort page offers hold-OK on tracker and TV rows, IPTV lists folders hide/show
 PASS  src54: diagnostics gains the slim proof line
 PASS  src54: hero rule untouched (missed first, today stays out)
-RESULT: 998 passed, 0 failed, 998 total
+PASS  chain55: fresh chain waits for survival, first step is tracker
+PASS  chain55: no heavy step before survival unless on-demand
+PASS  chain55: out-of-order starts refused
+PASS  chain55: start tracker, in-flight blocks the next step
+PASS  chain55: completing the wrong step is a no-op
+PASS  chain55: completing tracker advances to match
+PASS  chain55: full run ends done
+PASS  chain55: arm resets for a fresh run (fetch reason)
+PASS  chain55: cancel blocks starts and ends the run
+PASS  chain55: cancel mid-run finishes the in-flight step only
+PASS  death55: running trim levels named, others numeric
+PASS  death55: survived previous process ignores a stale record
+PASS  death55: trim line names level, stage, after-first-frame
+PASS  death55: trim line before first frame
+PASS  death55: unknown line names the last persisted stage
+PASS  death55: unknown line with no stage stays unknown, never invented
+PASS  death55: empty trim stage reads as unknown stage
+PASS  death55: record codec round-trips and strips pipes
+PASS  death55: malformed records decode to null (fail-open)
+PASS  key55: keyOnlyOf drops the name, keeps id + squash + year
+PASS  key55: key-only match == classic match (tv + movies)
+PASS  key55: exact tier beats contains ? Reacher finds exact Reacher, not Preacher
+PASS  key55: repo contains case ? Reacher finds catalogue Preacher when no exact exists
+PASS  key55: exact tier wins and year narrows the pool
+PASS  key55: undated Dune hits the exact tier on both years, flagged possible
+PASS  key55: contains tier orders shortest first when years tie
+PASS  key55: movie Dune finds the 2021 VOD exactly enough (contains, year-agreeing)
+PASS  key55: no match stays no match
+PASS  key55: empty title never matches, empty catalogue never matches
+PASS  src55: App.onCreate warms slim only ? no full parse, no discovery preload
+PASS  src55: App captures trim warnings for the death record
+PASS  src55: parallel colddwarm threads are gone; the chain kick replaces them
+PASS  src55: home build reads the cached match table, never kicks a recompute
+PASS  src55: home tracker kick is slim-only
+PASS  src55: chain landing + destroy wiring in MainActivity
+PASS  src55: TrackerClient slim warm exists, full-parse warm is gone, fetch kicks the chain
+PASS  src55: tracker mirror fallback reads disk on demand with a context
+PASS  src55: tuples memo + blocking read are gone; key-only stream + counts replace them
+PASS  src55: match recompute is fingerprint-first, then key-only
+PASS  src55: discovery snapshot no longer kicks; runNow is the chain entry
+PASS  src55: discovery worker never parses on an automatic run (memo-only unless forced)
+PASS  src55: home-cache mirror is metadata-only, contents read on demand
+PASS  src55: chain runner is one sequential thread with survival + fetch kicks
+PASS  src55: death store commits trim records to its own tiny prefs file
+PASS  src55: diagnostics gains last-death + cold-chain lines
+PASS  src55: hero rule untouched (missed first, today stays out)
+RESULT: 1044 passed, 0 failed, 1044 total
 ```

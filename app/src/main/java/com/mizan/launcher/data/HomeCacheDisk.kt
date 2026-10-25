@@ -18,12 +18,13 @@ import kotlin.concurrent.thread
  * Threading contract: ALL file IO here runs on a worker thread —
  * [putSnapshot] is called from TrackerClient's fetch worker,
  * [warmMirror] spawns its own worker, and the manifest is never
- * read on the main thread. The home build reads the in-memory
- * mirror ([mirror]) through TrackerClient.cached(), so the home
- * critical path does zero disk IO and zero network: it renders
- * prefs first, the in-memory mirror second, and workers refresh
- * both. A stale payload still renders; only diagnostics names
- * its age ([lastDiag]).
+ * read on the main thread. The home build reads the worker-warmed
+ * memo through TrackerClient (zero disk IO, zero network on its
+ * path); [warmMirror] keeps only metadata ([mirrorMeta]), and a
+ * prefs-miss fallback reads the one mirror file it needs from
+ * disk on its worker ([mirrored]). A stale payload still
+ * renders; only diagnostics names its age ([lastDiag]).
+ * v3.5: the v3.1 in-memory mirror map is gone (see [mirrorMeta]).
  *
  * Credential rule (enforced, not just documented): [putSnapshot]
  * refuses any payload matching HomeCache.containsCredentialPattern
@@ -35,10 +36,22 @@ object HomeCacheDisk {
     private const val DIR = "home_cache"
     private const val MANIFEST = "manifest.json"
 
-    /** In-memory mirror of the disk files (worker-populated; main-thread reads are safe). */
+    /**
+     * v3.5 (spec §35): the mirror is METADATA ONLY now — section
+     * -> file length in bytes (worker-populated; main-thread
+     * reads are safe). The v3.1 shape kept all five snapshot
+     * documents in memory as strings, a second copy beside the
+     * prefs file's own copies — up to 10 MB of dead weight on a
+     * normal device, where prefs already hold every section and
+     * the mirror is never read. Contents are read from disk on
+     * demand ([mirrored], worker threads only) instead.
+     */
     @Volatile
-    var mirror: Map<String, String> = emptyMap()
+    var mirrorMeta: Map<String, Long> = emptyMap()
         private set
+
+    /** Whether a disk mirror file exists for this section (in-memory metadata; no IO). */
+    fun hasMirror(section: String): Boolean = mirrorMeta.containsKey(section)
 
     /** Last composed diagnostics line (worker-updated; read freely from any thread). */
     @Volatile
@@ -54,10 +67,13 @@ object HomeCacheDisk {
         File(dir(ctx), "tracker_$section.json")
 
     /**
-     * Load the disk mirror into memory on a worker (idempotent).
+     * Stat the disk mirror files on a worker (idempotent).
      * Called from App.onCreate and lazily from the tracker fetch
      * worker; a prefs wipe after this point still leaves the home
-     * rendering from the mirror via TrackerClient.cached().
+     * rendering from the mirror via TrackerClient.cached() (which
+     * reads the one file it needs from disk, on its worker).
+     * v3.5: only stats are kept — the old shape read every file
+     * into memory here, duplicating the prefs copies.
      */
     fun warmMirror(ctx: Context) {
         if (warmed) return
@@ -65,14 +81,14 @@ object HomeCacheDisk {
         val appCtx = ctx.applicationContext
         thread(name = "mizan-home-cache-warm") {
             try {
-                val loaded = HashMap<String, String>()
+                val meta = HashMap<String, Long>()
                 for (section in HomeCache.TRACKER_SECTIONS) {
                     val f = fileFor(appCtx, section)
                     if (f.exists() && f.length() in 1..(2L * 1024L * 1024L)) {
-                        loaded[section] = f.readText()
+                        meta[section] = f.length()
                     }
                 }
-                if (loaded.isNotEmpty()) mirror = loaded
+                if (meta.isNotEmpty()) mirrorMeta = meta
                 refreshDiag(appCtx)
             } catch (e: Exception) {
                 // A mirror failure leaves the prefs cache as the
@@ -98,9 +114,10 @@ object HomeCacheDisk {
             tmp.writeText(json)
             if (target.exists()) target.delete()
             tmp.renameTo(target)
-            val updated = HashMap(mirror)
-            updated[section] = json
-            mirror = updated
+            // v3.5: metadata only — the bytes live on disk, not in memory.
+            val updated = HashMap(mirrorMeta)
+            updated[section] = json.length.toLong()
+            mirrorMeta = updated
             val manifest = readManifest(ctx).toMutableMap()
             manifest[section] = HomeCache.Entry(section, fetchedAtMs, json.length.toLong())
             pruneToCap(ctx, manifest, keepSection = section)
@@ -112,8 +129,23 @@ object HomeCacheDisk {
         }
     }
 
-    /** The mirror value for one section (in-memory; no IO). */
-    fun mirrored(section: String): String? = mirror[section]
+    /**
+     * The mirror value for one section, read from disk on demand.
+     * WORKER THREADS ONLY — this is a bounded (2 MB) file read;
+     * the home build never calls it (it reads the worker-warmed
+     * memo), and the only caller is TrackerClient.cached() on its
+     * worker. Null when no mirror file exists for the section.
+     * v3.5: the old shape returned an in-memory copy; the copy
+     * is gone (see [mirrorMeta]).
+     */
+    fun mirrored(ctx: Context, section: String): String? {
+        return try {
+            val f = fileFor(ctx, section)
+            if (!f.isFile || f.length() !in 1..(2L * 1024L * 1024L)) null else f.readText()
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     private fun readManifest(ctx: Context): Map<String, HomeCache.Entry> {
         return try {
@@ -163,9 +195,9 @@ object HomeCacheDisk {
         for (section in toDelete) {
             try { fileFor(ctx, section).delete() } catch (e: Exception) { }
             manifest.remove(section)
-            val updated = HashMap(mirror)
+            val updated = HashMap(mirrorMeta)
             updated.remove(section)
-            mirror = updated
+            mirrorMeta = updated
         }
     }
 

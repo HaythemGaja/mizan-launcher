@@ -128,10 +128,25 @@ object DiagLog {
     fun markStage(name: String) {
         val at = startupElapsed()
         if (at >= 0L) stages.record(name, at)
+        // v3.5 (spec §35): the death record's "last stage" feed —
+        // an async apply() to the tiny death prefs, best-effort.
+        // When the process later dies with no trim warning, the
+        // `last death: unknown` line names this stage.
+        try {
+            appCtx?.let { DeathStore.updateStage(it, name) }
+        } catch (e: Exception) {
+            // Evidence only.
+        }
     }
 
     /** Compact diagnostics rendering ("" when nothing recorded yet). */
     fun stagesText(): String = stages.text()
+
+    /** v3.5: the last recorded stage name, or null (feeds the trim record + unknown line). */
+    fun lastStage(): String? = stages.names().lastOrNull()
+
+    /** v3.5: whether this process drew its first frame yet (feeds the trim record's before/after flag). */
+    fun firstFrameRecorded(): Boolean = firstFrameMs >= 0L
 
     /** The staged shell's first frame was drawn (MainActivity's pre-draw probe). */
     fun recordFirstFrame(ctx: Context) {
