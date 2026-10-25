@@ -111,7 +111,22 @@ class LibraryActivity : Activity() {
         // (the prepareTrackerData discipline): prune, persist if the
         // prune changed anything, THEN render from the pruned set.
         var overlay = LibraryLogic.decodePending(prefs.pendingOverlay)
-        val shows = LibraryLogic.parseLibShows(snap.trackedJson)
+        // v3.6 (ask 53): NO whole-document parse here. The
+        // grid reads title lines (counts only); only titles
+        // with pending overlay entries get their full
+        // episode sets, so prune convergence stays exact
+        // for exactly the titles the user just changed.
+        val fullSetIds = overlay.filter { it.type == "tv" }.map { it.tmdbId }.toSet()
+        // Pre-store fallback (first run before any fetch
+        // wrote the store): count-only shows from the
+        // snapshot's tracked list — still no whole-doc
+        // parse, just the counts the home already holds.
+        val shows = com.mizan.launcher.data.TrackerStoreDisk.libraryShows(this, fullSetIds)
+            .ifEmpty {
+                snap.tracked.map {
+                    LibraryLogic.LibShow(it.tmdbId, it.name, false, it.planned, emptySet(), watchedCount = it.watchedCount)
+                }
+            }
         val pruned = LibraryLogic.prunePending(overlay, shows, snap.movies, snap.updated)
         if (pruned != overlay) {
             prefs.pendingOverlay = LibraryLogic.encodePending(pruned)

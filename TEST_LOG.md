@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-25 02:21 UTC
+Date: 2026-10-25 02:46 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.5 / code 28 (bumped by v3.5)
+PASS  v25src: the app version is 3.6 / code 29 (bumped by v3.6)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1100,7 +1100,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.5 / code 28
+PASS  v31src: the version bump is 3.6 / code 29
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1260,5 +1260,36 @@ PASS  src55: chain runner is one sequential thread with survival + fetch kicks
 PASS  src55: death store commits trim records to its own tiny prefs file
 PASS  src55: diagnostics gains last-death + cold-chain lines
 PASS  src55: hero rule untouched (missed first, today stays out)
-RESULT: 1044 passed, 0 failed, 1044 total
+PASS  store56: title line round-trips separators (pipe, percent, newline)
+PASS  store56: malformed title lines fail open (blank, bad id, blank title)
+PASS  store56: upnext/continue/movie/foryou lines round-trip
+PASS  store56: episode file round-trips a 500-entry set, muted flag kept
+PASS  store56: index round-trips; corrupt index decodes null (fallback, never empty home)
+PASS  store56: store diag line names counts + fallback state, never titles
+PASS  store56: fingerprint distinguishes same-length changes (count 30 -> 20, same digits)
+PASS  store56: fingerprint is stable for identical content (a fetch that changes only fetchedAt must not invalidate)
+PASS  store56: open reads only the visible window (20 lines consumed of 50, no more pulled)
+PASS  store56: second page starts at 21, stops at the window
+PASS  store56: watchedCount without the set (title line carries 500, no episode keys ride it)
+PASS  store56: fetch re-indexes incrementally (changed show's episode file differs, others identical)
+PASS  store56: prefs eviction is gated (all three legs required)
+PASS  store56: visible window math (46 items = 3 pages; first window 0..19; page-in near end only)
+PASS  store56: match-streamed == matchAllKeyed (exact, year-narrowed, possible, Preacher contains)
+PASS  store56: match-visible-titles-only-on-open (below-fold titles never enter the result)
+PASS  store56: match-streamed-scan pulls one exact pass only for an exact hit (no contains pass, no retained list)
+PASS  store56: library count-only show reports its count without a set, and is flagged count-only
+PASS  store56: grid count is the effective count (count-only base + pending adds - removes)
+PASS  src56: cold chain TRACKER step reads the store first, full parse only as fallback
+PASS  src56: fetch worker writes the store from its one parse and arms the eviction gate
+PASS  src56: store writer swaps index last and aborts on a credential trip
+PASS  src56: Details + Library never whole-parse (no parseLibShows call in either screen)
+PASS  src56: Discovery never whole-parses and gates shaping on the tracker stamp
+PASS  src56: visible-first matching is wired (streamed scan, visible kick, first-window warm-up)
+PASS  src56: streamed matcher never materialises a key list (no toList on the factory sequence)
+PASS  src56: home rows page, not inflate-all (pagedRow on Up Next, Continue, Trending)
+PASS  src56: series-info bodies live in per-series files, fetches never write prefs
+PASS  src56: diagnostics gains the tracker store line; slim line kept until eviction
+PASS  src56: hero rule untouched by the store migration (missed first, today stays out)
+PASS  src56: no-refresh rule untouched (fetch landings still re-run the chain; home build never fetches)
+RESULT: 1075 passed, 0 failed, 1075 total
 ```

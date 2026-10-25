@@ -32,14 +32,33 @@ object LibraryLogic {
 
     // ------------------------------------------------------------ raw tracked shows
 
-    /** One /tracked show, full fidelity: watched episodes as "SxE" keys. */
+    /**
+     * One /tracked show, full fidelity: watched episodes as
+     * "SxE" keys. v3.6 (ask 53): [watchedCount] is the
+     * count-only form — a grid built from the tracker
+     * store's title lines carries the count without the
+     * set (watched = empty, watchedCount = the title
+     * line's count). [count] is the one accessor grid
+     * code uses; Details still reads the full set from
+     * that title's episode file, so checklist code keeps
+     * using [watched] directly. A count-only show must
+     * never be treated as "watched nothing" by a set
+     * check — callers that need set membership must go
+     * through Details' episode-file read.
+     */
     data class LibShow(
         val tmdbId: Long,
         val name: String,
         val muted: Boolean,
         val planned: Boolean,
-        val watched: Set<String>
-    )
+        val watched: Set<String>,
+        val watchedCount: Int = watched.size
+    ) {
+        /** True when this show carries a count but no set (store title line, not an episode file). */
+        val isCountOnly: Boolean get() = watched.isEmpty() && watchedCount > 0
+        /** The watched-episode count, from the set or the count-only field. */
+        fun count(): Int = watchedCount
+    }
 
     /** The watched-set key for one episode ("1x4"). */
     fun epKey(season: Int, episode: Int): String = "${season}x${episode}"
@@ -195,7 +214,20 @@ object LibraryLogic {
                     date = "",
                     planned = show.planned,
                     muted = entry?.muted ?: show.muted,
-                    watchedCount = watched.size,
+                    // v3.6: the count is the EFFECTIVE count —
+                    // full-set shows use the effective set's
+                    // size (overlay adds/removes applied, as
+                    // before); count-only shows have no set to
+                    // size, so the title-line count is adjusted
+                    // by the still-pending adds/removes
+                    // (fail-open: un-converged adds count, a
+                    // remove of an unknown set subtracts one).
+                    watchedCount = if (show.isCountOnly) {
+                        (show.count() +
+                            (entry?.watchedAdd?.size ?: 0) -
+                            (entry?.watchedRemove?.size ?: 0))
+                            .coerceAtLeast(0)
+                    } else watched.size,
                     totalCount = c?.total ?: 0,
                     nextSeason = next.first,
                     nextEpisode = next.second,
@@ -582,10 +614,19 @@ object LibraryLogic {
                         )
                     }
                     if (e.type == "tv") {
-                        val snapWatched = showById[e.tmdbId]?.watched ?: emptySet()
-                        val adds = next.watchedAdd.filter { it !in snapWatched }.toSet()
-                        val rems = next.watchedRemove.filter { it in snapWatched }.toSet()
-                        next = next.copy(watchedAdd = adds, watchedRemove = rems)
+                        // v3.6: a count-only show (store title
+                        // line, no episode set) cannot prove
+                        // episode convergence — its adds/removes
+                        // stay pending (fail-open), while mute
+                        // convergence below still applies, since
+                        // the muted flag rides the title line.
+                        val show = showById[e.tmdbId]
+                        if (show?.isCountOnly != true) {
+                            val snapWatched = show?.watched ?: emptySet()
+                            val adds = next.watchedAdd.filter { it !in snapWatched }.toSet()
+                            val rems = next.watchedRemove.filter { it in snapWatched }.toSet()
+                            next = next.copy(watchedAdd = adds, watchedRemove = rems)
+                        }
                         val snapMuted = showById[e.tmdbId]?.muted
                         if (next.muted != null && snapMuted == next.muted) {
                             next = next.copy(muted = null)

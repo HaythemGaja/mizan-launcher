@@ -48,6 +48,7 @@ import com.mizan.launcher.core.HomeTabs
 import com.mizan.launcher.core.UnifiedBar
 import com.mizan.launcher.core.TrackerLogic
 import com.mizan.launcher.core.TrackerSections
+import com.mizan.launcher.core.VisibleWindow
 import com.mizan.launcher.core.WatchMatch
 import com.mizan.launcher.core.RotationLogic
 import com.mizan.launcher.core.RowOrder
@@ -163,6 +164,7 @@ class MainActivity : Activity() {
 
     /** v3.2: the memo-parse kick guard for prepareTrackerData (see there). */
     private var trackerMemoKickDone = false
+    private var watchVisibleKickDone = false
 
     /** v3.2: wallpaper value the dynamic accent was last computed for (see resolveColours). */
     private var lastAccentWallpaper: String? = null
@@ -1203,6 +1205,10 @@ class MainActivity : Activity() {
      * it) and for the IPTV style (its Trending row).
      */
     private fun prepareDiscoveryData() {
+        // v3.6 (ask 53): the trending∩IPTV match runs only
+        // when this row is visible — the discovery worker
+        // checks this flag before paying for a match.
+        DiscoveryData.iptvRowVisible = isIptvStyle()
         DiscoveryData.onChanged = {
             runOnUiThread {
                 if ((isTrackerFamily() || isIptvStyle()) && !isFinishing && !isDestroyed) {
@@ -1310,6 +1316,37 @@ class MainActivity : Activity() {
             runOnUiThread { if (isWatchStyle()) rebuild() }
         }
         wMatches = WatchPlay.cachedMatches(this)
+        // v3.6 (ask 53): visible-first, not whole-row. The
+        // open path matches + warms ONLY the hero pool and
+        // the first window of Up Next / Continue / For You
+        // (VisibleWindow.FIRST_WINDOW = 20, the IPTV view
+        // cap). Below-fold titles get no match or warm-up
+        // work on open: their badges land when their page
+        // is reached, or from the deferred post-survival
+        // full pass (cold chain MATCH). A card press on an
+        // unwarmed title still resolves on demand (v2.9),
+        // so paging in never dead-ends.
+        val window = VisibleWindow.FIRST_WINDOW
+        val visibleTitles = ArrayList<WatchMatch.TrackerTitle>()
+        for (hero in tHeroCandidates) {
+            if (hero.type == "tv") {
+                visibleTitles.add(WatchMatch.TrackerTitle(hero.tmdbId, "tv", hero.title, 0))
+            }
+        }
+        for (item in tUpNext.take(window)) {
+            visibleTitles.add(WatchMatch.TrackerTitle(item.tmdbId, "tv", item.title, 0))
+        }
+        for (item in tCont.take(window)) {
+            visibleTitles.add(WatchMatch.TrackerTitle(item.tmdbId, "tv", item.title, 0))
+        }
+        for (pick in tPicks.take(window)) {
+            val year = 0
+            visibleTitles.add(WatchMatch.TrackerTitle(pick.id, pick.type, pick.title, year))
+        }
+        if (!watchVisibleKickDone && WatchPlay.visibleNeedsMatch(this, visibleTitles)) {
+            watchVisibleKickDone = true
+            WatchPlay.kickVisibleRecompute(this, visibleTitles)
+        }
         // v2.9 (ask F.25): the warm-up set is WHAT IS DISPLAYED —
         // the hero pool first (in pool order), then the Up Next
         // row, then Continue Watching's shows — every matched
@@ -1325,8 +1362,11 @@ class MainActivity : Activity() {
         for (hero in tHeroCandidates) {
             if (hero.type == "tv") displayShow(hero.tmdbId)
         }
-        for (item in tUpNext) displayShow(item.tmdbId)
-        for (item in tCont) displayShow(item.tmdbId)
+        // v3.6: first window only (see the visible-first
+        // note above) — the old shape warmed every matched
+        // series in the full Up Next + Continue rows.
+        for (item in tUpNext.take(window)) displayShow(item.tmdbId)
+        for (item in tCont.take(window)) displayShow(item.tmdbId)
         WatchPlay.warmUpDisplayed(this, displayed) {
             // The warm-up reports from its own thread; rebuilds are UI work.
             runOnUiThread { if (isWatchStyle()) rebuild() }
@@ -4651,9 +4691,9 @@ class MainActivity : Activity() {
      */
     private fun buildMergedUpNextSection(items: List<TrackerLogic.MergedUpNextItem>): View {
         val box = section("Up Next")
-        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
-        for (item in items) {
-            row.addView(if (item.upNext != null) upNextCard(item.upNext) else soonCard(item.soon!!))
+        // v3.6: paged row (first window only, More tile pages in the next — see pagedRow).
+        val row = pagedRow(items) { item ->
+            if (item.upNext != null) upNextCard(item.upNext) else soonCard(item.soon!!)
         }
         box.addView(horizontalScroller(row))
         return box
@@ -4673,8 +4713,8 @@ class MainActivity : Activity() {
     ): View? {
         if (cards.isEmpty()) return null
         val box = section("Continue Watching")
-        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
-        for (card in cards) {
+        // v3.6: paged row (first window only, More tile pages in the next — see pagedRow).
+        val row = pagedRow(cards) { card ->
             val trackerItem = card.tracker
             if (trackerItem != null) {
                 // v2.3 Watch: matched Continue cards play the same
@@ -4736,9 +4776,9 @@ class MainActivity : Activity() {
                     },
                     badge = WatchMatch.cardBadge(wMatch != null)
                 )
-                row.addView(view)
+                view
             } else {
-                row.addView(watchTile(system[card.systemIndex]))
+                watchTile(system[card.systemIndex])
             }
         }
         box.addView(horizontalScroller(row))
@@ -4842,13 +4882,13 @@ class MainActivity : Activity() {
      */
     private fun buildTrendingSection(items: List<Discovery.TrendItem>, type: String): View {
         val box = section(if (type == "movie") "Trending Movies" else "Trending TV")
-        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
         val overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
         val addedKeys = overlay.filter { it.added }.map { it.key() }.toHashSet()
         val trackedKeys = HashSet<String>()
         for (s in tSnap.tracked) trackedKeys.add("tv|${s.tmdbId}")
         for (m in tSnap.movies) trackedKeys.add("movie|${m.tmdbId}")
-        for (item in items) {
+        // v3.6: paged row (first window only, More tile pages in the next — see pagedRow).
+        val row = pagedRow(items) { item ->
             val inLibrary = item.key() in trackedKeys || item.key() in addedKeys
             val wMatch = watchMatch(item.type, item.id)
             val card = portraitCard(
@@ -4881,7 +4921,7 @@ class MainActivity : Activity() {
                 onLong = { openTrendingMenu(item, inLibrary) },
                 badge = WatchMatch.cardBadge(wMatch != null)
             )
-            row.addView(card)
+            card
         }
         box.addView(horizontalScroller(row))
         return box
@@ -5097,6 +5137,69 @@ class MainActivity : Activity() {
             }
         }
         return tile
+    }
+
+    /**
+     * v3.6 (ask 53): a paged home row. Only the first
+     * window (VisibleWindow.FIRST_WINDOW = 20) is
+     * inflated up front — poster loads fire per inflated
+     * card, not per row item. A trailing "More" tile is
+     * the near-end affordance (the rows are
+     * HorizontalScrollView + LinearLayout, no
+     * RecyclerView, and each card's focus listener
+     * belongs to its focus ring, so no focus-near-end
+     * hook can be chained safely): focusing it and
+     * pressing OK appends exactly the next page and
+     * moves focus to the first new card, and drops the
+     * tile when the row is complete. Rows at or under
+     * the window get no tile at all.
+     */
+    private fun <T> pagedRow(items: List<T>, cardFor: (T) -> View): LinearLayout {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        var shown = 0
+        var moreTile: View? = null
+        fun appendPage(): View? {
+            val page = VisibleWindow.windowFor(items.size, shown / VisibleWindow.FIRST_WINDOW)
+                ?: return null
+            moreTile?.let { row.removeView(it); moreTile = null }
+            var firstNew: View? = null
+            for (i in page) {
+                val v = cardFor(items[i])
+                if (firstNew == null) firstNew = v
+                row.addView(v)
+            }
+            shown = page.last + 1
+            if (shown < items.size) {
+                val remaining = items.size - shown
+                val tile = FrameLayout(this)
+                tile.isFocusable = true
+                tile.isClickable = true
+                val w = Ui.dp(this, 160)
+                val h = Ui.dp(this, 90)
+                tile.layoutParams = LinearLayout.LayoutParams(w, h).apply {
+                    val m = Ui.dp(this@MainActivity, 5)
+                    setMargins(m, m, m, m)
+                }
+                tile.background = Ui.tileBackground(accent, false, 16, this)
+                val label = TextView(this)
+                label.text = "More ▸\n$remaining left"
+                label.textSize = 16f
+                label.setTextColor(0xFFFFFFFF.toInt())
+                label.gravity = Gravity.CENTER
+                tile.addView(label, FrameLayout.LayoutParams(-1, -1))
+                Ui.focusLift(tile, accent, 16)
+                tile.setOnClickListener {
+                    val first = appendPage()
+                    first?.post { first.requestFocus() }
+                }
+                moreTile = tile
+                row.addView(tile)
+            }
+            return firstNew
+        }
+        appendPage()
+        return row
     }
 
     private fun horizontalScroller(row: LinearLayout): HorizontalScrollView {

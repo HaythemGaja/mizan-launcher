@@ -133,22 +133,25 @@ class DetailsActivity : Activity() {
 
     // ------------------------------------------------------------ state
 
-    // v2.5: parseLibShows memo. rebuild() → readSnapshotState()
-    // re-parsed the tracker's full tracked-shows document on
-    // EVERY rebuild (each mark/unwatch/mark-season triggers one),
-    // on the main thread. TrackerClient.cached() now returns a
-    // reference-stable trackedJson, so keying the parsed map on
-    // the string instance is exact and the parse runs once per
-    // distinct document.
-    private var libShowsMemoJson: String? = null
-    private var libShowsMemo: List<LibraryLogic.LibShow> = emptyList()
-
+    // v3.6 (ask 53): NO whole-document parse here. This
+    // screen needs exactly ONE title's watched set, so it
+    // reads that title's episode file from the tracker
+    // store (one small file, bounded by that show's
+    // episodes). When the store has no episode file for
+    // the title yet, the title line's count still renders
+    // (count-only LibShow) and the checklist fills when
+    // the store lands — the whole library is never parsed
+    // to show one title. Movies use snapMovie, not this.
     private fun libShows(snap: TrackerClient.Snapshots): List<LibraryLogic.LibShow> {
-        if (libShowsMemoJson !== snap.trackedJson) {
-            libShowsMemo = LibraryLogic.parseLibShows(snap.trackedJson)
-            libShowsMemoJson = snap.trackedJson
-        }
-        return libShowsMemo
+        if (type == "movie") return emptyList()
+        val show = try {
+            com.mizan.launcher.data.TrackerStoreDisk.libShowFor(this, tmdbId)
+        } catch (e: Exception) {
+            null
+        } ?: snap.tracked.firstOrNull { it.tmdbId == tmdbId }?.let {
+            LibraryLogic.LibShow(it.tmdbId, it.name, false, it.planned, emptySet(), watchedCount = it.watchedCount)
+        } ?: return emptyList()
+        return listOf(show)
     }
 
     /** (Re)read this title's snapshot + overlay state; true if it changed. */

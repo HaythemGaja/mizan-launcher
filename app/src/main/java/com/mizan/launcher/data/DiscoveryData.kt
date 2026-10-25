@@ -81,6 +81,20 @@ object DiscoveryData {
     @Volatile
     private var iptvMatchStamp: String = ""
 
+    /** Last shaping key that actually re-shaped (tracker fingerprint + trend/foryou stamps). */
+    @Volatile
+    private var lastShapedKey: String = ""
+
+    /**
+     * v3.6 (ask 53): whether the IPTV home's trending row
+     * is currently visible. MainActivity sets this on
+     * its home build; the worker's trending∩IPTV match
+     * runs only when it is true (plus a moved stamp) —
+     * an invisible row never pays for a match.
+     */
+    @Volatile
+    var iptvRowVisible: Boolean = false
+
     /**
      * Fired (on the main thread) when the worker lands a CHANGED
      * state — the homes set this to rebuild once. Single slot.
@@ -334,9 +348,12 @@ object DiscoveryData {
         // a cache dir with none of the core files fetches once
         // (first-run seeding). A stale-but-present file NEVER
         // fetches — TTLs survive only as diagnostics age. The
-        // shaping below (coming-soon from disk facts, for-you
-        // from the cached picks file, trending∩IPTV from the
-        // store) still runs every worker pass, disk-only.
+        // v3.6: shaping below (coming-soon from disk facts,
+        // for-you from the cached picks file, trending∩IPTV
+        // from the store) runs only when its key moved (see
+        // the gate below) — an unchanged-stamp pass does
+        // hydration only, disk-only, and returns the state
+        // it loaded.
         val cacheDir = dir(appCtx)
         val hasCoreCache = listOf(F_TREND_TV, F_TREND_MOVIE, F_TREND_ALL, F_FORYOU).any {
             try {
@@ -387,7 +404,23 @@ object DiscoveryData {
         // is user-initiated and may parse, as before.
         val snap = TrackerClient.memoOrNull()
             ?: if (force) TrackerClient.cached(appCtx) else return false
-        val libShows = LibraryLogic.parseLibShows(snap.trackedJson)
+        // v3.6 (ask 53): shaping is gated — it re-runs
+        // only when the tracker store fingerprint (or, on
+        // the legacy path, updated+fetchedAt) moved, or
+        // the run was forced. Hydration (loadFromDisk at
+        // the top of this function) is the only work an
+        // unchanged-stamp pass does; details facts, soon
+        // shaping, For You compute and trending∩IPTV all
+        // sit behind this gate.
+        val shapingKey = snap.storeFingerprint.ifBlank { "${snap.updated}@${snap.fetchedAt}" } +
+            "|${stamps[F_TREND_ALL] ?: 0L}|${stamps[F_FORYOU] ?: 0L}"
+        val shapingNeeded = force || shapingKey != lastShapedKey
+        if (shapingNeeded) {
+        // v3.6 (ask 53): NO whole-doc LibShow parse here — the whole
+        // /tracked document is never parsed for discovery.
+        // Seed weights use watchedCount from the tracked
+        // list (title lines in the store path), never
+        // watched sets. See computeForYou.
         val tvFacts = HashMap<Long, Discovery.TvFacts?>()
         val movieFacts = HashMap<Long, Discovery.MovieFacts?>()
         for (show in snap.tracked) {
@@ -457,7 +490,7 @@ object DiscoveryData {
         }
         if (launcherKey.isNotBlank()) {
             if (allowFetch) {
-                val picks = computeForYou(appCtx, snap, libShows, tvFacts, movieFacts)
+                val picks = computeForYou(appCtx, snap, tvFacts, movieFacts)
                 if (picks != null) {
                     writeFile(appCtx, F_FORYOU, Discovery.encodePicks(picks))
                     stamps[F_FORYOU] = now
@@ -473,18 +506,34 @@ object DiscoveryData {
         }
 
         // --- trending ∩ IPTV catalogue (the IPTV home's row) ---
+        // v3.6 (ask 53): only when the trending stamp or
+        // the store stamp moved AND the IPTV row is visible
+        // (MainActivity sets iptvRowVisible on its home
+        // build). When the row is not visible the stamp is
+        // deliberately NOT advanced, so the match retries
+        // on the first pass that can actually show it —
+        // no invisible work, no stale stamp.
         val storeStamp = try {
             IptvClient.storeStamp(appCtx)
         } catch (e: Exception) {
             0L
         }
         val matchKey = "${stamps[F_TREND_ALL] ?: 0L}@$storeStamp"
-        if (matchKey != iptvMatchStamp) {
+        if (matchKey != iptvMatchStamp && iptvRowVisible) {
             iptvMatchStamp = matchKey
             val plays = matchTrending(appCtx, trendingAll)
             if (plays != next.trendingIptv) next = next.copy(trendingIptv = plays)
         }
 
+            // v3.1 (hero schedule): publish the facts for
+            // the hero's date fill (null facts dropped).
+            // Inside the gate: a skipped pass keeps the
+            // previous facts, it never clears them.
+            lastTvFacts = tvFacts.entries.mapNotNull { (id, facts) ->
+                facts?.let { id to it }
+            }.toMap()
+        } // end shaping gate
+        if (shapingNeeded) lastShapedKey = shapingKey
         pruneDetails(appCtx, stamps, now, Discovery.DETAILS_TTL_MS * 2)
         if (dirtyStamps) saveStamps(appCtx, stamps)
 
@@ -523,12 +572,10 @@ object DiscoveryData {
 
         val changed = next != state
         state = next
-        // v3.1 (hero schedule): publish the facts for the hero's
-        // date fill (null facts dropped — a show without a next
-        // episode simply has no entry).
-        lastTvFacts = tvFacts.entries.mapNotNull { (id, facts) ->
-            facts?.let { id to it }
-        }.toMap()
+        // v3.6: lastTvFacts is published inside the shaping
+        // gate above; a skipped pass keeps the previous
+        // facts (they are still valid for the unchanged
+        // tracker stamp).
         return changed
     }
 
@@ -561,11 +608,14 @@ object DiscoveryData {
     private fun computeForYou(
         appCtx: Context,
         snap: TrackerClient.Snapshots,
-        libShows: List<LibraryLogic.LibShow>,
         tvFacts: Map<Long, Discovery.TvFacts?>,
         movieFacts: Map<Long, Discovery.MovieFacts?>
     ): List<TrackerLogic.ForYouPick>? {
-        val watchedById = libShows.associate { it.tmdbId to it.watched.size }
+        // v3.6: seed weights from watchedCount on the
+        // tracked list — the same numbers the old whole-doc parse
+        // used to derive from full watched sets, without
+        // ever materialising a set.
+        val watchedById = snap.tracked.associate { it.tmdbId to it.watchedCount }
         val inputs = ArrayList<Discovery.SeedInput>()
         for (show in snap.tracked) {
             val facts = tvFacts[show.tmdbId] ?: continue
@@ -638,20 +688,19 @@ object DiscoveryData {
         trending: List<Discovery.TrendItem>
     ): List<TrendPlay> {
         if (trending.isEmpty()) return emptyList()
-        val keyed = IptvClient.keyedCatalogue(appCtx) ?: return emptyList()
-        if (keyed.first.isEmpty() && keyed.second.isEmpty()) return emptyList()
-        val shows = WatchMatch.matchAllKeyed(
+        // v3.6: streamed, never a materialised key list —
+        // each trending title scans the re-openable
+        // catalogue-key sequence (worker thread only).
+        val shows = WatchMatch.matchStreamed(
             trending.filter { it.type == "tv" }.map {
                 WatchMatch.TrackerTitle(it.id, "tv", it.title, it.year.toIntOrNull() ?: 0)
-            },
-            keyed.first
-        )
-        val movies = WatchMatch.matchAllKeyed(
+            }
+        ) { IptvClient.keyFactory(appCtx, com.mizan.launcher.core.IptvLogic.KIND_SERIES)() }
+        val movies = WatchMatch.matchStreamed(
             trending.filter { it.type == "movie" }.map {
                 WatchMatch.TrackerTitle(it.id, "movie", it.title, it.year.toIntOrNull() ?: 0)
-            },
-            keyed.second
-        )
+            }
+        ) { IptvClient.keyFactory(appCtx, com.mizan.launcher.core.IptvLogic.KIND_VOD)() }
         val out = ArrayList<TrendPlay>()
         for (item in trending) {
             val m = (if (item.type == "movie") movies else shows)[item.id] ?: continue

@@ -492,6 +492,47 @@ object IptvClient {
     }
 
     /**
+     * v3.6 (ask 53, step 6): the catalogue as a re-openable
+     * key-only SEQUENCE — one line at a time, keyed and
+     * dropped, never a materialised list. [kind] is
+     * "series" or "vod" (IptvLogic kinds). Each call to
+     * the returned factory re-opens the store file, so a
+     * streamed matcher can scan exact, then contains,
+     * without retaining anything between passes. WORKER
+     * THREADS ONLY (the sequence pulls from disk as it
+     * is consumed).
+     */
+    fun keyFactory(ctx: Context, kind: String): () -> Sequence<com.mizan.launcher.core.WatchMatch.KeyOnly> {
+        val appCtx = ctx.applicationContext
+        val fileName = if (kind == IptvLogic.KIND_VOD) IptvStore.FILE_VOD else IptvStore.FILE_SERIES
+        return {
+            sequence {
+                try {
+                    val f = storeFile(appCtx, fileName)
+                    if (f.isFile) {
+                        f.bufferedReader().use { r ->
+                            for (line in r.lineSequence()) {
+                                val key = if (kind == IptvLogic.KIND_VOD) {
+                                    IptvStore.decodeVod(line)?.let {
+                                        com.mizan.launcher.core.WatchMatch.keyOnlyOf(it.id, it.name, it.year)
+                                    }
+                                } else {
+                                    IptvStore.decodeSeries(line)?.let {
+                                        com.mizan.launcher.core.WatchMatch.keyOnlyOf(it.id, it.name, it.year)
+                                    }
+                                }
+                                if (key != null) yield(key)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // A catalogue read failure degrades to "no matches", never a crash.
+                }
+            }
+        }
+    }
+
+    /**
      * v3.5 (spec §35): cheap catalogue counts for the
      * fingerprint-first match check (data/WatchPlay): the index
      * already carries series/vod counts + fetchedAt, so a match
@@ -1253,9 +1294,43 @@ object IptvClient {
      * JSON (ids/titles/extensions) — no credentials inside. These
      * are per-series documents (small, one show's episodes), not
      * catalogue data, so prefs remains the right home for them.
+     *
+     * v3.6 (ask 53, step 7): bodies now live in per-series
+     * files under filesDir/iptv/series_info/ (<fp>_<id>.json,
+     * one show's seasons — bounded by that show, never the
+     * catalogue). The prefs keys below are a READ fallback
+     * only, so pre-v3.6 warmed bodies still resolve; new
+     * fetches write the file, never prefs.
      */
     private fun seriesInfoKey(ctx: Context, seriesId: Long): String =
         "iptv_series_info_" + fingerprint(ctx) + "_" + seriesId
+
+    private fun seriesInfoFile(ctx: Context, seriesId: Long): File {
+        val d = File(storeDir(ctx), "series_info")
+        if (!d.isDirectory) d.mkdirs()
+        return File(d, fingerprint(ctx).toString() + "_" + seriesId + ".json")
+    }
+
+    private fun readSeriesInfoFile(ctx: Context, seriesId: Long): String? {
+        return try {
+            val f = seriesInfoFile(ctx, seriesId)
+            if (!f.isFile || f.length() > 1024L * 1024L) null else f.readText()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun writeSeriesInfoFile(ctx: Context, seriesId: Long, json: String) {
+        try {
+            val target = seriesInfoFile(ctx, seriesId)
+            val tmp = File(target.parentFile, target.name + ".tmp")
+            tmp.writeText(json)
+            if (target.exists()) target.delete()
+            tmp.renameTo(target)
+        } catch (e: Exception) {
+            // Caching is best-effort; the fetch result still counts.
+        }
+    }
 
     /**
      * v2.5: parsed series-info memo, keyed by the full prefs key
@@ -1272,7 +1347,8 @@ object IptvClient {
     /** The cached series info for [seriesId], parsed; null when never fetched. Never touches the network. */
     fun cachedSeriesInfo(ctx: Context, seriesId: Long): IptvLogic.SeriesInfo? {
         val key = seriesInfoKey(ctx, seriesId)
-        val raw = try {
+        // v3.6: file first, prefs fallback (pre-v3.6 bodies).
+        val raw = readSeriesInfoFile(ctx, seriesId) ?: try {
             PrefsSafe.strOrNull(prefs(ctx), key)
         } catch (e: Exception) {
             null
@@ -1313,12 +1389,8 @@ object IptvClient {
             try {
                 val (json, _) = fetchSeriesInfoBlocking(appCtx, seriesId)
                 if (json != null) {
-                    try {
-                        prefs(appCtx).edit()
-                            .putString(seriesInfoKey(appCtx, seriesId), json).apply()
-                    } catch (e: Exception) {
-                        // Caching is best-effort; the fetch result still counts.
-                    }
+                    // v3.6: file only, never prefs (see the cache header).
+                    writeSeriesInfoFile(appCtx, seriesId, json)
                     parsed = IptvLogic.parseSeriesInfo(json, seriesId)
                 }
             } catch (e: Exception) {

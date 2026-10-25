@@ -2029,6 +2029,19 @@ class SettingsActivity : Activity() {
                 "\nslim: " +
                     com.mizan.launcher.data.TrackerClient.slimDiag
             )
+            // v3.6 (ask 53): the tracker-store proof — title
+            // count, episode-file count, index stamp, and
+            // which source is actually serving the home
+            // (store vs prefs fallback). Read from the
+            // worker-updated volatile: composing diagnostics
+            // does no IO. The slim: line above stays until
+            // the prefs eviction retires the slim file;
+            // after eviction the store is the only fast
+            // path and slim: reads "absent" harmlessly.
+            append(
+                "\ntracker store: " +
+                    com.mizan.launcher.data.TrackerClient.storeDiag
+            )
             // v3.2 (ask 43): the proof line — when the home data
             // was last refreshed, and by what (manual Refresh vs
             // a section Retry). "never" + auto-refresh off is the

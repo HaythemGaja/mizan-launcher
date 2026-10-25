@@ -70,6 +70,8 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/RefreshPolicy.kt \
   app/src/main/java/com/mizan/launcher/core/StartupStages.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerSlim.kt \
+  app/src/main/java/com/mizan/launcher/core/TrackerStore.kt \
+  app/src/main/java/com/mizan/launcher/core/VisibleWindow.kt \
   app/src/main/java/com/mizan/launcher/core/SortGrab.kt \
   app/src/main/java/com/mizan/launcher/core/ColdChain.kt \
   app/src/main/java/com/mizan/launcher/core/DeathCapture.kt \

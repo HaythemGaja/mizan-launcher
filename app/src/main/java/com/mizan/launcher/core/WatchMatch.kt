@@ -326,6 +326,81 @@ object WatchMatch {
         return out
     }
 
+    // ------------------------------------------------------------ streamed match (v3.6, ask 53)
+    //
+    // The v3.5 key-only path still materialises the whole
+    // catalogue as a List<KeyOnly> before matching — 47k
+    // objects, transient but concurrent with the tracker
+    // parse. The streamed path below matches ONE visible
+    // title at a time over a re-openable line sequence
+    // (a file-backed catalogue-key scan): the exact tier
+    // collects only exact candidates, the contains tier
+    // collects only containing candidates, and nothing
+    // else is retained. The sequence is never turned into
+    // a list — a caller that needs a second pass re-opens
+    // it (the factory), which is exactly what a file scan
+    // does. Tiers, ordering and flags are the same code
+    // shape as matchOneKeyOnly, and the sim pins
+    // matchStreamed == matchAllKeyed over shared fixtures,
+    // including the repo 'Preacher'->'Reacher' case.
+    // A trigram index is NOT built here (audit Phase 2,
+    // optional, post-survival only) — Phase 1 bounds the
+    // contains scan to visible titles, it does not pretend
+    // to eliminate it.
+
+    /** Match one title over a re-openable key-only sequence (exact pass, then contains pass if needed). */
+    fun matchOneStreamed(
+        t: TrackerTitle,
+        keyFactory: () -> Sequence<KeyOnly>
+    ): Match? {
+        val (tKey, tYear) = keyOf(t.title, t.year)
+        if (tKey.isEmpty()) return null
+        val exactTier = ArrayList<KeyOnly>()
+        for (k in keyFactory()) {
+            if (k.key.isEmpty()) continue
+            if (k.key == tKey) exactTier.add(k)
+        }
+        if (exactTier.isNotEmpty()) {
+            val yearHits = if (tYear > 0) exactTier.filter { it.year == tYear } else emptyList()
+            val pool = if (yearHits.isNotEmpty()) yearHits else exactTier
+            val chosen = pool.first()
+            val yearConflict = tYear > 0 && chosen.year > 0 && chosen.year != tYear
+            val resolved = pool.size == 1 && !yearConflict
+            return Match(t.tmdbId, t.type, chosen.iptvId, resolved, !resolved)
+        }
+        val containing = ArrayList<KeyOnly>()
+        val distinct = HashSet<String>()
+        for (k in keyFactory()) {
+            if (k.key.isEmpty()) continue
+            if (k.key.contains(tKey)) {
+                containing.add(k)
+                distinct.add(k.key)
+            }
+        }
+        if (containing.isEmpty()) return null
+        // sortedWith is stable: equal (penalty, length) pairs keep
+        // catalogue order — the tier's final tie-break.
+        val chosen = containing.sortedWith(
+            compareBy<KeyOnly> { yearPenalty(it.year, tYear) }
+                .thenBy { it.key.length }
+        ).first()
+        val yearConflict = tYear > 0 && chosen.year > 0 && chosen.year != tYear
+        val possible = distinct.size > 1 || yearConflict
+        return Match(t.tmdbId, t.type, chosen.iptvId, false, possible)
+    }
+
+    /** Match visible titles only, each over the streamed catalogue (never a materialised key list). */
+    fun matchStreamed(
+        tracker: List<TrackerTitle>,
+        keyFactory: () -> Sequence<KeyOnly>
+    ): Map<Long, Match> {
+        val out = LinkedHashMap<Long, Match>()
+        for (t in tracker) {
+            matchOneStreamed(t, keyFactory)?.let { out[t.tmdbId] = it }
+        }
+        return out
+    }
+
     // ------------------------------------------------------------ match cache
 
     /**

@@ -138,9 +138,13 @@ object ColdChainRunner {
             try {
                 when (step) {
                     ColdChain.Step.TRACKER_FULL -> {
-                        // Parses only on slim miss / moved memo key;
-                        // a memo-hit returns instantly.
-                        TrackerClient.cached(appCtx)
+                        // v3.6: store first — line files, no
+                        // JSON parse, no raw /tracked string.
+                        // Only a store miss falls back to the
+                        // legacy cached() parse, and that same
+                        // worker writes the store from it, so
+                        // the next open is store-backed.
+                        TrackerClient.storeOrCached(appCtx)
                         DiagLog.markStage("chain: tracker")
                     }
                     ColdChain.Step.MATCH -> {

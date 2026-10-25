@@ -61,7 +61,11 @@ object TrackerClient {
          * v2.1: the RAW /tracked JSON — the Library/details screens
          * need watched episode SETS + muted flags, which the parsed
          * [tracked] (watched counts, for search) doesn't carry.
-         * Parsed by core/LibraryLogic.parseLibShows at the call site.
+         * v3.6: on the store path this is EMPTY by design —
+         * episode sets live only in per-title episode files
+         * (data/TrackerStoreDisk), and the fetch worker is
+         * the only place that still parses this document,
+         * once, to write the store.
          */
         val trackedJson: String = "",
         /** The provider's `updated` stamp (widget-refresh time), 0 if never. */
@@ -69,7 +73,15 @@ object TrackerClient {
         /** The /foryou mirror's own `updated` stamp (overlay pruning), 0 if never. */
         val forYouUpdated: Long = 0L,
         /** When the launcher last fetched (epoch ms), 0 if never. */
-        val fetchedAt: Long
+        val fetchedAt: Long,
+        /**
+         * v3.6: the tracker-store fingerprint this snapshot
+         * came from ("" = legacy prefs parse, not a store
+         * snapshot). cached() returns a store memo
+         * instantly when the live index fingerprint still
+         * matches this one — no prefs load, no parse.
+         */
+        val storeFingerprint: String = ""
     ) {
         /** Any usable tracker content at all (before marked filtering). */
         val hasData: Boolean
@@ -253,6 +265,141 @@ object TrackerClient {
         )
     }
 
+    // ------------------------------------------------------------ v3.6 tracker store (ask 53)
+
+    /**
+     * v3.6: store-backed state, worker-maintained, freely
+     * readable. [storePainted] = a home paint consumed a
+     * store snapshot; [storeFetchLanded] = a fetch wrote
+     * the store. Both plus store validity gate the prefs
+     * eviction (step 8) — see [maybeEvictPrefs].
+     */
+    @Volatile
+    private var storePainted = false
+
+    @Volatile
+    private var storeFetchLanded = false
+
+    /** Eviction ran (successfully) in this process — maybeEvict is idempotent, this just avoids repeat work. */
+    @Volatile
+    private var evictionDone = false
+
+    /** Last store diagnostics line (worker-updated; diagnostics reads this, never the files). */
+    @Volatile
+    var storeDiag: String = "absent"
+        private set
+
+    /** Whether a valid indexed store exists (small index read; worker threads only). */
+    fun storeValid(ctx: Context): Boolean = TrackerStoreDisk.storeValid(ctx)
+
+    /**
+     * v3.6: the store-backed snapshot, or null when the
+     * store is absent/corrupt. Worker threads only (file
+     * IO). Sets [storePainted] and refreshes [storeDiag]
+     * on a hit — the eviction gate's first leg.
+     */
+    fun storeSnapshots(ctx: Context): Snapshots? {
+        return try {
+            val snap = TrackerStoreDisk.snapshotsFromStore(ctx) ?: run {
+                storeDiag = TrackerStoreDisk.diagLine(ctx, "prefs")
+                return null
+            }
+            storePainted = true
+            storeDiag = TrackerStoreDisk.diagLine(ctx, "store")
+            snap
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * v3.6: the cold chain's TRACKER step — store first,
+     * full parse only as fallback. On a store hit the memo
+     * fills from line files (no JSON parse, no raw
+     * /tracked string retained). On a miss the legacy
+     * cached() parse runs and the store is written from
+     * it on this same worker, so the NEXT open is
+     * store-backed. Returns the snapshot that filled
+     * the memo (or null when neither source had data).
+     */
+    fun storeOrCached(ctx: Context): Snapshots? {
+        return try {
+            storeSnapshots(ctx)?.let { snap ->
+                cachedMemo = snap
+                cachedMemoKey = memoKeyFor(
+                    RawInputs(null, null, null, null, null, snap.updated, snap.forYouUpdated, snap.fetchedAt)
+                )
+                // Step 8, deferred: a store paint + a fetch
+                // landing together unlock the eviction, on a
+                // worker (never on the chain's caller thread
+                // beyond spawning it).
+                if (storeFetchLanded && !evictionDone) {
+                    val appCtx = ctx.applicationContext
+                    thread(name = "mizan-tracker-evict") {
+                        if (maybeEvictPrefs(appCtx)) evictionDone = true
+                    }
+                }
+                return snap
+            }
+            val snap = cached(ctx)
+            if (snap.hasData) {
+                try {
+                    val lib = com.mizan.launcher.core.LibraryLogic.parseLibShows(snap.trackedJson)
+                    TrackerStoreDisk.writeFromSnapshots(ctx, snap, lib)
+                } catch (e: Exception) {
+                    // A failed store write leaves prefs/mirror as the source.
+                }
+            }
+            snap
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * v3.6 step 8 — prefs eviction, gated, worker only.
+     * Deletes ONLY the five snapshot keys (plus the
+     * foryou-updated stamp) after one store paint AND
+     * one fetch landing into the store AND a valid store
+     * right now. If any leg fails, the keys stay and the
+     * home keeps falling back to prefs/mirror. On success
+     * the slim file is retired (the store is the fast
+     * path now; two fast paths are not carried forever).
+     * Returns true only when the eviction actually ran.
+     */
+    fun maybeEvictPrefs(ctx: Context): Boolean {
+        return try {
+            val appCtx = ctx.applicationContext
+            if (!com.mizan.launcher.core.TrackerStore.evictionAllowed(
+                    storeValid(appCtx), storePainted, storeFetchLanded
+                )
+            ) {
+                return false
+            }
+            val p = prefs(appCtx)
+            p.edit()
+                .remove(K_UPNEXT).remove(K_CONTINUE).remove(K_MOVIES)
+                .remove(K_TRACKED).remove(K_FORYOU).remove(K_FORYOU_UPDATED)
+                .apply()
+            try {
+                val slim = slimFile(appCtx)
+                if (slim.isFile) slim.delete()
+            } catch (e: Exception) {
+                // Slim retirement is housekeeping; the eviction already ran.
+            }
+            storeDiag = TrackerStoreDisk.diagLine(appCtx, "store (prefs evicted)")
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Test/observer hook: whether the eviction gate currently passes (no side effects). */
+    fun evictionGatePasses(ctx: Context): Boolean =
+        com.mizan.launcher.core.TrackerStore.evictionAllowed(
+            storeValid(ctx), storePainted, storeFetchLanded
+        )
+
     /** The persisted fetch state, for diagnostics + the fallback line. */
     data class Status(
         val kind: TrackerStatus.Kind,
@@ -423,6 +570,21 @@ object TrackerClient {
      */
     fun cached(ctx: Context): Snapshots {
         return try {
+            // v3.6: a store memo is returned instantly while
+            // the live index fingerprint still matches it —
+            // no prefs load, no parse. The index read is a
+            // small file; the fingerprint moves only when a
+            // fetch rewrites the store, and the chain then
+            // refreshes the memo (see storeOrCached).
+            val storeMemo = cachedMemo
+            if (storeMemo != null && storeMemo.storeFingerprint.isNotBlank()) {
+                val liveFp = try {
+                    TrackerStoreDisk.readIndex(ctx)?.fingerprint
+                } catch (e: Exception) {
+                    null
+                }
+                if (liveFp != null && liveFp == storeMemo.storeFingerprint) return storeMemo
+            }
             val inputs = readRawInputs(ctx)
             val key = memoKeyFor(inputs)
             val memo = cachedMemo
@@ -543,7 +705,26 @@ object TrackerClient {
                     val json = r.json ?: continue
                     HomeCacheDisk.putSnapshot(appCtx, PATHS[i], json, now)
                 }
+                // v3.6: the fresh prefs write above must
+                // NOT be shadowed by a stale store memo —
+                // drop the memo so this parse reads the
+                // just-written documents, then write the
+                // store from that one parse (fetch worker
+                // only; the home never pays for it).
+                cachedMemo = null
+                cachedMemoKey = null
                 val snap = cached(appCtx)
+                if (snap.hasData && snap.trackedJson.isNotBlank()) {
+                    try {
+                        val lib = com.mizan.launcher.core.LibraryLogic.parseLibShows(snap.trackedJson)
+                        if (TrackerStoreDisk.writeFromSnapshots(appCtx, snap, lib) != null) {
+                            storeFetchLanded = true
+                            storeDiag = TrackerStoreDisk.diagLine(appCtx, "store")
+                        }
+                    } catch (e: Exception) {
+                        // A failed store write leaves prefs/mirror as the source.
+                    }
+                }
                 val kind = TrackerStatus.classify(
                     installed = isInstalled(appCtx),
                     anyAnswered = anyAnswered,

@@ -35,6 +35,8 @@ import com.mizan.launcher.core.SettingsNavMachine
 import com.mizan.launcher.core.SwitchLogic
 import com.mizan.launcher.core.TileLayout
 import com.mizan.launcher.core.TrackerSlim
+import com.mizan.launcher.core.TrackerStore
+import com.mizan.launcher.core.VisibleWindow
 import com.mizan.launcher.core.SortGrab
 import com.mizan.launcher.core.ColdChain
 import com.mizan.launcher.core.DeathCapture
@@ -3258,6 +3260,9 @@ fun main() {
     // ---------- (55) v3.5: sequential cold chain, key-only streaming match, last-death capture ----------
     section55()
 
+    // ---------- (56) v3.6: indexed tracker store + paged/visible-first (ask 53) ----------
+    section56()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3970,9 +3975,11 @@ fun section42() {
         // slim cache + media-home folders + hold-and-drop + row posters, spec §34).
         // Re-pinned in v3.5 (intentional version bump 3.4/27 → 3.5/28 —
         // sequential cold chain + key-only match + last-death capture, spec §35).
-        check("v25src: the app version is 3.5 / code 28 (bumped by v3.5)",
-            gradleSrc.contains("versionName = \"3.5\"") &&
-                gradleSrc.contains("versionCode = 28"))
+        // Re-pinned in v3.6 (intentional version bump 3.5/28 → 3.6/29 —
+        // indexed tracker store + paged/visible-first, spec §36).
+        check("v25src: the app version is 3.6 / code 29 (bumped by v3.6)",
+            gradleSrc.contains("versionName = \"3.6\"") &&
+                gradleSrc.contains("versionCode = 29"))
     }
 }
 
@@ -4886,9 +4893,10 @@ fun section50() {
                 src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt").contains("fun refreshNow"))
         // Re-pinned in v3.4 (intentional version bump 3.3/26 → 3.4/27, spec §34).
         // Re-pinned in v3.5 (intentional version bump 3.4/27 → 3.5/28, spec §35).
-        check("v31src: the version bump is 3.5 / code 28",
-            src("app/build.gradle.kts").contains("versionCode = 28") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.5\""))
+        // Re-pinned in v3.6 (intentional version bump 3.5/28 → 3.6/29, spec §36).
+        check("v31src: the version bump is 3.6 / code 29",
+            src("app/build.gradle.kts").contains("versionCode = 29") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.6\""))
     }
 }
 
@@ -5738,5 +5746,244 @@ fun section55() {
                 settingsSrc.contains("ColdChainRunner.diagState"))
         check("src55: hero rule untouched (missed first, today stays out)",
             mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
+    }
+}
+
+/** v3.6 checks — indexed tracker store + paged/visible-first (ask 53, spec §36). Each test here FAILS on the v3.5 code (no TrackerStore, no VisibleWindow, no streamed match, whole-doc parses in Details/Library/Discovery) and PASSES on v3.6. */
+fun section56() {
+    run {
+        // ---- TrackerStore codecs: round-trips, separators, malformed fail-open ----
+        val title = TrackerStore.Title("tv", 42L, "Show | 100% \n Real", "/p.jpg", "/b.jpg", 500, true, false, 2, 3)
+        check("store56: title line round-trips separators (pipe, percent, newline)",
+            TrackerStore.decodeTitle(TrackerStore.encodeTitle(title) ?: "") == title)
+        check("store56: malformed title lines fail open (blank, bad id, blank title)",
+            TrackerStore.decodeTitle("") == null &&
+                TrackerStore.decodeTitle("tv|0|Nope| | |0|0|0|0|0") == null &&
+                TrackerStore.decodeTitle("tv|7|| | |0|0|0|0|0") == null)
+        val up = TrackerLogic.UpNextItem(7L, "Up | Show", "Next S1 E2", "2026-10-24", "/p.jpg", "/b.jpg", "ov", 1, 2, "tv")
+        check("store56: upnext/continue/movie/foryou lines round-trip",
+            TrackerStore.decodeUpNext(TrackerStore.encodeUpNext(up) ?: "") == up &&
+                TrackerStore.decodeContinue(
+                    TrackerStore.encodeContinue(
+                        TrackerLogic.ContinueItem(8L, "Cont", "sub", 3, 10, "/p.jpg", "/b.jpg", "ov", "tv")
+                    ) ?: ""
+                )?.watched == 3 &&
+                TrackerStore.decodeMovie(
+                    TrackerStore.encodeMovie(
+                        TrackerLogic.MovieItem(9L, "Mov", "2024-01-01", false, "/m.jpg", true)
+                    ) ?: ""
+                )?.watched == true &&
+                TrackerStore.decodeForYou(
+                    TrackerStore.encodeForYou(
+                        TrackerLogic.ForYouPick(10L, "tv", "Pick", "/f.jpg", 7.4, "Because", listOf("Drama", "Sci-Fi"), 1.5)
+                    ) ?: ""
+                )?.whyGenres == listOf("Drama", "Sci-Fi"))
+        val ep = TrackerStore.EpisodeFile(true, (1..500).map { "1x$it" }.toSet())
+        val epJson = TrackerStore.encodeEpisode(ep) ?: ""
+        check("store56: episode file round-trips a 500-entry set, muted flag kept",
+            TrackerStore.decodeEpisode(epJson)?.watched?.size == 500 &&
+                TrackerStore.decodeEpisode(epJson)?.muted == true &&
+                TrackerStore.decodeEpisode("garbage") == null &&
+                TrackerStore.decodeEpisode("") == null)
+        val idx = TrackerStore.Index(46, 11, 46, 13, 15, 1729800000000L, 1729800001000L, "abcdef0123456789", 46)
+        check("store56: index round-trips; corrupt index decodes null (fallback, never empty home)",
+            TrackerStore.decodeIndex(TrackerStore.encodeIndex(idx)) == idx &&
+                TrackerStore.decodeIndex("{\"titles\":") == null &&
+                TrackerStore.decodeIndex("") == null)
+        check("store56: store diag line names counts + fallback state, never titles",
+            TrackerStore.diagLine(idx, "store") == "46 titles · 46 episode files · index 1729800000000 · fallback: store" &&
+                TrackerStore.diagLine(null, "prefs") == "absent · fallback: prefs")
+
+        // ---- Fingerprint: content, not lengths; fetchedAt is not an input ----
+        val titlesA = (1..5).map {
+            TrackerStore.Title("tv", it.toLong(), "Show $it", "", "", it * 10, false, false, 0, 0)
+        }
+        val titlesB = titlesA.map { if (it.tmdbId == 3L) it.copy(watchedCount = 20) else it }
+        val fpA = TrackerStore.fingerprint(1000L, titlesA, emptyList(), emptyList(), emptyList(), emptyList())
+        val fpB = TrackerStore.fingerprint(1000L, titlesB, emptyList(), emptyList(), emptyList(), emptyList())
+        check("store56: fingerprint distinguishes same-length changes (count 30 -> 20, same digits)",
+            fpA != fpB && fpA.length == 16)
+        check("store56: fingerprint is stable for identical content (a fetch that changes only fetchedAt must not invalidate)",
+            TrackerStore.fingerprint(1000L, titlesA, emptyList(), emptyList(), emptyList(), emptyList()) == fpA)
+
+        // ---- Paged line reading: first window only, no extra pull ----
+        val fiftyLines = (1..50).map { id ->
+            TrackerStore.encodeTitle(
+                TrackerStore.Title("tv", id.toLong(), "Show $id", "", "", id, false, false, 0, 0)
+            ) ?: ""
+        }
+        var pulls = 0
+        val counting = sequence {
+            for (line in fiftyLines) {
+                pulls++
+                yield(line)
+            }
+        }
+        val (page, consumed) = TrackerStore.readPage(counting, 0, VisibleWindow.FIRST_WINDOW, TrackerStore::decodeTitle)
+        check("store56: open reads only the visible window (20 lines consumed of 50, no more pulled)",
+            page.size == 20 && consumed == 20 && pulls == 20 &&
+                page.first().tmdbId == 1L && page.last().tmdbId == 20L)
+        val (page2, consumed2) = TrackerStore.readPage(fiftyLines.asSequence(), 20, VisibleWindow.FIRST_WINDOW, TrackerStore::decodeTitle)
+        check("store56: second page starts at 21, stops at the window",
+            page2.size == 20 && page2.first().tmdbId == 21L && consumed2 == 40)
+
+        // ---- Episode sets are per-title; counts without the set ----
+        val bigTitle = TrackerStore.Title("tv", 99L, "Big Show", "", "", 500, false, false, 0, 0)
+        val bigLine = TrackerStore.encodeTitle(bigTitle) ?: ""
+        check("store56: watchedCount without the set (title line carries 500, no episode keys ride it)",
+            TrackerStore.decodeTitle(bigLine)?.watchedCount == 500 &&
+                !bigLine.contains("1x4") && !bigLine.contains("1x"))
+        check("store56: fetch re-indexes incrementally (changed show's episode file differs, others identical)",
+            run {
+                val oldEp = TrackerStore.encodeEpisode(TrackerStore.EpisodeFile(false, setOf("1x1", "1x2"))) ?: ""
+                val newEp = TrackerStore.encodeEpisode(TrackerStore.EpisodeFile(false, setOf("1x1", "1x2", "1x3"))) ?: ""
+                val otherEp = TrackerStore.encodeEpisode(TrackerStore.EpisodeFile(false, setOf("2x1"))) ?: ""
+                oldEp != newEp && TrackerStore.encodeEpisode(TrackerStore.EpisodeFile(false, setOf("2x1"))) == otherEp
+            })
+
+        // ---- Eviction gate ----
+        check("store56: prefs eviction is gated (all three legs required)",
+            !TrackerStore.evictionAllowed(false, true, true) &&
+                !TrackerStore.evictionAllowed(true, false, true) &&
+                !TrackerStore.evictionAllowed(true, true, false) &&
+                TrackerStore.evictionAllowed(true, true, true))
+
+        // ---- VisibleWindow ----
+        check("store56: visible window math (46 items = 3 pages; first window 0..19; page-in near end only)",
+            VisibleWindow.FIRST_WINDOW == 20 &&
+                VisibleWindow.pageCount(46) == 3 &&
+                VisibleWindow.windowFor(46, 0) == (0 until 20) &&
+                VisibleWindow.windowFor(46, 2) == (40 until 46) &&
+                VisibleWindow.windowFor(46, 3) == null &&
+                VisibleWindow.nextPageIndex(20, 46) == 1 &&
+                VisibleWindow.nextPageIndex(46, 46) == null &&
+                VisibleWindow.shouldPageIn(18, 20, 46) &&
+                !VisibleWindow.shouldPageIn(5, 20, 46) &&
+                !VisibleWindow.shouldPageIn(19, 20, 20))
+
+        // ---- Streamed match == key-only match == classic match ----
+        val catKeys = (1..5000).map { id ->
+            WatchMatch.KeyOnly(id.toLong(), "show$id", 0)
+        } + listOf(
+            WatchMatch.keyOnlyOf(101, "Reacher", 0),
+            WatchMatch.keyOnlyOf(102, "Preacher", 0),
+            WatchMatch.keyOnlyOf(103, "Dune", 2021),
+            WatchMatch.keyOnlyOf(104, "Dune", 1984)
+        )
+        val keyedClassic = catKeys.filter { it.iptvId in listOf(101L, 102L, 103L, 104L) }
+        val visTitles = listOf(
+            WatchMatch.TrackerTitle(1, "tv", "Reacher", 0),
+            WatchMatch.TrackerTitle(2, "tv", "Dune", 2021),
+            WatchMatch.TrackerTitle(3, "tv", "Dune", 0)
+        )
+        val streamed = WatchMatch.matchStreamed(visTitles) { catKeys.asSequence() }
+        val keyed = WatchMatch.matchAllKeyed(visTitles, keyedClassic)
+        check("store56: match-streamed == matchAllKeyed (exact, year-narrowed, possible, Preacher contains)",
+            streamed[1]?.iptvId == 101L && streamed[1]?.exact == true &&
+                streamed[2]?.iptvId == 103L && streamed[2]?.exact == true &&
+                streamed[3]?.iptvId == 103L && streamed[3]?.possible == true &&
+                streamed == keyed)
+        check("store56: match-visible-titles-only-on-open (below-fold titles never enter the result)",
+            !streamed.containsKey(999L) &&
+                WatchMatch.matchStreamed(
+                    listOf(WatchMatch.TrackerTitle(9, "tv", "Reacher", 0))
+                ) { listOf(WatchMatch.keyOnlyOf(102, "Preacher", 0)).asSequence() }[9]?.iptvId == 102L)
+        var streamPulls = 0
+        val countingKeys = sequence {
+            for (k in catKeys) {
+                streamPulls++
+                yield(k)
+            }
+        }
+        // One visible title with an exact hit: exactly one full exact pass, no contains pass, no list built.
+        val oneHit = WatchMatch.matchOneStreamed(visTitles[0]) { countingKeys }
+        check("store56: match-streamed-scan pulls one exact pass only for an exact hit (no contains pass, no retained list)",
+            oneHit?.iptvId == 101L && streamPulls == catKeys.size)
+
+        // ---- Library count-only ----
+        val countOnly = LibraryLogic.LibShow(42L, "Count Show", false, false, emptySet(), watchedCount = 500)
+        check("store56: library count-only show reports its count without a set, and is flagged count-only",
+            countOnly.count() == 500 && countOnly.isCountOnly &&
+                !LibraryLogic.LibShow(42L, "Full Show", false, false, setOf("1x1")).isCountOnly)
+        check("store56: grid count is the effective count (count-only base + pending adds - removes)",
+            LibraryLogic.buildLibrary(
+                listOf(LibraryLogic.LibShow(42L, "Count Show", false, false, emptySet(), watchedCount = 500)),
+                emptyList(), emptyList(), emptyList(),
+                LibraryLogic.withEpisodeToggle(emptyList(), 42, 1, 1, true, 5L),
+                emptyMap()
+            ).single().watchedCount == 501)
+
+        // ---- Source checks: every wiring is really in the app ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val clientSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerClient.kt")
+        val storeSrc = src("app/src/main/java/com/mizan/launcher/data/TrackerStoreDisk.kt")
+        val discSrc = src("app/src/main/java/com/mizan/launcher/data/DiscoveryData.kt")
+        val watchSrc = src("app/src/main/java/com/mizan/launcher/data/WatchPlay.kt")
+        val iptvSrc = src("app/src/main/java/com/mizan/launcher/data/IptvClient.kt")
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
+        val libSrc = src("app/src/main/java/com/mizan/launcher/ui/LibraryActivity.kt")
+        val chainSrc = src("app/src/main/java/com/mizan/launcher/data/ColdChainRunner.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        val matchSrc = src("app/src/main/java/com/mizan/launcher/core/WatchMatch.kt")
+        check("src56: cold chain TRACKER step reads the store first, full parse only as fallback",
+            chainSrc.contains("TrackerClient.storeOrCached(appCtx)") &&
+                clientSrc.contains("fun storeOrCached") &&
+                clientSrc.contains("fun storeSnapshots"))
+        check("src56: fetch worker writes the store from its one parse and arms the eviction gate",
+            clientSrc.contains("TrackerStoreDisk.writeFromSnapshots(appCtx, snap, lib)") &&
+                clientSrc.contains("storeFetchLanded = true") &&
+                clientSrc.contains("fun maybeEvictPrefs") &&
+                clientSrc.contains("evictionAllowed"))
+        check("src56: store writer swaps index last and aborts on a credential trip",
+            storeSrc.contains("TrackerStore.encodeTitle(t) ?: return null") &&
+                storeSrc.contains("writeAtomic(fileFor(ctx, F_INDEX)"))
+        check("src56: Details + Library never whole-parse (no parseLibShows call in either screen)",
+            !detailsSrc.contains("parseLibShows(") &&
+                !libSrc.contains("parseLibShows(") &&
+                detailsSrc.contains("TrackerStoreDisk.libShowFor") &&
+                libSrc.contains("TrackerStoreDisk.libraryShows"))
+        check("src56: Discovery never whole-parses and gates shaping on the tracker stamp",
+            !discSrc.contains("parseLibShows(") &&
+                discSrc.contains("lastShapedKey") &&
+                discSrc.contains("shapingNeeded") &&
+                discSrc.contains("iptvRowVisible"))
+        check("src56: visible-first matching is wired (streamed scan, visible kick, first-window warm-up)",
+            watchSrc.contains("fun kickVisibleRecompute") &&
+                watchSrc.contains("matchStreamed") &&
+                mainSrc.contains("WatchPlay.visibleNeedsMatch") &&
+                mainSrc.contains("tUpNext.take(window)") &&
+                mainSrc.contains("tCont.take(window)"))
+        check("src56: streamed matcher never materialises a key list (no toList on the factory sequence)",
+            run {
+                val body = matchSrc.substringAfter("fun matchOneStreamed").substringBefore("fun matchStreamed")
+                body.contains("for (k in keyFactory())") && !body.contains("toList()")
+            } &&
+                !watchSrc.contains("tuplesBlocking") &&
+                !mainSrc.contains("tuplesBlocking"))
+        check("src56: home rows page, not inflate-all (pagedRow on Up Next, Continue, Trending)",
+            mainSrc.contains("fun <T> pagedRow") &&
+                mainSrc.contains("pagedRow(items) { item ->") &&
+                mainSrc.contains("pagedRow(cards) { card ->"))
+        check("src56: series-info bodies live in per-series files, fetches never write prefs",
+            iptvSrc.contains("seriesInfoFile(ctx, seriesId)") &&
+                iptvSrc.contains("writeSeriesInfoFile(appCtx, seriesId, json)") &&
+                run {
+                    val body = iptvSrc.substringAfter("fun fetchSeriesInfoAsync")
+                    !body.contains("putString(seriesInfoKey")
+                })
+        check("src56: diagnostics gains the tracker store line; slim line kept until eviction",
+            settingsSrc.contains("tracker store: \" +") &&
+                settingsSrc.contains("TrackerClient.storeDiag") &&
+                settingsSrc.contains("slim: \" +"))
+        check("src56: hero rule untouched by the store migration (missed first, today stays out)",
+            mainSrc.contains("fillHeroDates") && mainSrc.contains("todayIso(), dSoon"))
+        check("src56: no-refresh rule untouched (fetch landings still re-run the chain; home build never fetches)",
+            clientSrc.contains("ColdChainRunner.kickAfterFetch(appCtx)") &&
+                !mainSrc.substringAfter("private fun prepareTrackerData").substringBefore("private fun prepareWatchData").contains("refreshAsync"))
     }
 }

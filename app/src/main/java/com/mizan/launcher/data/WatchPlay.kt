@@ -149,6 +149,70 @@ object WatchPlay {
         }
     }
 
+    // ------------------------------------------------------------ visible-first recompute (v3.6, ask 53)
+
+    /**
+     * v3.6: visible-first matching for the OPEN path.
+     * [visible] is hero pool + first window of each row,
+     * in display order. Only those titles are matched,
+     * over the streamed catalogue-key scan (no key list
+     * materialised), and the results MERGE into the
+     * cached table — a partial recompute never wipes
+     * below-fold matches the deferred full pass already
+     * landed. The full fingerprint is untouched here, so
+     * the deferred pass still knows whether it is due.
+     * Worker threads only; the caller rebuilds on
+     * [onMatchesChanged] when the table changed.
+     */
+    fun kickVisibleRecompute(ctx: Context, visible: List<WatchMatch.TrackerTitle>) {
+        if (visible.isEmpty()) return
+        val appCtx = ctx.applicationContext
+        thread(name = "mizan-watch-visible") {
+            try {
+                val tv = visible.filter { it.type == "tv" }
+                val movies = visible.filter { it.type == "movie" }
+                val found = LinkedHashMap<Long, WatchMatch.Match>()
+                if (tv.isNotEmpty()) {
+                    found.putAll(
+                        WatchMatch.matchStreamed(tv) { IptvClient.keyFactory(appCtx, IptvLogic.KIND_SERIES)() }
+                    )
+                }
+                if (movies.isNotEmpty()) {
+                    found.putAll(
+                        WatchMatch.matchStreamed(movies) { IptvClient.keyFactory(appCtx, IptvLogic.KIND_VOD)() }
+                    )
+                }
+                if (found.isNotEmpty()) {
+                    val merged = HashMap<String, WatchMatch.Match>()
+                    merged.putAll(cachedMatches(appCtx))
+                    for (m in found.values) merged["${m.type}|${m.tmdbId}"] = m
+                    val before = cachedMatches(appCtx)
+                    if (merged != before) {
+                        try {
+                            prefs(appCtx).edit()
+                                .putString(K_MATCH_CACHE, WatchMatch.encodeMatches(merged.values))
+                                .apply()
+                        } catch (e: Exception) {
+                            // The cache is an optimization; a failed write just retries next time.
+                        }
+                        matchesMemo = null
+                        matchesMemoRaw = null
+                        announceIfChanged(true)
+                    }
+                }
+            } catch (e: Throwable) {
+                try { Prefs.noteError(appCtx, "watchVisibleMatch", e) } catch (_: Exception) { }
+            }
+        }
+    }
+
+    /** True when any visible title still lacks a cached match (the open-path visible kick's guard). */
+    fun visibleNeedsMatch(ctx: Context, visible: List<WatchMatch.TrackerTitle>): Boolean {
+        if (visible.isEmpty()) return false
+        val m = cachedMatches(ctx)
+        return visible.any { m["${it.type}|${it.tmdbId}"] == null }
+    }
+
     /** Kick the single-flight worker recompute (no-op while one is running). */
     fun kickRecompute(ctx: Context) {
         if (!tryAcquireRecompute()) return
