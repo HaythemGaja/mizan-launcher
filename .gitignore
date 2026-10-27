@@ -1,0 +1,11 @@
+out/
+/out/
+*.apk
+*.idsig
+*.keystore
+*.jks
+*.pem
+*.p12
+*.pfx
+.env*
+*.enc

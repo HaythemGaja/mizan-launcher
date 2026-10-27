@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.0 "Sreeb" icon background: flat near-black (#141414), the
+     same page colour as the Tracker view's Netflix look. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#141414" />
+</shape>

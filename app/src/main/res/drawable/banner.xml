@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV home-screen banner (320x180 slot): v2.0 "Sreeb" restyle —
+     near-black field with the brand-red bar, drawn as shapes so the
+     APK carries no image assets. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="linear"
+                android:angle="270"
+                android:startColor="#FF1F1F1F"
+                android:endColor="#FF141414" />
+        </shape>
+    </item>
+    <item
+        android:left="24dp"
+        android:top="120dp"
+        android:right="220dp"
+        android:bottom="132dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="6dp" />
+            <solid android:color="#FFE50914" />
+        </shape>
+    </item>
+</layer-list>

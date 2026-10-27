@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy (pre-adaptive) icon, same "Sreeb" artwork: near-black
+     rounded square + the red "S" mark. The negative insets enlarge
+     the foreground vector (whose S is padded for the adaptive safe
+     zone) so the letter fills a legacy square icon properly. On
+     API 26+ — every supported device — the launcher actually uses
+     @mipmap/ic_launcher (mipmap-anydpi-v26); this stays as the
+     fallback and keeps the historic resource layout intact. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="18dp" />
+            <solid android:color="#FF141414" />
+        </shape>
+    </item>
+    <item
+        android:drawable="@drawable/ic_launcher_foreground"
+        android:left="-14dp"
+        android:top="-14dp"
+        android:right="-14dp"
+        android:bottom="-14dp" />
+</layer-list>

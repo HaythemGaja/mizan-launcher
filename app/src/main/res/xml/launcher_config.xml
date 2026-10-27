@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher accessibility config. Window-state events ONLY:
+     canRetrieveWindowContent is false, so the service can see which
+     window is on screen but never read anything on it. No gestures:
+     the service only fires system global actions (Back, Home,
+     Recents, ...) when launcher code asks it to. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/launcher_access_desc" />

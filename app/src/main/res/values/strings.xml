@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- v2.0 rebrand: the app is "Sreeb" (package, signing and all
+         internal names deliberately unchanged — see spec §18). -->
+    <string name="app_name">Sreeb</string>
+    <string name="watcher_name">Sreeb launcher watcher</string>
+    <string name="watcher_desc">Watches for the TV\'s stock home screen appearing and reopens Sreeb instead. It cannot read screen contents.</string>
+    <string name="launcher_access_name">Sreeb launcher</string>
+    <string name="launcher_access_desc">Lets Sreeb perform system actions (Back, Home, Recents, notifications) on your behalf. It cannot read screen contents.</string>
+    <string name="dream_desc">Sreeb screensaver — a dim clock over your wallpaper.</string>
+    <!-- Phase 2C UI layer additions (no existing string removed or changed). -->
+    <string name="ui_hasnt_aired">Hasn\'t aired yet</string>
+    <string name="ui_mark_season_watched">Mark season watched</string>
+    <string name="ui_safe_mode">Safe mode — plain launcher</string>
+    <string name="ui_not_sreeb_backup">That file isn\'t a Sreeb backup — nothing imported</string>
+    <string name="ui_settings_snag">This settings page hit a snag — the error is noted in Diagnostics</string>
+</resources>

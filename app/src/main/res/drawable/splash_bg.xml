@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.8 splash (window background): the brand near-black with the
+     red S mark centered, so the window is never a black void while
+     the staged first frame is built. The mark reuses the launcher
+     icon's vector (ic_launcher_foreground) at a fixed size,
+     centered by the layer-list item gravity. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <color android:color="#141414" />
+    </item>
+    <item
+        android:width="96dp"
+        android:height="96dp"
+        android:gravity="center"
+        android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>
