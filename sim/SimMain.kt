@@ -4020,9 +4020,11 @@ fun section42() {
         // Re-pinned in v3.9 (intentional version bump 3.8/31 → 3.9/32 —
         // hero/Missed memo fix + diagnostics + Trending IPTV play + IPTV→Watch/Live
         // merge + portrait Up Next/Missed cards, spec §39).
-        check("v25src: the app version is 3.9 / code 32 (bumped by v3.9)",
-            gradleSrc.contains("versionName = \"3.9\"") &&
-                gradleSrc.contains("versionCode = 32"))
+        // Re-pinned in v3.10 (intentional version bump 3.9/32 → 3.10/33 —
+        // Leo's unaired-episode gate + launcher accessibility service).
+        check("v25src: the app version is 3.10 / code 33 (bumped by v3.10)",
+            gradleSrc.contains("versionName = \"3.10\"") &&
+                gradleSrc.contains("versionCode = 33"))
     }
 }
 
@@ -4983,9 +4985,10 @@ fun section50() {
         // Re-pinned in v3.7 (intentional version bump 3.6/29 → 3.7/30, spec §37).
         // Re-pinned in v3.8 (intentional version bump 3.7/30 → 3.8/31, spec §38).
         // Re-pinned in v3.9 (intentional version bump 3.8/31 → 3.9/32, spec §39).
-        check("v31src: the version bump is 3.9 / code 32",
-            src("app/build.gradle.kts").contains("versionCode = 32") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.9\""))
+        // Re-pinned in v3.10 (intentional version bump 3.9/32 → 3.10/33).
+        check("v31src: the version bump is 3.10 / code 33",
+            src("app/build.gradle.kts").contains("versionCode = 33") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.10\""))
     }
 }
 
