@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import com.mizan.launcher.LauncherService
 import com.mizan.launcher.WatcherService
 
 /**
@@ -40,6 +41,19 @@ object HomeStatus {
     fun isWatcherEnabled(ctx: Context): Boolean {
         return try {
             val expected = ComponentName(ctx, WatcherService::class.java).flattenToString()
+            val enabled = Settings.Secure.getString(
+                ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: return false
+            enabled.split(':').any { it.equals(expected, ignoreCase = true) }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** True when the user has switched our launcher accessibility service on. */
+    fun isLauncherServiceEnabled(ctx: Context): Boolean {
+        return try {
+            val expected = ComponentName(ctx, LauncherService::class.java).flattenToString()
             val enabled = Settings.Secure.getString(
                 ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
             ) ?: return false

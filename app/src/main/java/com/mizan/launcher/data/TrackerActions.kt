@@ -73,22 +73,39 @@ object TrackerActions {
         season: Int,
         episodes: List<LibraryLogic.EpisodeInfo>
     ) {
-        if (episodes.isEmpty()) return
+        // Unaired episodes are never marked: only episodes that
+        // have aired (or have no known date) count.
+        val aired = episodes.filter { hasAired(it.airDate) }
+        if (aired.isEmpty()) return
         val now = System.currentTimeMillis()
         save(
             prefs,
             LibraryLogic.withSeasonMark(
-                overlay(prefs), tmdbId, season, episodes.map { it.number }, now
+                overlay(prefs), tmdbId, season, aired.map { it.number }, now
             )
         )
         // The CSV was the tracker's drain input; the
         // local writer takes the episode numbers directly.
         LibraryLocal.queueSeasonMark(
-            activity, prefs, tmdbId, season, episodes.map { it.number }
+            activity, prefs, tmdbId, season, aired.map { it.number }
         )
-        for (ep in episodes) {
+        for (ep in aired) {
             if (ep.number > 0) addMarked(prefs, tmdbId, "tv", season, ep.number, now)
         }
+    }
+
+    /**
+     * Unaired gate, shared with the episode checklist: an
+     * episode counts as aired when its TMDB air date is
+     * blank (unknown — fail open, never invent a date) or
+     * on/before the device's local today. ISO yyyy-MM-dd
+     * strings compare chronologically.
+     */
+    private fun hasAired(airDate: String): Boolean {
+        val d = airDate.trim()
+        if (d.isBlank()) return true
+        if (!d.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return true
+        return d <= java.time.LocalDate.now().toString()
     }
 
     // ------------------------------------------------------------ movie writes

@@ -189,6 +189,23 @@
                 android:resource="@xml/watcher_config" />
         </service>
 
+        <!-- The launcher's own accessibility service. Disabled until
+             the user enables it in system Accessibility settings.
+             Performs system global actions on the launcher's behalf;
+             reads no screen content. -->
+        <service
+            android:name=".LauncherService"
+            android:exported="true"
+            android:label="@string/launcher_access_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/launcher_config" />
+        </service>
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true">

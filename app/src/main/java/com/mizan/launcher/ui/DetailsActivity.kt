@@ -838,7 +838,8 @@ class DetailsActivity : Activity() {
                 }
                 if (inSnapshot) {
                     val unwatchedLeft = episodes.count {
-                        LibraryLogic.epKey(season, it.number) !in effectiveWatched()
+                        LibraryLogic.epKey(season, it.number) !in effectiveWatched() &&
+                            hasAired(it.airDate)
                     }
                     if (unwatchedLeft > 0) {
                         box.addView(
@@ -869,10 +870,26 @@ class DetailsActivity : Activity() {
         }
     }
 
+    /**
+     * Unaired gate: an episode counts as aired when its TMDB air
+     * date is blank (unknown — fail open, never invent a date)
+     * or on/before the device's local today. ISO yyyy-MM-dd
+     * strings compare chronologically, so a plain string
+     * comparison is exact for well-formed dates; anything
+     * else fails open too.
+     */
+    private fun hasAired(airDate: String): Boolean {
+        val d = airDate.trim()
+        if (d.isBlank()) return true
+        if (!d.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return true
+        return d <= java.time.LocalDate.now().toString()
+    }
+
     /** One episode checklist row: ✓ box + E<n> + name + air date; OK toggles. */
     private fun episodeRow(season: Int, ep: LibraryLogic.EpisodeInfo): View {
         val watched = effectiveWatched()
         val isWatched = LibraryLogic.epKey(season, ep.number) in watched
+        val unaired = !hasAired(ep.airDate)
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
@@ -937,32 +954,56 @@ class DetailsActivity : Activity() {
         // gesture apart and nothing about v2.1's checklist changes.
         val showMatch = if (type == "tv") wMatch else null
         if (showMatch != null) {
-            val play = TextView(this)
-            play.text = "▶"
-            play.setTextColor(Design.NETFLIX_RED)
-            play.textSize = 17f
-            play.setTypeface(play.typeface, Typeface.BOLD)
-            val plp = LinearLayout.LayoutParams(-2, -2)
-            plp.setMargins(Ui.dp(this, 14), 0, 0, 0)
-            play.layoutParams = plp
-            row.addView(play)
+            // Unaired episodes carry no ▶: there is nothing to play yet.
+            if (!unaired) {
+                val play = TextView(this)
+                play.text = "▶"
+                play.setTextColor(Design.NETFLIX_RED)
+                play.textSize = 17f
+                play.setTypeface(play.typeface, Typeface.BOLD)
+                val plp = LinearLayout.LayoutParams(-2, -2)
+                plp.setMargins(Ui.dp(this, 14), 0, 0, 0)
+                play.layoutParams = plp
+                row.addView(play)
+            }
             row.isLongClickable = true
             row.setOnLongClickListener {
-                val labels = arrayOf(
-                    "▶ Play S$season E${ep.number}",
-                    if (isWatched) "↩ Mark unwatched" else "✓ Mark watched"
-                )
-                AlertDialog.Builder(this)
-                    .setTitle(ep.name.ifBlank { "Episode ${ep.number}" })
-                    .setItems(labels) { _, which ->
-                        if (which == 0) {
-                            playEpisodeFromDetails(showMatch, season, ep.number)
-                        } else {
+                if (unaired && !isWatched) {
+                    // Nothing to play and nothing to have watched:
+                    // say so instead of offering dead actions.
+                    Toast.makeText(
+                        this,
+                        if (ep.airDate.isNotBlank()) "Hasn't aired yet — airs ${ep.airDate}"
+                        else "Hasn't aired yet",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    true
+                } else if (unaired) {
+                    // Already (mis)marked: only offer the correction.
+                    AlertDialog.Builder(this)
+                        .setTitle(ep.name.ifBlank { "Episode ${ep.number}" })
+                        .setItems(arrayOf("↩ Mark unwatched")) { _, _ ->
                             row.performClick()
                         }
-                    }
-                    .show()
-                true
+                        .show()
+                    true
+                } else {
+                    val labels = arrayOf(
+                        "▶ Play S$season E${ep.number}",
+                        if (isWatched) "↩ Mark unwatched" else "✓ Mark watched"
+                    )
+                    AlertDialog.Builder(this)
+                        .setTitle(ep.name.ifBlank { "Episode ${ep.number}" })
+                        .setItems(labels) { _, which ->
+                            if (which == 0) {
+                                playEpisodeFromDetails(showMatch, season, ep.number)
+                            } else {
+                                row.performClick()
+                            }
+                        }
+                        .show()
+                    true
+                }
             }
         }
 
@@ -971,6 +1012,15 @@ class DetailsActivity : Activity() {
                 Toast.makeText(
                     this,
                     "Add this title to your list to use episode tools",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@setOnClickListener
+            }
+            if (unaired && !isWatched) {
+                Toast.makeText(
+                    this,
+                    if (ep.airDate.isNotBlank()) "Hasn't aired yet — airs ${ep.airDate}"
+                    else "Hasn't aired yet",
                     Toast.LENGTH_SHORT
                 ).show()
                 return@setOnClickListener

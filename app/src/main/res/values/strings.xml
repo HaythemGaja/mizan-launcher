@@ -3,7 +3,9 @@
     <!-- v2.0 rebrand: the app is "Sreeb" (package, signing and all
          internal names deliberately unchanged — see spec §18). -->
     <string name="app_name">Sreeb</string>
-    <string name="watcher_name">Sreeb watcher</string>
+    <string name="watcher_name">Sreeb launcher watcher</string>
     <string name="watcher_desc">Watches for the TV\'s stock home screen appearing and reopens Sreeb instead. It cannot read screen contents.</string>
+    <string name="launcher_access_name">Sreeb launcher</string>
+    <string name="launcher_access_desc">Lets Sreeb perform system actions (Back, Home, Recents, notifications) on your behalf. It cannot read screen contents.</string>
     <string name="dream_desc">Sreeb screensaver — a dim clock over your wallpaper.</string>
 </resources>

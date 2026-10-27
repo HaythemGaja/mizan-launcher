@@ -1869,7 +1869,7 @@ class SettingsActivity : Activity() {
             append("\nHome: ${if (isHome) "Sreeb is default" else "not default (current: " +
                 com.mizan.launcher.data.HomeStatus.currentHomePackage(this@SettingsActivity).ifEmpty { "unknown" } + ")"}")
             append(", watcher: ${if (watcher) "enabled" else "disabled"}" +
-                if (watcher) "" else " (listed in Accessibility as “Sreeb watcher”)")
+                if (watcher) "" else " (listed in Accessibility as “Sreeb launcher watcher”)")
             val relaunches = Prefs.watcherRelaunches(this@SettingsActivity)
             if (relaunches > 0) {
                 val lastAt = Prefs.watcherLastAt(this@SettingsActivity)
@@ -2190,7 +2190,7 @@ class SettingsActivity : Activity() {
 
         content.addView(header("Step 2 — Home watcher"))
         content.addView(info(
-            if (watcher) "✓ Done — “Sreeb watcher” is enabled in Accessibility."
+            if (watcher) "✓ Done — “Sreeb launcher watcher” is enabled in Accessibility."
             else "Optional but recommended: the watcher notices when the TV's own home screen " +
                 "appears and reopens Sreeb. It only watches which window is showing — " +
                 "it cannot read screen contents."
@@ -2198,12 +2198,12 @@ class SettingsActivity : Activity() {
         if (!watcher) {
             content.addView(info(
                 "Where to find it: TV Settings → Device Preferences → Accessibility → " +
-                    "Installed services → “Sreeb watcher”. If it isn't listed, " +
+                    "Installed services → “Sreeb launcher watcher”. If it isn't listed, " +
                     "allow restricted settings first: Android system Settings → Apps → " +
                     "Sreeb → ⋮ (top-right) → “Allow restricted settings”, then look again."
             ))
         }
-        content.addView(row("Enable Home watcher", "Opens Accessibility settings — turn on “Sreeb watcher”") {
+        content.addView(row("Enable Home watcher", "Opens Accessibility settings — turn on “Sreeb launcher watcher”") {
             try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             catch (e: Exception) { failOpen("a11ySettings", e) }
         })
@@ -2869,8 +2869,8 @@ class SettingsActivity : Activity() {
                     "and it sends nothing anywhere.\n\n" +
                     "It is OFF by default. To turn it on, open the TV's Settings → " +
                     "Device Preferences → Accessibility → Installed services → " +
-                    "“Sreeb watcher” — that exact name (builds before v2.0 listed it as " +
-                    "“Mizan Launcher watcher”) — and turn it on " +
+                    "“Sreeb launcher watcher” — that exact name (earlier builds listed it as " +
+                    "“Sreeb watcher” or “Mizan Launcher watcher”) — and turn it on " +
                     "yourself. Turn it off there any time.\n\n" +
                     "Still not listed? Sideloaded apps are hidden from Accessibility on some " +
                     "Google TV builds until you allow them: Android system Settings → Apps → " +
