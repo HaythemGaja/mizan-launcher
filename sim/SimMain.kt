@@ -4022,9 +4022,12 @@ fun section42() {
         // merge + portrait Up Next/Missed cards, spec §39).
         // Re-pinned in v3.10 (intentional version bump 3.9/32 → 3.10/33 —
         // Leo's unaired-episode gate + launcher accessibility service).
-        check("v25src: the app version is 3.10 / code 33 (bumped by v3.10)",
-            gradleSrc.contains("versionName = \"3.10\"") &&
-                gradleSrc.contains("versionCode = 33"))
+        // Re-pinned in v3.12 (intentional version bump 3.10/33 → 3.12/35 —
+        // same good v3.10 code, renumbered past the rejected rebuild
+        // test build's 3.11/34 so it updates over both).
+        check("v25src: the app version is 3.12 / code 35 (bumped by v3.12)",
+            gradleSrc.contains("versionName = \"3.12\"") &&
+                gradleSrc.contains("versionCode = 35"))
     }
 }
 
@@ -4986,9 +4989,10 @@ fun section50() {
         // Re-pinned in v3.8 (intentional version bump 3.7/30 → 3.8/31, spec §38).
         // Re-pinned in v3.9 (intentional version bump 3.8/31 → 3.9/32, spec §39).
         // Re-pinned in v3.10 (intentional version bump 3.9/32 → 3.10/33).
-        check("v31src: the version bump is 3.10 / code 33",
-            src("app/build.gradle.kts").contains("versionCode = 33") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.10\""))
+        // Re-pinned in v3.12 (intentional version bump 3.10/33 → 3.12/35).
+        check("v31src: the version bump is 3.12 / code 35",
+            src("app/build.gradle.kts").contains("versionCode = 35") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.12\""))
     }
 }
 
