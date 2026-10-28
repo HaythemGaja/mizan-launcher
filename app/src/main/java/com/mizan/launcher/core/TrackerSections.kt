@@ -68,6 +68,7 @@ object TrackerSections {
     const val HERO = "hero"
     const val UPNEXT = "upnext"
     const val MISSED = "missed"
+    const val WANTTOWATCH = "wanttowatch"
     const val CONTINUE = "continue"
     const val TRENDINGTV = "trendingtv"
     const val TRENDINGMOVIES = "trendingmovies"
@@ -76,9 +77,9 @@ object TrackerSections {
     const val FOLDERS = "folders"
     const val ALLAPPS = "allapps"
 
-    /** Every section, in the order a fresh profile sees them (v3.7: Missed joins after Up Next). */
+    /** Every section, in the order a fresh profile sees them (v3.7: Missed joins after Up Next; v3.13: Want to Watch joins after Missed). */
     val CANONICAL: List<String> = listOf(
-        HERO, UPNEXT, MISSED, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
+        HERO, UPNEXT, MISSED, WANTTOWATCH, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
         FORYOU, FAVORITES, FOLDERS, ALLAPPS
     )
 
@@ -94,6 +95,7 @@ object TrackerSections {
         HERO -> "Hero"
         UPNEXT -> "Up Next"
         MISSED -> "Missed"
+        WANTTOWATCH -> "Want to Watch"
         CONTINUE -> "Continue Watching"
         TRENDINGTV -> "Trending TV"
         TRENDINGMOVIES -> "Trending Movies"
@@ -122,6 +124,17 @@ object TrackerSections {
             cleanOrder.remove(MISSED)
             val at = cleanOrder.indexOf(UPNEXT)
             if (at >= 0) cleanOrder.add(at + 1, MISSED) else cleanOrder.add(0, MISSED)
+        }
+        // v3.13: same rule for Want to Watch — a profile whose
+        // stored order predates it gains it right after Missed
+        // (its canonical slot), not appended at the end. A
+        // deliberate move after that is stored, so normalize
+        // leaves it alone on later reads.
+        val wantWasStored = WANTTOWATCH in order
+        if (!wantWasStored) {
+            cleanOrder.remove(WANTTOWATCH)
+            val at = cleanOrder.indexOf(MISSED)
+            if (at >= 0) cleanOrder.add(at + 1, WANTTOWATCH) else cleanOrder.add(0, WANTTOWATCH)
         }
         return Config(cleanHidden, cleanOrder)
     }

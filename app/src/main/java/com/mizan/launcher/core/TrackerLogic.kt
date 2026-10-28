@@ -932,6 +932,172 @@ object TrackerLogic {
         return null
     }
 
+    // ------------------------------------------------------------ v3.13: Want to Watch
+
+    /**
+     * v3.13: a tracked show counts as "want to watch" (interested
+     * but not started) when it is planned AND has zero watched
+     * episodes AND has no Continue entry (not in progress).
+     * [continueIds] is the set of tmdbIds with a Continue item.
+     * Count-only shows (watchedCount > 0, no set) are started,
+     * never wanted — the count is the progress signal.
+     */
+    fun isWantToWatch(show: TrackedShow, continueIds: Set<Long>): Boolean =
+        show.planned && show.watchedCount <= 0 && show.tmdbId !in continueIds
+
+    /** v3.13: the want-to-watch tmdbIds of a tracked list. */
+    fun wantToWatchIds(
+        tracked: List<TrackedShow>,
+        continueIds: Set<Long>
+    ): Set<Long> = tracked
+        .filter { isWantToWatch(it, continueIds) }
+        .map { it.tmdbId }
+        .toSet()
+
+    /** v3.13: drop want-to-watch shows from a schedule list. */
+    fun withoutWantToWatch(
+        items: List<UpNextItem>,
+        wantIds: Set<Long>
+    ): List<UpNextItem> =
+        if (wantIds.isEmpty()) items else items.filter { it.tmdbId !in wantIds }
+
+    // ------------------------------------------------------------ v3.13: Missed grouping + dates
+
+    /**
+     * v3.13: one Missed entry per show, carrying ALL its passed
+     * unwatched episodes — not just the earliest. [first*] is the
+     * earliest episode in (season, episode) order, [last*] the
+     * latest; [count] is the episode count. Dates are the
+     * episodes' own air dates, never invented: a dateless
+     * episode still counts, but contributes no date line.
+     */
+    data class MissedGroup(
+        val tmdbId: Long,
+        val title: String,
+        val poster: String,
+        val backdrop: String,
+        val overview: String,
+        val firstSeason: Int,
+        val firstEpisode: Int,
+        val firstDateIso: String,
+        val lastSeason: Int,
+        val lastEpisode: Int,
+        val lastDateIso: String,
+        val count: Int
+    )
+
+    /**
+     * v3.13: group a missed-row list (already filtered by
+     * [missedRow]) by show. Episodes sort by (season, episode);
+     * groups sort most-overdue-first (earliest first air date,
+     * dateless groups last, then title) — the same order the
+     * flat row used. Groups with no usable episode are dropped;
+     * an empty input yields an empty list (never a crash).
+     */
+    fun groupMissed(items: List<UpNextItem>): List<MissedGroup> {
+        val byShow = LinkedHashMap<Long, MutableList<UpNextItem>>()
+        for (item in items) {
+            if (item.type != "tv" || item.season <= 0 || item.episode <= 0) continue
+            byShow.getOrPut(item.tmdbId) { ArrayList() }.add(item)
+        }
+        return byShow.values.mapNotNull { eps ->
+            val sorted = eps.sortedWith(
+                compareBy<UpNextItem> { it.season }.thenBy { it.episode }
+            )
+            val first = sorted.firstOrNull() ?: return@mapNotNull null
+            val last = sorted.last()
+            MissedGroup(
+                tmdbId = first.tmdbId, title = first.title,
+                poster = first.poster, backdrop = first.backdrop,
+                overview = first.overview,
+                firstSeason = first.season, firstEpisode = first.episode,
+                firstDateIso = first.dateIso,
+                lastSeason = last.season, lastEpisode = last.episode,
+                lastDateIso = last.dateIso,
+                count = sorted.size
+            )
+        }.sortedWith(
+            compareBy<MissedGroup> { isoDays(it.firstDateIso.trim()) ?: Long.MAX_VALUE }
+                .thenBy { it.title.lowercase() }
+        )
+    }
+
+    /** v3.13: "S2 E3" for one episode, "S2 E3–E5" same-season, "S2 E3 – S3 E2" cross-season. */
+    fun missedRangeLabel(group: MissedGroup): String {
+        if (group.count <= 1) return "S${group.firstSeason} E${group.firstEpisode}"
+        return if (group.firstSeason == group.lastSeason) {
+            "S${group.firstSeason} E${group.firstEpisode}–E${group.lastEpisode}"
+        } else {
+            "S${group.firstSeason} E${group.firstEpisode} – S${group.lastSeason} E${group.lastEpisode}"
+        }
+    }
+
+    /**
+     * v3.13: "aired Oct 12 · 15 days ago" for a missed group's
+     * first episode, computed from the device local date.
+     * Returns "" when either date is unparseable or the air
+     * date is not in the past — a date is never invented
+     * and a future date never reads as missed.
+     */
+    fun missedDateLabel(firstDateIso: String, todayIso: String): String {
+        val air = isoDays(firstDateIso.trim()) ?: return ""
+        val today = isoDays(todayIso.trim()) ?: return ""
+        val days = today - air
+        if (days < 1L) return ""
+        val whenText = shortDate(firstDateIso)
+        val ago = if (days == 1L) "1 day ago" else "$days days ago"
+        return if (whenText.isBlank()) ago else "aired $whenText · $ago"
+    }
+
+    /** v3.13: every passed unwatched episode of a show, in order — the missed worker's full scan. */
+    fun allMissedEpisodes(
+        watched: Set<String>,
+        seasons: List<SeasonAirDates>,
+        todayIso: String
+    ): List<Triple<Int, Int, String>> {
+        val todayDay = isoDays(todayIso.trim()) ?: return emptyList()
+        val out = ArrayList<Triple<Int, Int, String>>()
+        for (season in seasons.sortedBy { it.season }) {
+            if (season.season < 1) continue
+            for ((episode, airDate) in season.episodes.sortedBy { it.first }) {
+                if (episode < 1) continue
+                if (LibraryLogic.epKey(season.season, episode) in watched) continue
+                val d = isoDays(airDate.trim()) ?: continue
+                if (d < todayDay) out.add(Triple(season.season, episode, airDate.trim()))
+            }
+        }
+        return out
+    }
+
+    // ------------------------------------------------------------ v3.13: For You rotation
+
+    /**
+     * v3.13: date-seeded rotation of a For You pick list. The
+     * computed picks, seeds and scores are untouched — only
+     * their display order changes, deterministically per day:
+     * a Fisher–Yates shuffle seeded by the epoch day, so the
+     * set order differs across days but is stable within a
+     * day (no flicker on rebuild). Applied BEFORE the
+     * cap-20 filter, so when the source holds more than 20
+     * picks the displayed SUBSET changes too. Unparseable
+     * today or a list of ≤ 1 returns the input unchanged.
+     */
+    fun rotateForYouPicks(
+        picks: List<ForYouPick>,
+        todayIso: String
+    ): List<ForYouPick> {
+        if (picks.size <= 1) return picks
+        val day = isoDays(todayIso.trim()) ?: return picks
+        val out = picks.toMutableList()
+        var state = day * 6364136223846793005L + 1442695040888963407L
+        for (i in out.size - 1 downTo 1) {
+            state = state * 6364136223846793005L + 1442695040888963407L
+            val j = ((state ushr 33) % (i + 1)).toInt()
+            val tmp = out[i]; out[i] = out[j]; out[j] = tmp
+        }
+        return out
+    }
+
     /**
      * Continue minus shows with a locally-marked episode. Continue
      * items carry no episode coordinates, so any marked entry for the

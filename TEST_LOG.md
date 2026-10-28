@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-28 00:18 UTC
+Date: 2026-10-28 01:34 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.12 / code 35 (bumped by v3.12)
+PASS  v25src: the app version is 3.13 / code 36 (bumped by v3.13)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1098,7 +1098,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.12 / code 35
+PASS  v31src: the version bump is 3.13 / code 36
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1364,5 +1364,22 @@ PASS  src59: Up Next + Missed cards are portrait (no landscape builder, no over-
 PASS  src59: scope guard ? Continue cards keep landscapeCard; hero tier order untouched
 PASS  src59: picker lists TV/Watch only (explicit list, no IPTV key)
 PASS  src59: no foreground service in the newly touched data files (standing rule)
-RESULT: 1148 passed, 0 failed, 1148 total
+PASS  want60: only planned + zero-watched + no-Continue is wanted
+PASS  want60: schedule filter drops wanted ids only
+PASS  want60: section key sits after Missed, label, old orders splice in
+PASS  want60: rotation is stable within a day and a permutation of the input
+PASS  want60: rotation changes across days (at least one of the next two days differs)
+PASS  want60: rotation is a no-op for tiny / dateless input
+PASS  want60: filterForYou drops overlay-dismissed picks
+PASS  want60: prune keeps a dismiss while its pick is in the snapshot, drops it once it leaves
+PASS  want60: For You menu offers Refresh For You (forces a discovery recompute)
+PASS  want60: groupMissed yields one group per show, most overdue first
+PASS  want60: range labels ? cross-season, same-season, single
+PASS  want60: date labels ? aired date + days ago, 1-day singular, no invented dates
+PASS  want60: allMissedEpisodes skips watched, future, dateless and season 0
+PASS  want60: Details checkbox is its own focusable toggle; Play is a focusable button, still gated on unaired
+PASS  want60: Settings Home & launcher gains a launcher-service step + diagnostics line
+PASS  want60: launcher service still reads no content (config unchanged by this build)
+PASS  want60: no foreground service in the newly touched files (standing rule)
+RESULT: 1165 passed, 0 failed, 1165 total
 ```

@@ -1870,6 +1870,10 @@ class SettingsActivity : Activity() {
                 com.mizan.launcher.data.HomeStatus.currentHomePackage(this@SettingsActivity).ifEmpty { "unknown" } + ")"}")
             append(", watcher: ${if (watcher) "enabled" else "disabled"}" +
                 if (watcher) "" else " (listed in Accessibility as “Sreeb launcher watcher”)")
+            // v3.13: the launcher service's state, next to the watcher's.
+            val launcherSvcDiag = com.mizan.launcher.data.HomeStatus.isLauncherServiceEnabled(this@SettingsActivity)
+            append(", launcher: ${if (launcherSvcDiag) "enabled" else "disabled"}" +
+                if (launcherSvcDiag) "" else " (listed in Accessibility as “Sreeb launcher”)")
             val relaunches = Prefs.watcherRelaunches(this@SettingsActivity)
             if (relaunches > 0) {
                 val lastAt = Prefs.watcherLastAt(this@SettingsActivity)
@@ -2157,7 +2161,7 @@ class SettingsActivity : Activity() {
         return when {
             isHome -> "✓ Sreeb is your home screen" + if (watcher) " · watcher on" else ""
             watcher -> "Watcher is on, but Sreeb isn't the default home yet"
-            else -> "Sreeb isn't your home screen yet — 3 guided steps"
+            else -> "Sreeb isn't your home screen yet — 4 guided steps"
         }
     }
 
@@ -2174,7 +2178,7 @@ class SettingsActivity : Activity() {
 
         content.addView(header("Make Sreeb your home screen"))
         content.addView(info(
-            "Three steps. Nothing here turns off the TV's own launcher or any other app — " +
+            "Four steps. Nothing here turns off the TV's own launcher or any other app — " +
                 "you can switch back in the same system screens at any time."
         ))
 
@@ -2210,7 +2214,38 @@ class SettingsActivity : Activity() {
         val relaunches = Prefs.watcherRelaunches(this)
         content.addView(info("Watcher relaunches so far: $relaunches"))
 
-        content.addView(header("Step 3 — Optional: set via ADB"))
+        // v3.13: the launcher's own accessibility service
+        // ("Sreeb launcher", added in v3.10) gets its own
+        // step here — it was previously invisible in Settings
+        // even though it is listed in system Accessibility.
+        // It stays OFF by default and does nothing until the
+        // user enables it; its job is performing system
+        // actions (Back, Home, Recents, notifications) on the
+        // launcher's behalf. It reads no screen content.
+        // Nothing about the watcher service changes.
+        val launcherSvc = com.mizan.launcher.data.HomeStatus.isLauncherServiceEnabled(this)
+        content.addView(header("Step 3 — Launcher actions"))
+        content.addView(info(
+            if (launcherSvc) "✓ Done — “Sreeb launcher” is enabled in Accessibility."
+            else "Optional: the launcher service lets Sreeb perform system actions " +
+                "(Back, Home, Recents, notifications) on your behalf. It only " +
+                "knows which window is showing — it cannot read screen contents, " +
+                "and it sends nothing anywhere."
+        ))
+        if (!launcherSvc) {
+            content.addView(info(
+                "Where to find it: TV Settings → Device Preferences → Accessibility → " +
+                    "Installed services → “Sreeb launcher”. If it isn't listed, " +
+                    "allow restricted settings first: Android system Settings → Apps → " +
+                    "Sreeb → ⋮ (top-right) → “Allow restricted settings”, then look again."
+            ))
+        }
+        content.addView(row("Enable Launcher service", "Opens Accessibility settings — turn on “Sreeb launcher”") {
+            try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            catch (e: Exception) { failOpen("a11ySettings", e) }
+        })
+
+        content.addView(header("Step 4 — Optional: set via ADB"))
         content.addView(info(
             "If the system screens don't offer Sreeb on this TV, the same result from a " +
                 "computer on the same Wi-Fi (this changes only the default home — it disables nothing):"

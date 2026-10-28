@@ -130,6 +130,11 @@ class MainActivity : Activity() {
     private var tUpNext: List<TrackerLogic.UpNextItem> = emptyList()
     /** v3.7: the Missed row's filtered items (passed, unmarked episodes, most overdue first). */
     private var tMissed: List<TrackerLogic.UpNextItem> = emptyList()
+    /** v3.13: the Missed row grouped into one entry per show (see TrackerLogic.groupMissed). */
+    private var tMissedGroups: List<TrackerLogic.MissedGroup> = emptyList()
+    /** v3.13: want-to-watch tmdbIds + shows (planned, zero watched, not in progress). */
+    private var tWantIds: Set<Long> = emptySet()
+    private var tWantShows: List<TrackerLogic.TrackedShow> = emptyList()
     private var tCont: List<TrackerLogic.ContinueItem> = emptyList()
     private var tPicks: List<TrackerLogic.ForYouPick> = emptyList()
     private var tHeroCandidates: List<TrackerLogic.HeroItem> = emptyList()
@@ -1185,6 +1190,7 @@ class MainActivity : Activity() {
         TrackerSections.HERO -> "Hero"
         TrackerSections.UPNEXT -> "Up Next"
         TrackerSections.MISSED -> "Missed"
+        TrackerSections.WANTTOWATCH -> "Want to Watch"
         TrackerSections.CONTINUE -> "Continue"
         TrackerSections.TRENDINGTV -> "Trending TV"
         TrackerSections.TRENDINGMOVIES -> "Trending Movies"
@@ -1368,6 +1374,20 @@ class MainActivity : Activity() {
         tUpNext = TrackerLogic.fillUpNextPosters(tUpNext, posterCache)
         tCont = TrackerLogic.fillContinuePosters(tCont, posterCache)
         tMissed = TrackerLogic.fillUpNextPosters(tMissed, posterCache)
+        // v3.13: Want to Watch — planned shows with zero watched
+        // episodes and no Continue entry leave the schedule
+        // (Up Next, Missed, and the hero pool below, which is
+        // built from the already-filtered tUpNext) until the
+        // show is started. The missed worker already excludes
+        // planned shows; filtering tMissed here is defense in
+        // depth for older missed.txt files. The grouped Missed
+        // entries are built from the filtered list.
+        val contIds = tCont.map { it.tmdbId }.toSet()
+        tWantIds = TrackerLogic.wantToWatchIds(snap.tracked, contIds)
+        tWantShows = snap.tracked.filter { it.tmdbId in tWantIds }
+        tUpNext = TrackerLogic.withoutWantToWatch(tUpNext, tWantIds)
+        tMissed = TrackerLogic.withoutWantToWatch(tMissed, tWantIds)
+        tMissedGroups = TrackerLogic.groupMissed(tMissed)
         // v3.7: a missed landing (worker thread) rebuilds
         // the home once — the Missed row appears when its
         // worker finishes, not only on the next navigation.
@@ -1392,7 +1412,14 @@ class MainActivity : Activity() {
         } else {
             snap.forYou
         }
-        tPicks = TrackerLogic.filterForYou(fySource, snap.tracked, snap.movies, overlay)
+        // v3.13: date-seeded rotation BEFORE the cap-20 filter —
+        // the computed picks, seeds and scores are untouched,
+        // only their display order changes per day, and when
+        // the source holds more than 20 picks the displayed
+        // subset changes too. The overlay filter still runs
+        // after, so ignored titles stay out.
+        val fyRotated = TrackerLogic.rotateForYouPicks(fySource, todayIso())
+        tPicks = TrackerLogic.filterForYou(fyRotated, snap.tracked, snap.movies, overlay)
         // v3.1 (hero schedule amendment): the hero comes from the
         // SCHEDULE — missed episodes first, then watchable-now
         // up-next, with the previous Continue → For You pool only
@@ -3973,6 +4000,7 @@ class MainActivity : Activity() {
                 " · missed ${tSnap.missed.size} · foryou ${tSnap.forYou.size}" +
                 " · tracked ${tSnap.tracked.size}" +
                 " · hero ${tHeroCandidates.size} · missedRow ${tMissed.size}" +
+                " · missedGroups ${tMissedGroups.size} · want ${tWantShows.size}" +
                 " · heroShown ${TrackerSections.isShown(sectionsCfg, TrackerSections.HERO)}" +
                 " · missedShown ${TrackerSections.isShown(sectionsCfg, TrackerSections.MISSED)}" +
                 " · coldStart $coldStart"
@@ -3984,7 +4012,9 @@ class MainActivity : Activity() {
             // episodes) — Watch only (v3.8: Tracker style
             // removed), via the same compose() path as
             // every other row.
-            TrackerSections.MISSED to tMissed.isNotEmpty(),
+            TrackerSections.MISSED to tMissedGroups.isNotEmpty(),
+            // v3.13: Want to Watch — planned, unstarted shows.
+            TrackerSections.WANTTOWATCH to tWantShows.isNotEmpty(),
             // v2.7 focus rows: Trending rides the discovery state
             // (empty until the worker first lands).
             TrackerSections.CONTINUE to continueCards.isNotEmpty(),
@@ -4073,7 +4103,9 @@ class MainActivity : Activity() {
                     TrackerSections.UPNEXT ->
                         content.addView(buildMergedUpNextSection(mergedUpNext))
                     TrackerSections.MISSED ->
-                        content.addView(buildMissedSection(tMissed))
+                        content.addView(buildMissedSection(tMissedGroups))
+                    TrackerSections.WANTTOWATCH ->
+                        content.addView(buildWantToWatchSection(tWantShows))
                     TrackerSections.CONTINUE ->
                         buildTrackerContinueSection(continueCards, system)
                             ?.let { content.addView(it) }
@@ -4557,9 +4589,109 @@ class MainActivity : Activity() {
      * (the next-episode refresh repopulates the missed
      * worker's input after every mark).
      */
-    private fun buildMissedSection(items: List<TrackerLogic.UpNextItem>): View {
+    /**
+     * v3.13: the Missed row — ONE card per show, carrying ALL its
+     * passed unwatched episodes. The card's first line is the
+     * count ("3 missed" or "Missed" for one), the second line
+     * the episode range ("S2 E3–E5"), and the meta line the
+     * air date + days-ago ("aired Oct 12 · 15 days ago") —
+     * never an invented date: a dateless group shows no date
+     * line. OK plays the first missed episode (matched) or
+     * opens Details; hold-OK marks the first episode watched.
+     */
+    private fun buildMissedSection(groups: List<TrackerLogic.MissedGroup>): View {
         val box = section("Missed")
-        val row = pagedRow(items) { item -> upNextCard(item) }
+        val row = pagedRow(groups) { group -> missedCard(group) }
+        box.addView(horizontalScroller(row))
+        return box
+    }
+
+    private fun missedCard(group: TrackerLogic.MissedGroup): View {
+        val today = todayIso()
+        val wMatch = watchMatch("tv", group.tmdbId)
+        val dateLine = TrackerLogic.missedDateLabel(group.firstDateIso, today)
+        val meta = listOfNotNull(
+            if (group.count > 1) "${group.count} missed" else "Missed",
+            dateLine.ifBlank { null }
+        ).joinToString(" · ")
+        val first = TrackerLogic.UpNextItem(
+            tmdbId = group.tmdbId, title = group.title,
+            sub = "S${group.firstSeason} E${group.firstEpisode}",
+            dateIso = group.firstDateIso, poster = group.poster,
+            backdrop = group.backdrop, overview = group.overview,
+            season = group.firstSeason, episode = group.firstEpisode, type = "tv"
+        )
+        return portraitCard(
+            posterPath = group.poster.ifBlank { group.backdrop },
+            title = group.title,
+            meta = meta,
+            line2 = TrackerLogic.missedRangeLabel(group),
+            glyph = "📺",
+            onClick = {
+                if (wMatch != null) playUpNextItem(first, inSnapshot = true)
+                else openTitleDetails(group.tmdbId, "tv", group.title, group.poster)
+            },
+            onLong = {
+                cardMenu(
+                    group.title,
+                    onMark = {
+                        markWatched(group.tmdbId, "tv", group.firstSeason, group.firstEpisode)
+                    },
+                    onDetails = {
+                        openTitleDetails(group.tmdbId, "tv", group.title, group.poster)
+                    },
+                    onPlayIn = if (wMatch != null) {
+                        { playInEpisode(first) }
+                    } else {
+                        null
+                    }
+                )
+            },
+            badge = WatchMatch.cardBadge(wMatch != null)
+        )
+    }
+
+    /**
+     * v3.13: Want to Watch — planned shows with zero watched
+     * episodes and no Continue entry. Posters come from the
+     * launcher's poster cache (tracked snapshots carry no
+     * poster); a missing poster still renders the title card.
+     * OK opens Details; the show leaves this section (and
+     * joins Up Next / Missed / hero) as soon as it is started.
+     */
+    private fun buildWantToWatchSection(shows: List<TrackerLogic.TrackedShow>): View {
+        val box = section("Want to Watch")
+        val posterCache = try {
+            TrackerClient.posterCache(this)
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        val row = pagedRow(shows) { show ->
+            val poster = posterCache[
+                com.mizan.launcher.core.LibraryLogic.posterKey("tv", show.tmdbId)
+            ].orEmpty()
+            portraitCard(
+                posterPath = poster,
+                title = show.name,
+                meta = "Planned · Not started yet",
+                glyph = "📺",
+                onClick = {
+                    openTitleDetails(show.tmdbId, "tv", show.name, poster)
+                },
+                onLong = {
+                    cardMenu(
+                        show.name,
+                        // No Mark entry: a Want to Watch show has no
+                        // watched episode yet; Details (which carries
+                        // the watched checkbox) is the only entry.
+                        onMark = null,
+                        onDetails = {
+                            openTitleDetails(show.tmdbId, "tv", show.name, poster)
+                        }
+                    )
+                }
+            )
+        }
         box.addView(horizontalScroller(row))
         return box
     }
@@ -5358,7 +5490,7 @@ class MainActivity : Activity() {
                 )
             }
         }
-        labels.addAll(listOf("Add to my list", "Not interested"))
+        labels.addAll(listOf("Add to my list", "Not interested", "↻ Refresh For You"))
         val base = prefix.size
         AlertDialog.Builder(this)
             .setTitle(pick.title)
@@ -5406,6 +5538,18 @@ class MainActivity : Activity() {
                         TrackerActions.dismissForYou(this, pick.id, pick.type)
                         Toast.makeText(
                             this, "Got it — that won't be suggested again",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        rebuild()
+                    }
+                    // v3.13: force a For You recompute (the
+                    // discovery worker's force flag bypasses
+                    // the 24 h TTL); the worker landing
+                    // rebuilds the home with fresh picks.
+                    2 -> {
+                        com.mizan.launcher.data.DiscoveryData.refreshNow(this)
+                        Toast.makeText(
+                            this, "Refreshing For You…",
                             Toast.LENGTH_SHORT
                         ).show()
                         rebuild()

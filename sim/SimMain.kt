@@ -1870,7 +1870,7 @@ fun main() {
         // after Up Next, so the foryou swap happens over the
         // longer list.
         check("sections: move up swaps with the previous row",
-            moved.order == listOf("upnext", "missed", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "folders", "allapps"))
+            moved.order == listOf("upnext", "missed", "wanttowatch", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: moves at the edges and for the hero are no-ops",
             ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
                 ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
@@ -1882,7 +1882,7 @@ fun main() {
                 // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext.
                 // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
                 // v3.7 RE-PINNED (Missed row): Missed composes after Up Next.
-                listOf("hero", "allapps", "upnext", "missed", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders"))
+                listOf("hero", "allapps", "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders"))
         // RE-PINNED in v2.7 (new sections compose when available).
         // v3.1 RE-PINNED (ask 37): MOVIENIGHT is gone, so the data-empty
         // gate uses foryou; hidden upnext + gated foryou both drop.
@@ -1890,7 +1890,7 @@ fun main() {
             ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.FORYOU } ==
                 // v3.4 RE-PINNED (ask 51): folders composes in its canonical slot.
                 // v3.7 RE-PINNED (Missed row): Missed composes after the hero.
-                listOf("hero", "missed", "continue", "trendingtv", "trendingmovies", "favorites", "folders", "allapps"))
+                listOf("hero", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: unknown keys are dropped by normalize",
             ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
                 ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
@@ -3294,6 +3294,9 @@ fun main() {
     // ---------- (59) v3.9: hero/Missed memo fix + diagnostics, Trending IPTV play, IPTV→Watch/Live, portrait cards ----------
     section59()
 
+    // ---------- (60) v3.13: Want to Watch, For You rotation + ignore, Missed grouping + dates, Details buttons, launcher-service Settings step ----------
+    section60()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -3800,7 +3803,7 @@ fun section45() {
         // v3.7 RE-PINNED (Missed row): Missed joins after Up Next.
         check("sections: v2.7 canonical order is the directive's focus order",
             tsx.CANONICAL == listOf(
-                "hero", "upnext", "missed", "continue", "trendingtv",
+                "hero", "upnext", "missed", "wanttowatch", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "folders", "allapps"
             ))
         check("sections: v2.7 labels",
@@ -3814,7 +3817,7 @@ fun section45() {
                 // v3.4 RE-PINNED (ask 51): folders appends after the trending rows.
                 // v3.7 RE-PINNED (Missed row): Missed splices after Up Next.
                 listOf(
-                    "upnext", "missed", "continue", "foryou", "favorites",
+                    "upnext", "missed", "wanttowatch", "continue", "foryou", "favorites",
                     "allapps", "trendingtv", "trendingmovies", "folders"
                 ))
 
@@ -4025,9 +4028,12 @@ fun section42() {
         // Re-pinned in v3.12 (intentional version bump 3.10/33 → 3.12/35 —
         // same good v3.10 code, renumbered past the rejected rebuild
         // test build's 3.11/34 so it updates over both).
-        check("v25src: the app version is 3.12 / code 35 (bumped by v3.12)",
-            gradleSrc.contains("versionName = \"3.12\"") &&
-                gradleSrc.contains("versionCode = 35"))
+        // Re-pinned in v3.13 (intentional version bump 3.12/35 → 3.13/36 —
+        // Want to Watch, For You rotation + refresh, Missed grouping
+        // + dates, Details buttons, launcher-service Settings step).
+        check("v25src: the app version is 3.13 / code 36 (bumped by v3.13)",
+            gradleSrc.contains("versionName = \"3.13\"") &&
+                gradleSrc.contains("versionCode = 36"))
     }
 }
 
@@ -4050,7 +4056,7 @@ fun section46() {
         // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
         check("migrate: the appended rows splice into their canonical slots",
             migrated.order == listOf(
-                "upnext", "missed", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         check("migrate: idempotent — a second pass changes nothing",
@@ -4066,7 +4072,7 @@ fun section46() {
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(partial).order == listOf(
-                "upnext", "missed", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         val parked = tsx.decode(
@@ -4076,7 +4082,7 @@ fun section46() {
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(parked).order == listOf(
-                "upnext", "missed", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         val custom = tsx.decode(
@@ -4086,7 +4092,7 @@ fun section46() {
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(custom).order == listOf(
-                "upnext", "missed", "continue", "trendingtv",
+                "upnext", "missed", "wanttowatch", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "allapps", "folders"
             ))
         val hiddenCfg = tsx.decode(
@@ -4099,7 +4105,7 @@ fun section46() {
                 // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
                 // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
                 tsx.migrateOrder(hiddenCfg).order == listOf(
-                    "upnext", "missed", "continue", "trendingtv", "trendingmovies",
+                    "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
                     "foryou", "favorites", "allapps", "folders"
                 ))
 
@@ -4990,9 +4996,10 @@ fun section50() {
         // Re-pinned in v3.9 (intentional version bump 3.8/31 → 3.9/32, spec §39).
         // Re-pinned in v3.10 (intentional version bump 3.9/32 → 3.10/33).
         // Re-pinned in v3.12 (intentional version bump 3.10/33 → 3.12/35).
-        check("v31src: the version bump is 3.12 / code 35",
-            src("app/build.gradle.kts").contains("versionCode = 35") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.12\""))
+        // Re-pinned in v3.13 (intentional version bump 3.12/35 → 3.13/36).
+        check("v31src: the version bump is 3.13 / code 36",
+            src("app/build.gradle.kts").contains("versionCode = 36") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.13\""))
     }
 }
 
@@ -5363,7 +5370,7 @@ fun section53() {
         check("merge53: stored order + hidden set mentioning comingsoon drop it on read",
             // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
             // v3.7 RE-PINNED (Missed row): Missed splices after Up Next.
-            decoded.order == listOf("upnext", "missed", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders", "allapps") &&
+            decoded.order == listOf("upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders", "allapps") &&
                 "comingsoon" !in decoded.hidden)
         check("merge53: compose never emits comingsoon",
             !TrackerSections.compose(decoded) { true }.contains("comingsoon"))
@@ -6165,7 +6172,7 @@ fun section57() {
                 TrackerSections.CANONICAL.indexOf(TrackerSections.UPNEXT) + 1)
         check("missed57: pre-v3.7 order gains Missed after Up Next (not appended at the end)",
             TrackerSections.decode("upnext,continue,foryou,favorites,allapps|").order ==
-                listOf("upnext", "missed", "continue", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
+                listOf("upnext", "missed", "wanttowatch", "continue", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
         check("missed57: Missed label + compose gating (shown, available, hideable)",
             TrackerSections.label(TrackerSections.MISSED) == "Missed" &&
                 TrackerSections.compose(TrackerSections.decode("upnext,missed,continue|")) { it == "upnext" || it == "missed" } ==
@@ -6174,7 +6181,7 @@ fun section57() {
                     listOf("upnext", "continue"))
         check("missed57: deliberate Missed position is preserved (normalize never re-splices a stored Missed)",
             TrackerSections.decode("continue,upnext,missed,foryou,favorites,allapps|").order ==
-                listOf("continue", "upnext", "missed", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
+                listOf("continue", "upnext", "missed", "wanttowatch", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
 
         // ---- Missed fingerprint: content, not lengths ----
         val titlesA = listOf(
@@ -6662,9 +6669,14 @@ fun section59() {
                     !body.contains("FIT_COMPLETE")
             } &&
                 run {
+                    // v3.13 RE-PINNED: Missed renders through the
+                    // grouped missedCard (one card per show) —
+                    // still portraitCard, never landscapeCard.
                     val body = mainSrc.substringAfter("private fun buildMissedSection")
                         .substringBefore("private fun portraitCard")
-                    body.contains("upNextCard(item)")
+                    body.contains("missedCard(group)") &&
+                        body.contains("portraitCard(") &&
+                        !body.contains("landscapeCard(")
                 } &&
                 run {
                     val body = mainSrc.substringAfter("private fun portraitCard")
@@ -6695,5 +6707,166 @@ fun section59() {
             !playSrc.contains("startForegroundService(") &&
                 !discSrc.contains("startForegroundService(") &&
                 !mainSrc.contains("startForegroundService("))
+    }
+}
+
+/** v3.13 checks — Want to Watch, For You rotation + ignore, Missed grouping + dates, Details buttons, launcher-service Settings step. */
+fun section60() {
+    run {
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        fun up(id: Long, title: String, s: Int, e: Int, date: String): TrackerLogic.UpNextItem =
+            TrackerLogic.UpNextItem(
+                tmdbId = id, title = title, sub = "S$s E$e", dateIso = date,
+                poster = "", backdrop = "", overview = "", season = s, episode = e, type = "tv"
+            )
+        fun pick(id: Long, title: String): TrackerLogic.ForYouPick =
+            TrackerLogic.ForYouPick(
+                id = id, type = "tv", title = title, poster = "",
+                voteAverage = 8.0, reason = "Because you watched X",
+                whyGenres = listOf("Drama"), score = 80.0
+            )
+
+        // ---- (1) Want to Watch: planned + zero watched + no Continue ----
+        val tracked = listOf(
+            TrackerLogic.TrackedShow(tmdbId = 1L, name = "Planned Fresh", watchedCount = 0, planned = true),
+            TrackerLogic.TrackedShow(tmdbId = 2L, name = "Planned Started", watchedCount = 3, planned = true),
+            TrackerLogic.TrackedShow(tmdbId = 3L, name = "Active Fresh", watchedCount = 0, planned = false),
+            TrackerLogic.TrackedShow(tmdbId = 4L, name = "Planned In Progress", watchedCount = 0, planned = true)
+        )
+        check("want60: only planned + zero-watched + no-Continue is wanted",
+            TrackerLogic.wantToWatchIds(tracked, setOf(4L)) == setOf(1L) &&
+                TrackerLogic.isWantToWatch(tracked[0], emptySet()) &&
+                !TrackerLogic.isWantToWatch(tracked[1], emptySet()) &&
+                !TrackerLogic.isWantToWatch(tracked[2], emptySet()) &&
+                !TrackerLogic.isWantToWatch(tracked[3], setOf(4L)))
+        val sched = listOf(up(1L, "Planned Fresh", 1, 1, "2026-10-20"), up(2L, "Planned Started", 2, 3, "2026-10-21"))
+        check("want60: schedule filter drops wanted ids only",
+            TrackerLogic.withoutWantToWatch(sched, setOf(1L)).map { it.tmdbId } == listOf(2L) &&
+                TrackerLogic.withoutWantToWatch(sched, emptySet()) == sched)
+        check("want60: section key sits after Missed, label, old orders splice in",
+            TrackerSections.CANONICAL.indexOf(TrackerSections.WANTTOWATCH) ==
+                TrackerSections.CANONICAL.indexOf(TrackerSections.MISSED) + 1 &&
+                TrackerSections.label(TrackerSections.WANTTOWATCH) == "Want to Watch" &&
+                TrackerSections.normalize(
+                    emptySet(),
+                    listOf("upnext", "missed", "continue", "foryou", "favorites", "folders", "allapps")
+                ).order.indexOf(TrackerSections.WANTTOWATCH) ==
+                    TrackerSections.normalize(
+                        emptySet(),
+                        listOf("upnext", "missed", "continue", "foryou", "favorites", "folders", "allapps")
+                    ).order.indexOf(TrackerSections.MISSED) + 1 &&
+                TrackerSections.setShown(
+                    TrackerSections.normalize(emptySet(), TrackerSections.ROWS),
+                    TrackerSections.WANTTOWATCH, false
+                ).hidden.contains(TrackerSections.WANTTOWATCH))
+
+        // ---- (2) For You rotation: stable within a day, different across days, a permutation ----
+        val picks = (1L..6L).map { pick(it, "Show $it") }
+        val dayA = TrackerLogic.rotateForYouPicks(picks, "2026-10-27")
+        val dayA2 = TrackerLogic.rotateForYouPicks(picks, "2026-10-27")
+        val dayB = TrackerLogic.rotateForYouPicks(picks, "2026-10-28")
+        val dayC = TrackerLogic.rotateForYouPicks(picks, "2026-10-29")
+        check("want60: rotation is stable within a day and a permutation of the input",
+            dayA == dayA2 && dayA.map { it.id }.toSet() == picks.map { it.id }.toSet() &&
+                dayA.map { it.id } != picks.map { it.id })
+        check("want60: rotation changes across days (at least one of the next two days differs)",
+            dayB.map { it.id } != dayA.map { it.id } || dayC.map { it.id } != dayA.map { it.id })
+        check("want60: rotation is a no-op for tiny / dateless input",
+            TrackerLogic.rotateForYouPicks(listOf(pick(1L, "Only")), "2026-10-27").map { it.id } == listOf(1L) &&
+                TrackerLogic.rotateForYouPicks(picks, "not-a-date") == picks &&
+                TrackerLogic.rotateForYouPicks(picks, "").map { it.id } == picks.map { it.id })
+
+        // ---- (3) For You ignore: overlay dismiss filters picks; prune keeps it while the pick lives ----
+        val overlay = listOf(
+            TrackerLogic.ForYouMark(id = 2L, type = "tv", added = false, at = 1000L)
+        )
+        check("want60: filterForYou drops overlay-dismissed picks",
+            TrackerLogic.filterForYou(picks, emptyList(), emptyList(), overlay).map { it.id } ==
+                listOf(1L, 3L, 4L, 5L, 6L))
+        check("want60: prune keeps a dismiss while its pick is in the snapshot, drops it once it leaves",
+            TrackerLogic.pruneForYouOverlay(overlay, picks, emptyList(), emptyList(), 2000L) == overlay &&
+                TrackerLogic.pruneForYouOverlay(
+                    overlay, picks.filter { it.id != 2L }, emptyList(), emptyList(), 2000L
+                ).isEmpty())
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("want60: For You menu offers Refresh For You (forces a discovery recompute)",
+            mainSrc.contains("↻ Refresh For You") &&
+                mainSrc.contains("DiscoveryData.refreshNow(this)"))
+
+        // ---- (4) Missed grouping: one entry per show, count + range, dates ----
+        val missedItems = listOf(
+            up(10L, "Show A", 1, 1, "2026-10-01"),
+            up(10L, "Show A", 1, 2, "2026-10-08"),
+            up(10L, "Show A", 2, 1, "2026-10-15"),
+            up(20L, "Show B", 1, 5, "2026-10-20")
+        )
+        val groups = TrackerLogic.groupMissed(missedItems)
+        check("want60: groupMissed yields one group per show, most overdue first",
+            groups.map { it.tmdbId } == listOf(10L, 20L) &&
+                groups[0].count == 3 && groups[1].count == 1)
+        check("want60: range labels — cross-season, same-season, single",
+            TrackerLogic.missedRangeLabel(groups[0]) == "S1 E1 – S2 E1" &&
+                TrackerLogic.missedRangeLabel(groups[1]) == "S1 E5" &&
+                TrackerLogic.missedRangeLabel(
+                    TrackerLogic.MissedGroup(
+                        tmdbId = 30L, title = "Show C", poster = "", backdrop = "", overview = "",
+                        firstSeason = 2, firstEpisode = 3, firstDateIso = "2026-10-10",
+                        lastSeason = 2, lastEpisode = 5, lastDateIso = "2026-10-24", count = 3
+                    )
+                ) == "S2 E3–E5")
+        check("want60: date labels — aired date + days ago, 1-day singular, no invented dates",
+            TrackerLogic.missedDateLabel("2026-10-12", "2026-10-27") == "aired Oct 12 · 15 days ago" &&
+                TrackerLogic.missedDateLabel("2026-10-26", "2026-10-27") == "aired Oct 26 · 1 day ago" &&
+                TrackerLogic.missedDateLabel("", "2026-10-27") == "" &&
+                TrackerLogic.missedDateLabel("2026-10-28", "2026-10-27") == "" &&
+                TrackerLogic.missedDateLabel("garbage", "2026-10-27") == "")
+        check("want60: allMissedEpisodes skips watched, future, dateless and season 0",
+            TrackerLogic.allMissedEpisodes(
+                watched = setOf("1x1"),
+                seasons = listOf(
+                    TrackerLogic.SeasonAirDates(
+                        season = 0,
+                        episodes = listOf(1 to "2026-09-01")
+                    ),
+                    TrackerLogic.SeasonAirDates(
+                        season = 1,
+                        episodes = listOf(
+                            1 to "2026-10-01",
+                            2 to "2026-10-08",
+                            3 to "2026-11-05",
+                            4 to ""
+                        )
+                    )
+                ),
+                todayIso = "2026-10-27"
+            ) == listOf(Triple(1, 2, "2026-10-08")))
+
+        // ---- (5) Details buttons + Settings launcher step: source wiring pins ----
+        val detailsSrc = src("app/src/main/java/com/mizan/launcher/ui/DetailsActivity.kt")
+        check("want60: Details checkbox is its own focusable toggle; Play is a focusable button, still gated on unaired",
+            detailsSrc.contains("boxView.isFocusable = true") &&
+                detailsSrc.contains("boxView.setOnClickListener { row.performClick() }") &&
+                detailsSrc.contains("play.setOnClickListener") &&
+                detailsSrc.contains("playEpisodeFromDetails(showMatch, season, ep.number)") &&
+                detailsSrc.contains("if (!unaired)"))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("want60: Settings Home & launcher gains a launcher-service step + diagnostics line",
+            settingsSrc.contains("Step 3 — Launcher actions") &&
+                settingsSrc.contains("isLauncherServiceEnabled(this)") &&
+                settingsSrc.contains("Step 4 — Optional: set via ADB") &&
+                settingsSrc.contains("launcher: \${if (launcherSvcDiag)"))
+        val launcherConfig = src("app/src/main/res/xml/launcher_config.xml")
+        check("want60: launcher service still reads no content (config unchanged by this build)",
+            launcherConfig.contains("canRetrieveWindowContent=\"false\"") &&
+                !src("app/src/main/java/com/mizan/launcher/LauncherService.kt")
+                    .contains("startForegroundService("))
+        check("want60: no foreground service in the newly touched files (standing rule)",
+            !mainSrc.contains("startForegroundService(") &&
+                !src("app/src/main/java/com/mizan/launcher/data/LibraryLocal.kt")
+                    .contains("startForegroundService("))
     }
 }

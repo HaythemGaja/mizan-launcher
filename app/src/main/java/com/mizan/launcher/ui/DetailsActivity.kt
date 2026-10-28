@@ -903,7 +903,14 @@ class DetailsActivity : Activity() {
         row.background = Ui.tileBackground(accent, false, 10, this)
         Ui.focusLift(row, accent, 10)
 
+        // v3.13: the checkbox is its own D-pad-focusable toggle —
+        // it runs exactly the row's click path (same unaired gate,
+        // same toggle + rebuild), so checkbox, name tap and
+        // long-press correction can never disagree.
         val boxView = TextView(this)
+        boxView.isFocusable = true
+        boxView.isClickable = true
+        boxView.setOnClickListener { row.performClick() }
         boxView.text = if (isWatched) "✓" else ""
         boxView.setTextColor(0xFFFFFFFF.toInt())
         boxView.textSize = 16f
@@ -948,10 +955,11 @@ class DetailsActivity : Activity() {
             row.addView(date)
         }
 
-        // v2.3 Watch: a matched show's rows carry the ▶ affordance;
-        // OK still toggles watched (below) — PLAY lives on the
-        // long-press menu, next to the toggle, so both are one
-        // gesture apart and nothing about v2.1's checklist changes.
+        // v2.3 Watch: a matched show's rows carry the ▶ affordance.
+        // v3.13: the ▶ is a real D-pad-focusable Play BUTTON
+        // (same playEpisodeFromDetails path as the long-press
+        // menu, which keeps working) — Play no longer lives
+        // only in the long-press menu.
         val showMatch = if (type == "tv") wMatch else null
         if (showMatch != null) {
             // Unaired episodes carry no ▶: there is nothing to play yet.
@@ -961,6 +969,11 @@ class DetailsActivity : Activity() {
                 play.setTextColor(Design.NETFLIX_RED)
                 play.textSize = 17f
                 play.setTypeface(play.typeface, Typeface.BOLD)
+                play.isFocusable = true
+                play.isClickable = true
+                play.setOnClickListener {
+                    playEpisodeFromDetails(showMatch, season, ep.number)
+                }
                 val plp = LinearLayout.LayoutParams(-2, -2)
                 plp.setMargins(Ui.dp(this, 14), 0, 0, 0)
                 play.layoutParams = plp

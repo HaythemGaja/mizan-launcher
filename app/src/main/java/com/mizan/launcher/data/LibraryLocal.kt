@@ -650,10 +650,14 @@ object LibraryLocal {
      * mark/unmark for that show, or a title change).
      * Muted, planned, and untracked shows never enter
      * the row; a show with no passed unwatched episode
-     * loses its line. Network is cached-or-fetched like
+     * loses its lines. Network is cached-or-fetched like
      * the next-episode refresh, with early exit at the
-     * first missed episode. Writes missed.txt (+ its
-     * count stamp) and fires [onMissedChanged].
+     * first missed episode. v3.13: the show writes ONE
+     * missed.txt line per passed unwatched episode (same
+     * UpNext codec as before, so old single-line files
+     * still decode); the home groups them into one card
+     * per show. Writes missed.txt (+ its count stamp)
+     * and fires [onMissedChanged].
      */
     fun recomputeMissedForShow(ctx: Context, tmdbId: Long) {
         val appCtx = ctx.applicationContext
@@ -682,7 +686,7 @@ object LibraryLocal {
                 val today = todayIso()
                 val watched = epFile?.watched ?: emptySet()
                 val (_, seasons) = fetchSeasonDates(appCtx, tmdbId) { fetched ->
-                    TrackerLogic.firstMissedEpisode(watched, fetched, today) != null
+                    TrackerLogic.allMissedEpisodes(watched, fetched, today).isNotEmpty()
                 } ?: return@thread
                 synchronized(lock) {
                     val freshTitle = TrackerStoreDisk.readTitles(appCtx)
@@ -691,11 +695,10 @@ object LibraryLocal {
                     val fresh = TrackerStoreDisk.readEpisode(appCtx, tmdbId)
                     val freshWatched = fresh?.watched
                         ?: if (freshTitle.watchedCount > 0) return@thread else emptySet()
-                    val missedEp = TrackerLogic.firstMissedEpisode(freshWatched, seasons, today)
+                    val missedEps = TrackerLogic.allMissedEpisodes(freshWatched, seasons, today)
                     var missed = TrackerStoreDisk.readMissed(appCtx)
                         .filterNot { it.tmdbId == tmdbId }
-                    if (missedEp != null) {
-                        val (s, e, date) = missedEp
+                    if (missedEps.isNotEmpty()) {
                         // v3.8: poster cache fills a poster-less
                         // title line (same reason as the
                         // next-episode refresh below).
@@ -708,12 +711,14 @@ object LibraryLocal {
                                 ""
                             }
                         }
-                        missed = missed + TrackerLogic.UpNextItem(
-                            tmdbId = tmdbId, title = freshTitle.title,
-                            sub = "S$s E$e", dateIso = date,
-                            poster = missedPoster, backdrop = freshTitle.backdrop,
-                            overview = "", season = s, episode = e, type = "tv"
-                        )
+                        for ((s, e, date) in missedEps) {
+                            missed = missed + TrackerLogic.UpNextItem(
+                                tmdbId = tmdbId, title = freshTitle.title,
+                                sub = "S$s E$e", dateIso = date,
+                                poster = missedPoster, backdrop = freshTitle.backdrop,
+                                overview = "", season = s, episode = e, type = "tv"
+                            )
+                        }
                     }
                     if (!TrackerStoreDisk.writeMissed(appCtx, missed)) return@thread
                     val meta = TrackerStoreDisk.readMissedMeta(appCtx)
@@ -722,7 +727,7 @@ object LibraryLocal {
                             appCtx,
                             TrackerStoreDisk.MissedMeta(
                                 updated = System.currentTimeMillis(),
-                                count = missed.size,
+                                count = missed.map { it.tmdbId }.toSet().size,
                                 inputFingerprint = meta.inputFingerprint
                             )
                         )
@@ -768,8 +773,12 @@ object LibraryLocal {
                     }
                 }
                 val today = todayIso()
+                // v3.13: previous lines are kept PER SHOW (all of
+                // them, not just one) when a show's episode file
+                // is unreadable — a corrupt file must never
+                // empty that show's missed entry.
                 val previous = TrackerStoreDisk.readMissed(appCtx)
-                    .associateBy { it.tmdbId }
+                    .groupBy { it.tmdbId }
                 // v3.8: poster cache read once for the whole pass
                 // (same backfill as the one-show path above).
                 val missedPosterCache = try {
@@ -781,24 +790,25 @@ object LibraryLocal {
                 for (show in tvTitles) {
                     val epFile = TrackerStoreDisk.readEpisode(appCtx, show.tmdbId)
                     if (epFile == null && show.watchedCount > 0) {
-                        // Unknown set: keep the previous line
+                        // Unknown set: keep the previous lines
                         // rather than drop a show on a corrupt
                         // file (the home filter still applies
-                        // marked/overlay state to it).
-                        previous[show.tmdbId]?.let { out.add(it) }
+                        // marked/overlay state to them).
+                        previous[show.tmdbId]?.let { out.addAll(it) }
                         continue
                     }
                     val watched = epFile?.watched ?: emptySet()
                     val fetched = fetchSeasonDates(appCtx, show.tmdbId) { fetchedSoFar ->
-                        TrackerLogic.firstMissedEpisode(watched, fetchedSoFar, today) != null
+                        TrackerLogic.allMissedEpisodes(watched, fetchedSoFar, today).isNotEmpty()
                     }
                     if (fetched == null) {
-                        previous[show.tmdbId]?.let { out.add(it) }
+                        previous[show.tmdbId]?.let { out.addAll(it) }
                         continue
                     }
-                    val missedEp = TrackerLogic.firstMissedEpisode(watched, fetched.second, today)
-                    if (missedEp != null) {
-                        val (s, e, date) = missedEp
+                    // v3.13: every passed unwatched episode, one
+                    // missed.txt line each (same codec) — the
+                    // home groups them into one card per show.
+                    for ((s, e, date) in TrackerLogic.allMissedEpisodes(watched, fetched.second, today)) {
                         out.add(
                             TrackerLogic.UpNextItem(
                                 tmdbId = show.tmdbId, title = show.title,
@@ -820,7 +830,10 @@ object LibraryLocal {
                         appCtx,
                         TrackerStoreDisk.MissedMeta(
                             updated = System.currentTimeMillis(),
-                            count = out.size,
+                            // v3.13: the stamp counts SHOWS, not
+                            // episode lines (out now holds one
+                            // line per missed episode).
+                            count = out.map { it.tmdbId }.toSet().size,
                             inputFingerprint = inputFp
                         )
                     )

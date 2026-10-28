@@ -64,7 +64,7 @@ object HomeStatus {
     }
 
     /**
-     * The exact ADB command that sets Sreeb as default home (Step 3).
+     * The exact ADB command that sets Sreeb as default home (Step 4 since v3.13).
      *
      * v2.3.1: set-home-activity LEADS — verified live on Haythem's
      * TV from ATV Tools (2026-10-22): BOTH role-command forms failed
