@@ -42,6 +42,7 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/TrackerLogic.kt \
   app/src/main/java/com/mizan/launcher/core/LibraryLogic.kt \
   app/src/main/java/com/mizan/launcher/core/ProfileNames.kt \
+  app/src/main/java/com/mizan/launcher/core/ProfileSet.kt \
   app/src/main/java/com/mizan/launcher/core/UnlockGrace.kt \
   app/src/main/java/com/mizan/launcher/core/TrackerStatus.kt \
   app/src/main/java/com/mizan/launcher/core/HeroRotator.kt \

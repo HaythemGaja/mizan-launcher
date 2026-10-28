@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-28 01:34 UTC
+Date: 2026-10-28 03:15 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.13 / code 36 (bumped by v3.13)
+PASS  v25src: the app version is 3.14 / code 37 (bumped by v3.14)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1098,7 +1098,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.13 / code 36
+PASS  v31src: the version bump is 3.14 / code 37
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1381,5 +1381,28 @@ PASS  want60: Details checkbox is its own focusable toggle; Play is a focusable 
 PASS  want60: Settings Home & launcher gains a launcher-service step + diagnostics line
 PASS  want60: launcher service still reads no content (config unchanged by this build)
 PASS  want60: no foreground service in the newly touched files (standing rule)
-RESULT: 1165 passed, 0 failed, 1165 total
+PASS  prof61: default set is {1, 2}
+PASS  prof61: cap is 4
+PASS  prof61: decode keeps only 1..4, deduped, sorted
+PASS  prof61: decode blank/garbage falls back to {1, 2}
+PASS  prof61: encode round-trips
+PASS  prof61: add fills the lowest unused slot
+PASS  prof61: add refuses when all 4 slots are taken
+PASS  prof61: remove drops exactly the target
+PASS  prof61: remove refuses the last remaining profile
+PASS  prof61: remove refuses a profile that does not exist
+PASS  prof61: current resolves inside the set, else lowest
+PASS  prof61: guest resolves inside the set, else None
+PASS  prof61: delete/reset scope is exactly the target prefix
+PASS  prof61: global keys never match a profile prefix
+PASS  prof61: guest gate works for any profile number
+PASS  prof61: Prefs generalizes current/guest coercion via ProfileSet
+PASS  prof61: Prefs owns add/delete/reset with the prefix filter
+PASS  prof61: delete clears the guest flag only for its own profile; reset leaves it alone
+PASS  prof61: Settings profiles section is a picker + add/delete/reset, not a 1?2 toggle
+PASS  prof61: delete and reset confirmations are distinct
+PASS  prof61: backup export/import iterate the profile set, not hardcoded 1..2
+PASS  prof61: status-bar switcher lists every existing profile except current
+PASS  prof61: no foreground service in the newly touched files (standing rule)
+RESULT: 1188 passed, 0 failed, 1188 total
 ```

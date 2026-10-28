@@ -45,9 +45,37 @@ class Prefs(ctx: Context) {
         }
     }
 
+    /**
+     * The profiles that exist (v3.14, core/ProfileSet owns the codec).
+     * One global key ("profile_set", CSV like "1,2,4"); absent or
+     * corrupt reads as {1, 2}, the pre-v3.14 world. The setter refuses
+     * an empty or out-of-range set and keeps the old value instead
+     * (fail-open: the set must never become empty through a write).
+     */
+    var profileSet: Set<Int>
+        get() = com.mizan.launcher.core.ProfileSet.decode(
+            PrefsSafe.strOrNull(sp, "profile_set")
+        )
+        set(v) {
+            val clean = v.filter { it in 1..com.mizan.launcher.core.ProfileSet.MAX_PROFILES }.toSet()
+            if (clean.isNotEmpty()) {
+                sp.edit().putString(
+                    "profile_set",
+                    com.mizan.launcher.core.ProfileSet.encode(clean)
+                ).apply()
+            }
+        }
+
     var currentProfile: Int
-        get() = PrefsSafe.int(sp, "current_profile", 1).coerceIn(1, 2)
-        set(v) { sp.edit().putInt("current_profile", v.coerceIn(1, 2)).apply() }
+        get() = com.mizan.launcher.core.ProfileSet.resolveCurrent(
+            PrefsSafe.int(sp, "current_profile", 1), profileSet
+        )
+        set(v) {
+            sp.edit().putInt(
+                "current_profile",
+                com.mizan.launcher.core.ProfileSet.resolveCurrent(v, profileSet)
+            ).apply()
+        }
 
     private fun k(name: String) = "p$currentProfile.$name"
 
@@ -412,10 +440,25 @@ class Prefs(ctx: Context) {
     }
 
     // ---- guest profile (global, v1.4) ----
-    /** Which profile is the Guest profile: 0 = none, 1 or 2. */
+    /**
+     * Which profile is the Guest profile: 0 = none, else a profile
+     * in [profileSet] (v3.14: was hardcoded 1..2). A stored value
+     * outside the set reads as 0 and writes clamp to 0 (fail-open:
+     * the guest flag can never point at a profile that does not
+     * exist). The flag itself is GLOBAL, not a profile setting —
+     * deleting a profile clears it only when it pointed at the
+     * deleted profile; resetting a profile never touches it.
+     */
     var guestProfile: Int
-        get() = PrefsSafe.int(sp, "guest_profile", 0).coerceIn(0, 2)
-        set(v) { sp.edit().putInt("guest_profile", v.coerceIn(0, 2)).apply() }
+        get() = com.mizan.launcher.core.ProfileSet.resolveGuest(
+            PrefsSafe.int(sp, "guest_profile", 0), profileSet
+        )
+        set(v) {
+            sp.edit().putInt(
+                "guest_profile",
+                com.mizan.launcher.core.ProfileSet.resolveGuest(v, profileSet)
+            ).apply()
+        }
 
     /** iOS-switch in Lock & profiles, default ON: gate Settings entry + switch-away while Guest is active. */
     var guestLockSettings: Boolean
@@ -458,6 +501,92 @@ class Prefs(ctx: Context) {
     fun switchProfile(target: Int) {
         currentProfile = target
         clearUnlockStamp()
+    }
+
+    // ---- profile add / delete / reset (v3.14) ----
+    /**
+     * Add a profile: the lowest unused slot (1..MAX), or null when
+     * all slots are taken — the caller must refuse a 5th profile
+     * with a message, never a crash. The new slot needs no keys
+     * written: every per-profile read defaults through k(), so a
+     * fresh slot already reads as fresh defaults; only the set
+     * itself is stored. Does NOT switch — callers switch into the
+     * new profile explicitly so the setup flow is visible.
+     */
+    fun addProfile(): Int? {
+        val existing = profileSet
+        val next = com.mizan.launcher.core.ProfileSet.add(existing) ?: return null
+        profileSet = existing + next
+        return next
+    }
+
+    /**
+     * Remove exactly one profile's own keys (the `p<N>.` prefix,
+     * see core/ProfileSet.keysForProfile) and drop it from the set.
+     * NEVER touches the shared library store, other profiles' keys,
+     * the arrow lock, or safe mode — none of those keys carry the
+     * profile prefix, so the filter cannot reach them. Returns
+     * false (no change) when [target] does not exist or is the
+     * last remaining profile. Deleting the active profile moves
+     * the active profile to the lowest remaining one first;
+     * deleting the Guest profile clears the Guest flag to None.
+     * All writes land in one editor apply.
+     */
+    fun deleteProfile(target: Int): Boolean {
+        val existing = profileSet
+        val remaining = com.mizan.launcher.core.ProfileSet.remove(existing, target)
+            ?: return false
+        try {
+            val editor = sp.edit()
+            for (key in com.mizan.launcher.core.ProfileSet.keysForProfile(sp.all.keys, target)) {
+                editor.remove(key)
+            }
+            editor.putString(
+                "profile_set",
+                com.mizan.launcher.core.ProfileSet.encode(remaining)
+            )
+            if (PrefsSafe.int(sp, "guest_profile", 0) == target) {
+                editor.putInt("guest_profile", 0)
+            }
+            if (PrefsSafe.int(sp, "current_profile", 1) == target) {
+                editor.putInt(
+                    "current_profile",
+                    com.mizan.launcher.core.ProfileSet.lowest(remaining)
+                )
+            }
+            editor.apply()
+        } catch (e: Exception) {
+            return false
+        }
+        clearUnlockStamp()
+        return true
+    }
+
+    /**
+     * Reset one profile to fresh defaults WITHOUT removing the
+     * slot: exactly the same key set as [deleteProfile] is
+     * removed (so the name reverts to "Profile N" — a blank custom
+     * name reads as the default label), but the set, the Guest
+     * flag and the active profile are left exactly as they were.
+     * The shared library, other profiles, the arrow lock and safe
+     * mode are never touched (same prefix filter as delete).
+     * Returns false (no change) when [target] does not exist.
+     * Callers rebuild the home afterwards when the active
+     * profile was reset, so defaults show at once.
+     */
+    fun resetProfile(target: Int): Boolean {
+        if (target !in profileSet) return false
+        try {
+            val editor = sp.edit()
+            for (key in com.mizan.launcher.core.ProfileSet.keysForProfile(sp.all.keys, target)) {
+                editor.remove(key)
+            }
+            editor.apply()
+        } catch (e: Exception) {
+            return false
+        }
+        if (target == currentProfile) clearUnlockStamp()
+        return true
     }
 
     // ---- sticky status bar (per profile, v1.9) ----

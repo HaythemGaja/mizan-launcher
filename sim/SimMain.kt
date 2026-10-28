@@ -84,6 +84,7 @@ import com.mizan.launcher.core.LiveTvLogic
 import com.mizan.launcher.core.MostUsedLogic
 import com.mizan.launcher.core.QuickSettings
 import com.mizan.launcher.core.TrackerSections
+import com.mizan.launcher.core.ProfileSet
 import com.mizan.launcher.core.StatusBarCodec
 import com.mizan.launcher.core.StatusBarConfig
 import com.mizan.launcher.core.StatusBarLogic
@@ -3297,6 +3298,9 @@ fun main() {
     // ---------- (60) v3.13: Want to Watch, For You rotation + ignore, Missed grouping + dates, Details buttons, launcher-service Settings step ----------
     section60()
 
+    // ---------- (61) v3.14: profile add / edit / delete / reset + per-profile audit ----------
+    section61()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -4031,9 +4035,11 @@ fun section42() {
         // Re-pinned in v3.13 (intentional version bump 3.12/35 → 3.13/36 —
         // Want to Watch, For You rotation + refresh, Missed grouping
         // + dates, Details buttons, launcher-service Settings step).
-        check("v25src: the app version is 3.13 / code 36 (bumped by v3.13)",
-            gradleSrc.contains("versionName = \"3.13\"") &&
-                gradleSrc.contains("versionCode = 36"))
+        // Re-pinned in v3.14 (intentional version bump 3.13/36 → 3.14/37 —
+        // profile add / edit / delete / reset + per-profile audit).
+        check("v25src: the app version is 3.14 / code 37 (bumped by v3.14)",
+            gradleSrc.contains("versionName = \"3.14\"") &&
+                gradleSrc.contains("versionCode = 37"))
     }
 }
 
@@ -4997,9 +5003,10 @@ fun section50() {
         // Re-pinned in v3.10 (intentional version bump 3.9/32 → 3.10/33).
         // Re-pinned in v3.12 (intentional version bump 3.10/33 → 3.12/35).
         // Re-pinned in v3.13 (intentional version bump 3.12/35 → 3.13/36).
-        check("v31src: the version bump is 3.13 / code 36",
-            src("app/build.gradle.kts").contains("versionCode = 36") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.13\""))
+        // Re-pinned in v3.14 (intentional version bump 3.13/36 → 3.14/37).
+        check("v31src: the version bump is 3.14 / code 37",
+            src("app/build.gradle.kts").contains("versionCode = 37") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.14\""))
     }
 }
 
@@ -6868,5 +6875,113 @@ fun section60() {
             !mainSrc.contains("startForegroundService(") &&
                 !src("app/src/main/java/com/mizan/launcher/data/LibraryLocal.kt")
                     .contains("startForegroundService("))
+    }
+}
+
+/** v3.14 checks — profile add / edit / delete / reset + per-profile audit. */
+fun section61() {
+    run {
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+        val ps = ProfileSet
+
+        // ---- (1) codec: defaults, decode fail-open, cap ----
+        check("prof61: default set is {1, 2}", ps.DEFAULT == setOf(1, 2))
+        check("prof61: cap is 4", ps.MAX_PROFILES == 4)
+        check("prof61: decode keeps only 1..4, deduped, sorted",
+            ps.decode("2,4,4,9,0,-1,abc") == setOf(2, 4))
+        check("prof61: decode blank/garbage falls back to {1, 2}",
+            ps.decode("") == setOf(1, 2) && ps.decode("xyz") == setOf(1, 2) &&
+                ps.decode(null) == setOf(1, 2))
+        check("prof61: encode round-trips", ps.decode(ps.encode(setOf(4, 1, 3))) == setOf(1, 3, 4))
+
+        // ---- (2) add: lowest unused, 5th refused ----
+        check("prof61: add fills the lowest unused slot",
+            ps.add(setOf(1, 2)) == 3 && ps.add(setOf(1, 3)) == 2 &&
+                ps.add(setOf(2)) == 1)
+        check("prof61: add refuses when all 4 slots are taken",
+            ps.add(setOf(1, 2, 3, 4)) == null)
+
+        // ---- (3) remove: last-profile refusal, unknown refusal ----
+        check("prof61: remove drops exactly the target",
+            ps.remove(setOf(1, 2, 4), 2) == setOf(1, 4))
+        check("prof61: remove refuses the last remaining profile",
+            ps.remove(setOf(2), 2) == null)
+        check("prof61: remove refuses a profile that does not exist",
+            ps.remove(setOf(1, 2), 3) == null)
+
+        // ---- (4) resolve: current falls back to lowest, guest to None ----
+        check("prof61: current resolves inside the set, else lowest",
+            ps.resolveCurrent(3, setOf(1, 3, 4)) == 3 &&
+                ps.resolveCurrent(2, setOf(1, 3, 4)) == 1 &&
+                ps.resolveCurrent(9, setOf(2, 4)) == 2)
+        check("prof61: guest resolves inside the set, else None",
+            ps.resolveGuest(0, setOf(1, 2)) == 0 &&
+                ps.resolveGuest(2, setOf(1, 2)) == 2 &&
+                ps.resolveGuest(3, setOf(1, 2)) == 0)
+
+        // ---- (5) key scoping: delete/reset touch exactly p<N>.* ----
+        val keys = listOf(
+            "p2.theme", "p2.profile_name", "p2.tracker_marked",
+            "p1.theme", "p3.theme", "p10.theme", "arrow_pin", "safe_mode",
+            "profile_set", "current_profile", "guest_profile",
+            "launcher_tmdb_key", "iptv_server", "library_imported"
+        )
+        check("prof61: delete/reset scope is exactly the target prefix",
+            ps.keysForProfile(keys, 2).toSet() ==
+                setOf("p2.theme", "p2.profile_name", "p2.tracker_marked"))
+        val p1keys = ps.keysForProfile(keys, 1)
+        check("prof61: global keys never match a profile prefix",
+            p1keys.none { k -> k == "profile_set" } &&
+                p1keys.none { k -> k == "arrow_pin" } &&
+                p1keys.none { k -> k.startsWith("p10.") })
+
+        // ---- (6) GuestGate is number-based: works for profiles 3/4 ----
+        check("prof61: guest gate works for any profile number",
+            GuestGate.isGuestActive(3, 3) && !GuestGate.isGuestActive(4, 3) &&
+                GuestGate.isGuestActive(4, 4))
+
+        // ---- (7) wiring: no hardcoded 2-profile assumptions remain ----
+        val prefsSrc = src("app/src/main/java/com/mizan/launcher/data/Prefs.kt")
+        check("prof61: Prefs generalizes current/guest coercion via ProfileSet",
+            prefsSrc.contains("ProfileSet.resolveCurrent") &&
+                prefsSrc.contains("ProfileSet.resolveGuest") &&
+                !prefsSrc.contains("coerceIn(1, 2)") &&
+                !prefsSrc.contains("coerceIn(0, 2)"))
+        check("prof61: Prefs owns add/delete/reset with the prefix filter",
+            prefsSrc.contains("fun addProfile()") &&
+                prefsSrc.contains("fun deleteProfile(target: Int)") &&
+                prefsSrc.contains("fun resetProfile(target: Int)") &&
+                prefsSrc.contains("keysForProfile(sp.all.keys, target)"))
+        check("prof61: delete clears the guest flag only for its own profile; reset leaves it alone",
+            prefsSrc.contains("if (PrefsSafe.int(sp, \"guest_profile\", 0) == target)") &&
+                !prefsSrc.substringAfter("fun resetProfile").substringBefore("fun ")
+                    .contains("guest_profile"))
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("prof61: Settings profiles section is a picker + add/delete/reset, not a 1↔2 toggle",
+            settingsSrc.contains("Add profile") &&
+                settingsSrc.contains("Delete a profile") &&
+                settingsSrc.contains("Reset a profile") &&
+                settingsSrc.contains("fun confirmDialog") &&
+                !settingsSrc.contains("switchProfile(if (prefs.currentProfile == 1) 2 else 1)"))
+        check("prof61: delete and reset confirmations are distinct",
+            settingsSrc.contains("Delete removes this profile's own settings") &&
+                settingsSrc.contains("Reset restores this profile's settings to defaults") &&
+                settingsSrc.contains("The profile itself stays"))
+        check("prof61: backup export/import iterate the profile set, not hardcoded 1..2",
+            settingsSrc.contains("for (p in prefs.profileSet.sorted())") &&
+                settingsSrc.contains("prefs.profileSet = prefs.profileSet + imported") &&
+                settingsSrc.contains("currentBeforeImport"))
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("prof61: status-bar switcher lists every existing profile except current",
+            mainSrc.contains("prefs.profileSet.sorted().filter { it != prefs.currentProfile }") &&
+                !mainSrc.contains("listOf(1, 2).filter { it != prefs.currentProfile }"))
+        check("prof61: no foreground service in the newly touched files (standing rule)",
+            !prefsSrc.contains("startForegroundService(") &&
+                !settingsSrc.contains("startForegroundService(") &&
+                !mainSrc.contains("startForegroundService("))
     }
 }

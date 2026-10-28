@@ -3333,7 +3333,12 @@ class MainActivity : Activity() {
 
     /** Profile switch menu on the status-bar profile tile (click or hold-OK). */
     private fun showProfileSwitchMenu() {
-        val others = listOf(1, 2).filter { it != prefs.currentProfile }
+        // v3.14: every profile that exists except the current one
+        // (was hardcoded 1 and 2 — profiles 3 and 4 were unreachable
+        // from the tile). The Guest gate in requestProfileSwitch
+        // below is unchanged and number-based, so it works for any
+        // profile number.
+        val others = prefs.profileSet.sorted().filter { it != prefs.currentProfile }
         val labels = others.map { "Switch to ${prefs.profileDisplayName(it)}" }
         AlertDialog.Builder(this)
             .setTitle("Profile: ${prefs.profileDisplayName(prefs.currentProfile)}")

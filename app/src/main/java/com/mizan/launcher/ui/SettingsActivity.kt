@@ -962,34 +962,108 @@ class SettingsActivity : Activity() {
         })
         content.addView(info("After you enter the pattern once — for a locked app, a folder, Settings, or leaving Guest — the other gates open without asking until this time is up. Switching profiles always asks again. “Every time” is how it worked before v1.9."))
         content.addView(header("Profiles"))
+                // v3.14: the profile being edited is explicit — every
+                // setting on this page saves under the ACTIVE
+                // profile's `p<N>.` prefix (see data/Prefs), so the
+                // row below is the profile these edits belong to.
+                content.addView(info("Editing: ${prefs.profileDisplayName(prefs.currentProfile)} — settings on this page save to this profile."))
                 content.addView(row("Profile", "${prefs.profileDisplayName(prefs.currentProfile)} — tap to switch") {
-                    // v1.9: switchProfile clears the grace stamp.
-                    prefs.switchProfile(if (prefs.currentProfile == 1) 2 else 1)
-                    toast("Switched to ${prefs.profileDisplayName(prefs.currentProfile)}")
-                    rebuild()
+                    // v3.14: a real picker over the profiles that
+                    // exist (was a hardcoded 1↔2 toggle). switchProfile
+                    // clears the grace stamp (v1.9 rule, unchanged).
+                    val existing = prefs.profileSet.sorted()
+                    val labels = existing.map { prefs.profileDisplayName(it) }
+                    pickFrom(labels, prefs.profileDisplayName(prefs.currentProfile)) { v ->
+                        val target = existing[labels.indexOf(v)]
+                        prefs.switchProfile(target)
+                        toast("Switched to ${prefs.profileDisplayName(prefs.currentProfile)}")
+                        rebuild()
+                    }
                 })
                 content.addView(info("Each profile keeps its own theme, wallpaper, layout, status bar, weather units and hidden apps. The arrow lock is shared."))
-                content.addView(row("Rename Profile 1", prefs.profileDisplayName(1)) { renameProfile(1) })
-                content.addView(row("Rename Profile 2", prefs.profileDisplayName(2)) { renameProfile(2) })
+                for (p in prefs.profileSet.sorted()) {
+                    content.addView(row("Rename ${prefs.profileDisplayName(p)}", "Change this profile's name") { renameProfile(p) })
+                }
                 content.addView(info("Names show on the profile tile, in the switch menu, and on the Guest pill. Saving an empty name brings back the default — “Guest” for the guest profile, “Profile N” otherwise. Renaming never changes the Guest flag or any lock."))
+                content.addView(row(
+                    "Add profile",
+                    if (prefs.profileSet.size >= com.mizan.launcher.core.ProfileSet.MAX_PROFILES) {
+                        "All ${com.mizan.launcher.core.ProfileSet.MAX_PROFILES} profiles already exist"
+                    } else {
+                        "${prefs.profileSet.size} of ${com.mizan.launcher.core.ProfileSet.MAX_PROFILES} profiles — tap to add one"
+                    }
+                ) {
+                    val added = prefs.addProfile()
+                    if (added == null) {
+                        toast("All ${com.mizan.launcher.core.ProfileSet.MAX_PROFILES} profiles already exist")
+                    } else {
+                        prefs.switchProfile(added)
+                        toast("Profile $added added — now editing ${prefs.profileDisplayName(added)}")
+                        rebuild()
+                    }
+                })
+                content.addView(row("Delete a profile…", "Removes one profile's own settings (confirmation first)") {
+                    val existing = prefs.profileSet.sorted()
+                    if (existing.size <= 1) {
+                        toast("Cannot delete the last remaining profile")
+                    } else {
+                        val labels = existing.map { prefs.profileDisplayName(it) }
+                        pickFrom(labels, labels[0]) { v ->
+                            val target = existing[labels.indexOf(v)]
+                            confirmDialog(
+                                "Delete ${prefs.profileDisplayName(target)}?",
+                                "Delete removes this profile's own settings — its theme, layout, section order, marked episodes and other settings. Your library and your other profiles are NOT touched. This cannot be undone.",
+                                "Delete"
+                            ) {
+                                if (prefs.deleteProfile(target)) {
+                                    toast("Profile deleted")
+                                } else {
+                                    toast("Could not delete that profile")
+                                }
+                                rebuild()
+                            }
+                        }
+                    }
+                })
+                content.addView(row("Reset a profile…", "Restores one profile's settings to defaults (confirmation first)") {
+                    val existing = prefs.profileSet.sorted()
+                    val labels = existing.map { prefs.profileDisplayName(it) }
+                    pickFrom(labels, prefs.profileDisplayName(prefs.currentProfile)) { v ->
+                        val target = existing[labels.indexOf(v)]
+                        confirmDialog(
+                            "Reset ${prefs.profileDisplayName(target)}?",
+                            "Reset restores this profile's settings to defaults — its theme, layout, section order and marked episodes start fresh. The profile itself stays, and if it is the Guest profile it stays the Guest profile. Your library and your other profiles are NOT touched.",
+                            "Reset"
+                        ) {
+                            if (prefs.resetProfile(target)) {
+                                toast("Profile reset to defaults")
+                            } else {
+                                toast("Could not reset that profile")
+                            }
+                            rebuild()
+                        }
+                    }
+                })
+                content.addView(info("Delete removes a profile entirely; Reset keeps the profile but restores its defaults. Neither touches your library, your other profiles, the arrow lock, or safe mode."))
                 content.addView(header("Guest profile"))
                 content.addView(row(
                     "Guest profile",
-                    when (prefs.guestProfile) {
-                        1 -> "${prefs.profileDisplayName(1)} is Guest"
-                        2 -> "${prefs.profileDisplayName(2)} is Guest"
-                        else -> "None — no guest profile"
-                    }
+                    if (prefs.guestProfile == 0) "None — no guest profile"
+                    else "${prefs.profileDisplayName(prefs.guestProfile)} is Guest"
                 ) {
                     // v1.9: the picker speaks in display names (a
                     // renamed profile is picked by its name); the
                     // choice maps back to a profile NUMBER — the
                     // flag itself never keys off names.
-                    val labels = listOf(
-                        "None", prefs.profileDisplayName(1), prefs.profileDisplayName(2)
-                    )
-                    pickFrom(labels, labels[prefs.guestProfile.coerceIn(0, 2)]) { v ->
-                        prefs.guestProfile = labels.indexOf(v).coerceIn(0, 2)
+                    // v3.14: the picker lists the profiles that
+                    // exist (was hardcoded 1 and 2).
+                    val existing = prefs.profileSet.sorted()
+                    val labels = listOf("None") + existing.map { prefs.profileDisplayName(it) }
+                    val currentLabel = if (prefs.guestProfile == 0) "None"
+                        else prefs.profileDisplayName(prefs.guestProfile)
+                    pickFrom(labels, currentLabel) { v ->
+                        prefs.guestProfile = if (v == "None") 0
+                            else existing[labels.indexOf(v) - 1]
                         toast(
                             if (prefs.guestProfile == 0) "Guest profile cleared"
                             else "${prefs.profileDisplayName(prefs.guestProfile)} is now Guest"
@@ -2311,6 +2385,17 @@ class SettingsActivity : Activity() {
 
     // ------------------------------------------------------------ pickers
 
+    /**
+     * Destructive-action confirmation (v3.14, profile delete/reset):
+     * a two-tap gate — the positive button carries the destructive
+     * verb ("Delete"/"Reset"), Cancel does nothing. Never one-tap.
+     */
+    private fun confirmDialog(title: String, message: String, positive: String, onConfirm: () -> Unit) {
+        AlertDialog.Builder(this).setTitle(title).setMessage(message)
+            .setPositiveButton(positive) { _, _ -> onConfirm() }
+            .setNegativeButton("Cancel", null).show()
+    }
+
     private fun pickFrom(options: List<String>, current: String, apply: (String) -> Unit) {
         val idx = options.indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
@@ -2941,7 +3026,12 @@ class SettingsActivity : Activity() {
         root.put("lock_settings", prefs.lockSettings)
         val profiles = JSONObject()
         val current = prefs.currentProfile
-        for (p in listOf(1, 2)) {
+        // v3.14: export every profile that exists (was hardcoded
+        // 1 and 2 — profiles 3 and 4 used to drop out of backups
+        // silently). The temp-switch pattern is unchanged: each
+        // profile's k()-prefixed values are read while it is
+        // active, and `current` is restored at the end.
+        for (p in prefs.profileSet.sorted()) {
             prefs.currentProfile = p
             val o = JSONObject()
             o.put("theme", prefs.themeId)
@@ -2979,6 +3069,9 @@ class SettingsActivity : Activity() {
     }
 
     private fun importJson(text: String): Boolean {
+        // v3.14: captured BEFORE the try so the catch can restore
+        // the pre-import profile even if the loop dies mid-switch.
+        val currentBeforeImport = prefs.currentProfile
         return try {
             val root = JSONObject(text)
             if (root.optString("app") != "mizan-launcher") return false
@@ -2997,7 +3090,17 @@ class SettingsActivity : Activity() {
             }
             val profiles = root.optJSONObject("profiles") ?: return false
             val current = prefs.currentProfile
-            for (p in listOf(1, 2)) {
+            // v3.14: import every profile the backup carries (was
+            // hardcoded 1 and 2 — a backup with profiles 3/4 used
+            // to restore only 1 and 2). Importing a backup adopts
+            // its profiles into the set, so their settings land
+            // somewhere real instead of being dropped.
+            val imported = profiles.keys().asSequence()
+                .mapNotNull { it.toIntOrNull() }
+                .filter { it in 1..com.mizan.launcher.core.ProfileSet.MAX_PROFILES }
+                .sorted().toList()
+            if (imported.isNotEmpty()) prefs.profileSet = prefs.profileSet + imported
+            for (p in imported) {
                 val o = profiles.optJSONObject(p.toString()) ?: continue
                 prefs.currentProfile = p
                 prefs.themeId = o.optString("theme", prefs.themeId)
@@ -3035,9 +3138,18 @@ class SettingsActivity : Activity() {
                 if (o.has("tracker_sections")) prefs.trackerSections = o.optString("tracker_sections", "")
                 if (o.has("artwork")) prefs.artwork = o.optString("artwork", "")
             }
-            prefs.currentProfile = root.optInt("current_profile", current).coerceIn(1, 2)
+            // v3.14: the setter resolves the backup's current
+            // profile onto the (possibly grown) set — a current
+            // profile the set does not have falls back to the
+            // lowest existing one instead of crashing or
+            // silently landing on profile 1's data.
+            prefs.currentProfile = root.optInt("current_profile", current)
             true
         } catch (e: Exception) {
+            // v3.14: an interrupted import used to strand the
+            // active profile on whichever profile the loop had
+            // reached — restore the pre-import profile first.
+            try { prefs.currentProfile = currentBeforeImport } catch (ignored: Exception) { }
             Prefs.noteError(this, "importBackup", e)
             false
         }
