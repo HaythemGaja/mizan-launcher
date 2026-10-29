@@ -199,6 +199,7 @@ class LibraryActivity : Activity() {
                 val card = PosterCards.build(
                     activity = this,
                     prefs = prefs,
+                    columns = cols,
                     accent = accent,
                     posterPath = item.poster,
                     title = item.title,

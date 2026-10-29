@@ -28,19 +28,38 @@ import com.mizan.launcher.data.TmdbImages
 object PosterCards {
 
     /** Cards that fit across [screenWidthPx] at the profile's size settings. */
+    /**
+     * v3.16: how many poster columns actually FIT.
+     *
+     * The old formula sized one tile for the profile's [Prefs.columns]
+     * and divided the usable width by that cell — which only works while
+     * the tile's width is a pure function of the column count. It is
+     * not: poster width is derived from tile HEIGHT, which the app-size
+     * key also moves, so a 6-column profile on a 1080p panel produced
+     * cells that summed past the right edge and the last poster was
+     * clipped by the screen (the grid's known "cut off column" look).
+     *
+     * Walking down from the profile's wish until a row genuinely fits
+     * makes the grid self-correcting at any size, panel or font scale.
+     */
     fun columns(activity: Activity, prefs: Prefs): Int {
         val dm = activity.resources.displayMetrics
-        val pm = TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         val margin = Ui.dp(activity, 5)
-        val cell = pm.tileWidthPx + margin * 2
-        if (cell <= 0) return 4
         val usable = dm.widthPixels - Ui.dp(activity, 96)
-        return (usable / cell).coerceIn(1, 10)
+        var n = prefs.columns.coerceIn(1, 10)
+        while (n > 1) {
+            val pm = TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, n)
+            val cell = pm.tileWidthPx + margin * 2
+            if (cell > 0 && n * cell <= usable) return n
+            n--
+        }
+        return 1
     }
 
     fun build(
         activity: Activity,
         prefs: Prefs,
+        columns: Int = prefs.columns,
         accent: Int,
         posterPath: String,
         title: String,
@@ -54,7 +73,7 @@ object PosterCards {
         onLong: (() -> Unit)? = null
     ): View {
         val dm = activity.resources.displayMetrics
-        val pm = TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        val pm = TileLayout.posterMetrics(dm.widthPixels, dm.density, prefs.appSize, columns)
         val col = LinearLayout(activity)
         col.orientation = LinearLayout.VERTICAL
         val colLp = LinearLayout.LayoutParams(pm.tileWidthPx, -2)
