@@ -134,6 +134,22 @@ object Ui {
     }
 
     /** The unified wallpaper scrim (v1.6): one bottom-weighted gradient. */
+    /**
+     * v3.16: a vertical gradient with EXPLICIT stop positions.
+     * GradientDrawable only spaces its colours evenly, which is why the
+     * home's backdrop fade used to turn solid too late — the first rows
+     * sat on artwork. This gives the design the positions instead.
+     */
+    fun verticalGradient(colors: IntArray, positions: FloatArray): android.graphics.drawable.Drawable {
+        val h = 1000f
+        val shader = android.graphics.LinearGradient(
+            0f, 0f, 0f, h, colors, positions, android.graphics.Shader.TileMode.CLAMP
+        )
+        val d = android.graphics.drawable.ShapeDrawable()
+        d.paint.shader = shader
+        return d
+    }
+
     fun scrimDrawable(): GradientDrawable =
         GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,

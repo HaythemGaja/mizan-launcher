@@ -1275,7 +1275,24 @@ class MainActivity : Activity() {
      * core/StartupHealth at the top of the shell home; tapping it
      * opens Settings, where Diagnostics lives.
      */
+    /**
+     * v3.16: the safe-shell banner is now ACTIONABLE. It used to be a
+     * text card that opened Settings, which left the actual fix three
+     * levels deep (Data & about → Exit safe mode) — and this shell is
+     * what a TV shows after any pair of abrupt kills (an app update, a
+     * power cut at boot, testing with force-stop). A user stuck here
+     * should be able to recover from the thing staring at them.
+     *
+     * The whole card still opens Settings on OK; the explicit action
+     * sits under it as its own focusable button.
+     */
     private fun safeShellNotice(): View {
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 4), Ui.dp(this, 0), Ui.dp(this, 12))
+        wrap.layoutParams = lp
+
         val notice = TextView(this)
         notice.text = StartupHealth.NOTICE_TEXT
         notice.setTextColor(textColour)
@@ -1285,14 +1302,44 @@ class MainActivity : Activity() {
         notice.setPadding(
             Ui.dp(this, 18), Ui.dp(this, 13), Ui.dp(this, 18), Ui.dp(this, 13)
         )
-        val lp = LinearLayout.LayoutParams(-1, -2)
-        lp.setMargins(0, Ui.dp(this, 4), Ui.dp(this, 60), Ui.dp(this, 12))
-        notice.layoutParams = lp
         notice.background = Ui.tileBackground(
             accent, false, com.mizan.launcher.core.Design.RADIUS_CHIP, this
         )
         notice.setOnClickListener { openSettings() }
-        return notice
+        wrap.addView(notice)
+
+        val exit = TextView(this)
+        exit.text = "Exit safe mode and retry my normal home"
+        exit.setTextColor(0xFF141414.toInt())
+        exit.textSize = 16f
+        exit.setTypeface(exit.typeface, android.graphics.Typeface.BOLD)
+        exit.gravity = Gravity.CENTER
+        exit.isFocusable = true
+        exit.isClickable = true
+        exit.setPadding(Ui.dp(this, 18), Ui.dp(this, 11), Ui.dp(this, 18), Ui.dp(this, 11))
+        val eLp = LinearLayout.LayoutParams(-2, -2)
+        eLp.setMargins(Ui.dp(this, 18), Ui.dp(this, 10), 0, 0)
+        exit.layoutParams = eLp
+        fun exitBg(focused: Boolean) {
+            val d = GradientDrawable()
+            d.cornerRadius = Ui.dp(this, 100).toFloat()
+            d.setColor(0xFFFFFFFF.toInt())
+            if (focused) d.setStroke(Ui.dp(this, 3), accent)
+            exit.background = d
+        }
+        exitBg(false)
+        exit.setOnFocusChangeListener { _, focused -> exitBg(focused) }
+        exit.setOnClickListener {
+            try {
+                com.mizan.launcher.data.StartupHealthStore.exitSafeShell(this)
+                Toast.makeText(this, "Safe mode off — rebuilding your home", Toast.LENGTH_SHORT).show()
+                rebuild()
+            } catch (e: Exception) {
+                Prefs.noteError(this, "exitSafeShellInline", e)
+            }
+        }
+        wrap.addView(exit)
+        return wrap
     }
 
     // ---------------------------------------------------------------
@@ -1862,10 +1909,17 @@ class MainActivity : Activity() {
         root.addView(topShade)
         // Bottom fade: the backdrop melts into the page well before
         // the first row, so rows always sit on solid #141414.
+        // v3.16 (redesign): the rows must sit on the page, not on the
+        // artwork. GradientDrawable spaces four stops evenly, so the
+        // old fade only became solid at ~66% of the screen — the first
+        // two rows floated over a bright backdrop and their 8%-white
+        // card fill let the art read straight through the text. The
+        // fade now reaches solid #141414 just under the hero (52%),
+        // with an explicit stop table.
         val fade = View(this)
-        fade.background = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(0x00000000, 0x00000000, bg, bg)
+        fade.background = Ui.verticalGradient(
+            intArrayOf(0x00000000, 0x00000000, bg, bg),
+            floatArrayOf(0f, 0.30f, 0.52f, 1f)
         )
         root.addView(fade, FrameLayout.LayoutParams(-1, -1))
     }
