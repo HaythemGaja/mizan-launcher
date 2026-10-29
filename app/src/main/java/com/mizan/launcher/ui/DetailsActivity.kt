@@ -803,6 +803,23 @@ class DetailsActivity : Activity() {
 
         val season = selectedSeason
         if (season < 0) return
+
+        // v3.16: per-season progress. The show-level counts in the
+        // header answer "how far along am I overall"; this answers
+        // "how far into THIS season", which is what the chip strip is
+        // for. Rendered only once the season's list is in, so the
+        // number is never guessed.
+        seasonEpisodes[season]?.let { eps ->
+            val aired = eps.filter { hasAired(it.airDate) }
+            if (aired.isNotEmpty()) {
+                val watchedNow = aired.count {
+                    LibraryLogic.epKey(season, it.number) in effectiveWatched()
+                }
+                box.addView(
+                    seasonProgressLine(season, watchedNow, aired.size)
+                )
+            }
+        }
         // v2.6: say plainly when this season's list is the IPTV
         // fallback's, not TMDB's.
         if (season in iptvEpisodeSeasons) {
@@ -883,6 +900,73 @@ class DetailsActivity : Activity() {
         if (d.isBlank()) return true
         if (!d.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return true
         return d <= java.time.LocalDate.now().toString()
+    }
+
+    /**
+     * v3.16: "Season N — 5 of 12 watched" with a thin bar under it.
+     * Reads as one line of context between the chip strip and the
+     * episode list; the numbers always come from the loaded season.
+     */
+    private fun seasonProgressLine(season: Int, watched: Int, total: Int): View {
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, Ui.dp(this, 10), 0, Ui.dp(this, 6))
+        wrap.layoutParams = lp
+
+        val label = TextView(this)
+        label.text = (if (season == 0) "Specials" else "Season $season") +
+            " — $watched of $total watched"
+        label.setTextColor(0xFFB3B3B3.toInt())
+        label.textSize = 14f
+        wrap.addView(label)
+
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        val barLp = LinearLayout.LayoutParams(-1, Ui.dp(this, 3))
+        barLp.setMargins(0, Ui.dp(this, 5), 0, 0)
+        bar.layoutParams = barLp
+        val fill = View(this)
+        fill.setBackgroundColor(accent)
+        val frac = if (total > 0) watched.toFloat() / total.toFloat() else 0f
+        val fillLp = LinearLayout.LayoutParams(0, -1)
+        fillLp.weight = frac.coerceIn(0f, 1f)
+        val restLp = LinearLayout.LayoutParams(0, -1)
+        restLp.weight = (1f - frac).coerceIn(0f, 1f)
+        // The track is the first child; the fill rides over the
+        // un-filled part by taking the remainder as a second weight.
+        bar.addView(fill, fillLp)
+        val rest = View(this)
+        rest.setBackgroundColor(0x33FFFFFF)
+        bar.addView(rest, restLp)
+        wrap.addView(bar)
+        return wrap
+    }
+
+    /**
+     * v3.16: mark every episode of [season] before [beforeEpisode]
+     * watched — the "I'm past all of these" catch-up. Only episodes
+     * that already aired are touched, and only ones not already
+     * watched, so the call is idempotent and never marks the future.
+     */
+    private fun markPreviousInSeason(season: Int, beforeEpisode: Int, row: View) {
+        val eps = seasonEpisodes[season] ?: return
+        val watchedNow = effectiveWatched()
+        var marked = 0
+        for (e in eps) {
+            if (e.number >= beforeEpisode) break
+            if (!hasAired(e.airDate)) continue
+            if (LibraryLogic.epKey(season, e.number) in watchedNow) continue
+            TrackerActions.toggleEpisode(this, prefs, tmdbId, season, e.number, true)
+            marked++
+        }
+        Toast.makeText(
+            this,
+            if (marked == 0) "Nothing earlier to mark"
+            else "Marked $marked episode${if (marked == 1) "" else "s"} watched",
+            Toast.LENGTH_SHORT
+        ).show()
+        rebuild()
     }
 
     /** One episode checklist row: ✓ box + E<n> + name + air date; OK toggles. */
@@ -1001,17 +1085,26 @@ class DetailsActivity : Activity() {
                         .show()
                     true
                 } else {
-                    val labels = arrayOf(
-                        "▶ Play S$season E${ep.number}",
-                        if (isWatched) "↩ Mark unwatched" else "✓ Mark watched"
-                    )
+                    // v3.16: catch-up for the way people actually use
+                    // a tracker — "I'm here, everything before it is
+                    // watched". Offered for this season only: other
+                    // seasons' episode lists may not be loaded, and a
+                    // range that silently skipped them would be wrong.
+                    val canMarkPrevious = ep.number > 1 &&
+                        seasonEpisodes[season]?.any { it.number < ep.number } == true
+                    val labels = ArrayList<String>()
+                    labels.add("▶ Play S$season E${ep.number}")
+                    labels.add(if (isWatched) "↩ Mark unwatched" else "✓ Mark watched")
+                    if (canMarkPrevious) {
+                        labels.add("✓ Mark S$season E1–E${ep.number - 1} watched")
+                    }
                     AlertDialog.Builder(this)
                         .setTitle(ep.name.ifBlank { "Episode ${ep.number}" })
-                        .setItems(labels) { _, which ->
-                            if (which == 0) {
-                                playEpisodeFromDetails(showMatch, season, ep.number)
-                            } else {
-                                row.performClick()
+                        .setItems(labels.toTypedArray()) { _, which ->
+                            when (which) {
+                                0 -> playEpisodeFromDetails(showMatch, season, ep.number)
+                                1 -> row.performClick()
+                                else -> markPreviousInSeason(season, ep.number, row)
                             }
                         }
                         .show()
