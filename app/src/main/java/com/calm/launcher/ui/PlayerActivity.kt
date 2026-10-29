@@ -17,6 +17,8 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.calm.launcher.core.IptvLogic
+import com.calm.launcher.core.IptvEpg
+import com.calm.launcher.data.EpgCache
 import com.calm.launcher.data.Store
 import com.calm.launcher.data.XtreamClient
 
@@ -35,6 +37,7 @@ class PlayerActivity : Activity() {
     private var names: Array<String> = emptyArray()
     private var index = 0
     private var account: IptvLogic.Account? = null
+    private var epgIds: Array<String> = emptyArray()
     private val numberBuffer = StringBuilder()
     private val commitNumber = Runnable { commitTypedNumber() }
 
@@ -42,6 +45,7 @@ class PlayerActivity : Activity() {
         super.onCreate(savedInstanceState)
         ids = intent.getLongArrayExtra(EXTRA_IDS) ?: LongArray(0)
         names = intent.getStringArrayExtra(EXTRA_NAMES) ?: emptyArray()
+        epgIds = intent.getStringArrayExtra(EXTRA_EPG) ?: emptyArray()
         index = intent.getIntExtra(EXTRA_INDEX, 0).coerceIn(0, maxOf(0, ids.size - 1))
 
         val store = Store(this)
@@ -150,7 +154,16 @@ class PlayerActivity : Activity() {
 
     private fun showBanner() {
         val name = names.getOrNull(index).orEmpty()
-        banner.text = "${index + 1}   $name"
+        val acc = account
+        val channelEpgId = epgIds.getOrNull(index).orEmpty()
+        val now = System.currentTimeMillis()
+        val guide = if (acc != null) EpgCache.get(acc) { _ -> if (!isFinishing && !isDestroyed) showBanner() } else emptyMap()
+        val (current, next) = IptvEpg.nowNext(guide[channelEpgId], now)
+        val detail = buildString {
+            if (current != null) append("  ·  Now: ${current.title}")
+            if (next != null) append("   Next: ${next.title}")
+        }
+        banner.text = "${index + 1}   $name$detail"
         banner.visibility = android.view.View.VISIBLE
         main.removeCallbacks(hideBanner)
         main.postDelayed(hideBanner, 4_000L)
@@ -161,6 +174,7 @@ class PlayerActivity : Activity() {
     companion object {
         const val EXTRA_IDS = "ids"
         const val EXTRA_NAMES = "names"
+        const val EXTRA_EPG = "epg"
         const val EXTRA_INDEX = "index"
     }
 }

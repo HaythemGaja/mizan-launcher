@@ -14,6 +14,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.calm.launcher.core.IptvLogic
+import com.calm.launcher.core.IptvEpg
+import com.calm.launcher.data.EpgCache
 import com.calm.launcher.data.Store
 import com.calm.launcher.data.XtreamClient
 
@@ -32,6 +34,7 @@ class IptvActivity : Activity() {
     private var categories: List<IptvLogic.Category> = emptyList()
     private var channels: List<IptvLogic.LiveChannel> = emptyList()
     private var selectedCategory: String? = null
+    private var guide: Map<String, List<IptvEpg.Programme>> = emptyMap()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,6 +99,11 @@ class IptvActivity : Activity() {
                 selectedCategory = selectedCategory ?: cats.firstOrNull()?.id
                 renderCategories()
                 renderChannels()
+                // The guide is optional: channels show without it, and fill in when it lands.
+                guide = EpgCache.get(account) { fresh ->
+                    if (!isFinishing && !isDestroyed) { guide = fresh; renderChannels() }
+                }
+                renderChannels()
             }
         }.start()
     }
@@ -122,8 +130,13 @@ class IptvActivity : Activity() {
         val shown = if (cat == null || cat == ALL_ID) channels else channels.filter { it.categoryId == cat }
         // Large playlists stay responsive by showing a bounded window.
         val window = shown.take(MAX_ROWS)
+        val now = System.currentTimeMillis()
         for (ch in window) {
-            channelColumn.addView(row(ch.name, selected = false) { openPlayer(window, window.indexOf(ch)) })
+            val (current, _) = IptvEpg.nowNext(guide[ch.epgId], now)
+            val subtitle = current?.title
+            channelColumn.addView(row(ch.name, selected = false, subtitle = subtitle) {
+                openPlayer(window, window.indexOf(ch))
+            })
         }
         if (shown.size > MAX_ROWS) {
             channelColumn.addView(TextView(this).apply {
@@ -137,17 +150,13 @@ class IptvActivity : Activity() {
         val intent = Intent(this, PlayerActivity::class.java)
             .putExtra(PlayerActivity.EXTRA_IDS, list.map { it.id }.toLongArray())
             .putExtra(PlayerActivity.EXTRA_NAMES, list.map { it.name }.toTypedArray())
+            .putExtra(PlayerActivity.EXTRA_EPG, list.map { it.epgId }.toTypedArray())
             .putExtra(PlayerActivity.EXTRA_INDEX, index)
         startActivity(intent)
     }
 
-    private fun row(label: String, selected: Boolean, onClick: () -> Unit): TextView = TextView(this).apply {
-        text = label
-        setTextColor(Color.WHITE)
-        textSize = 18f
-        maxLines = 1
-        ellipsize = android.text.TextUtils.TruncateAt.END
-        gravity = Gravity.CENTER_VERTICAL
+    private fun row(label: String, selected: Boolean, subtitle: String? = null, onClick: () -> Unit): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
         setPadding(dp(20), dp(12), dp(20), dp(12))
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, 0, 0, dp(6))
@@ -157,6 +166,20 @@ class IptvActivity : Activity() {
         isClickable = true
         setOnFocusChangeListener { v, hasFocus -> v.background = focusBackground(hasFocus || selected) }
         setOnClickListener { onClick() }
+        addView(TextView(this@IptvActivity).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        if (subtitle != null) addView(TextView(this@IptvActivity).apply {
+            text = "Now: $subtitle"
+            setTextColor(SECONDARY)
+            textSize = 14f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
     }
 
     private fun focusBackground(lit: Boolean) = GradientDrawable().apply {
