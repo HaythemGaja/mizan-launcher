@@ -170,15 +170,22 @@ object RedditEndpoints {
     /** The ordered chain for one subreddit. */
     fun chain(subreddit: String): List<Endpoint> {
         val sub = RedditWallpapers.cleanSubreddit(subreddit)
+        // v3.16: RSS FIRST. Reddit now answers its anonymous JSON
+        // listings with a 403 block page (measured on this box: all
+        // three .json hosts), while the Atom feed still returns the
+        // same posts. Trying JSON first therefore cost three wasted
+        // round trips — and three recorded 403s — before the endpoint
+        // that works. JSON stays as the fallback for the day Reddit
+        // reverses that.
         return listOf(
+            Endpoint("www-rss", Kind.RSS,
+                "https://www.reddit.com/r/$sub/top/.rss?t=week"),
             Endpoint("www-json", Kind.JSON,
                 "https://www.reddit.com/r/$sub/top.json?t=week&limit=25"),
             Endpoint("api-json", Kind.JSON,
                 "https://api.reddit.com/r/$sub/top.json?t=week&limit=25"),
             Endpoint("old-json", Kind.JSON,
-                "https://old.reddit.com/r/$sub/top.json?t=week&limit=25"),
-            Endpoint("www-rss", Kind.RSS,
-                "https://www.reddit.com/r/$sub/top/.rss?t=week")
+                "https://old.reddit.com/r/$sub/top.json?t=week&limit=25")
         )
     }
 

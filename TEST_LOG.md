@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-29 13:47 UTC
+Date: 2026-10-29 14:00 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -525,8 +525,8 @@ PASS  catalogue: Mizan itself is excluded
 PASS  catalogue: hidden and foldered apps are in the catalogue
 PASS  catalogue: sorted by label (case-insensitive)
 PASS  catalogue: label ties break by package
-PASS  redditchain: four endpoints, JSON first, RSS last
-PASS  redditchain: endpoints are www, api, old, then www .rss
+PASS  redditchain: four endpoints, RSS first, JSON after
+PASS  redditchain: endpoints are www .rss, then www, api, old
 PASS  redditchain: subreddit names are cleaned into the URLs
 PASS  redditchain: usable means at least one candidate
 PASS  redditrss: landscape full-size entry survives

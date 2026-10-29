@@ -131,6 +131,26 @@ object RedditFetcher {
      * on) — only transport failures throw.
      */
     private fun httpGet(endpoint: RedditEndpoints.Endpoint): Pair<Int, String> {
+        // v3.16: Reddit rate-limits bursts with 429. One short retry
+        // (honouring Retry-After when it is sane) turns the most common
+        // transient failure into a success instead of an empty picker.
+        var attempt = 0
+        while (true) {
+            val result = httpGetOnce(endpoint)
+            val retryable = result.first == 429 || result.first == 503
+            if (!retryable || attempt >= 1) return result
+            attempt++
+            try {
+                val wait = retryAfterMs(endpoint).coerceIn(500L, 3_000L)
+                Thread.sleep(wait)
+            } catch (e: Exception) {
+                // Interrupted: fall through to the retry immediately.
+            }
+        }
+    }
+
+    /** One GET; returns (HTTP code, body text). Non-2xx codes are data. */
+    private fun httpGetOnce(endpoint: RedditEndpoints.Endpoint): Pair<Int, String> {
         val conn = URL(endpoint.url).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 10_000
@@ -138,6 +158,13 @@ object RedditFetcher {
             conn.instanceFollowRedirects = true
             conn.setRequestProperty("User-Agent", USER_AGENT)
             conn.setRequestProperty("Accept", RedditEndpoints.acceptHeader(endpoint.kind))
+            conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+            conn.setRequestProperty("Cache-Control", "no-cache")
+            lastRetryAfterMs = try {
+                (conn.getHeaderField("Retry-After")?.trim()?.toLongOrNull() ?: 0L) * 1000L
+            } catch (e: Exception) {
+                0L
+            }
             val code = conn.responseCode
             val body = try {
                 val stream = if (code in 200..299) conn.inputStream else conn.errorStream
@@ -148,6 +175,13 @@ object RedditFetcher {
             conn.disconnect()
         }
     }
+
+    /** Retry-After of the last response, in ms (0 when absent/invalid). */
+    @Volatile
+    private var lastRetryAfterMs: Long = 0L
+
+    private fun retryAfterMs(@Suppress("UNUSED_PARAMETER") endpoint: RedditEndpoints.Endpoint): Long =
+        lastRetryAfterMs
 
     /** Directory (app-private) holding downloaded Reddit wallpapers. */
     fun wallpaperDir(ctx: Context): File {

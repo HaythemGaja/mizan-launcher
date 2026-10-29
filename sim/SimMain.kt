@@ -1344,14 +1344,18 @@ fun main() {
     // ------------------------------------------------ (31) Reddit chain + RSS + status (v1.6)
     run {
         val chain = com.mizan.launcher.core.RedditEndpoints.chain("wallpaper")
-        check("redditchain: four endpoints, JSON first, RSS last",
+        // RE-PINNED v3.16: RSS leads, the three .json hosts follow —
+        // Reddit answers anonymous .json listings with a 403 block page
+        // while the Atom feed still serves the same posts, so the chain
+        // must not spend its first three tries on guaranteed 403s.
+        check("redditchain: four endpoints, RSS first, JSON after",
             chain.size == 4 &&
-                chain.take(3).all { it.kind == com.mizan.launcher.core.RedditEndpoints.Kind.JSON } &&
-                chain.last().kind == com.mizan.launcher.core.RedditEndpoints.Kind.RSS)
-        check("redditchain: endpoints are www, api, old, then www .rss",
-            chain.map { it.id } == listOf("www-json", "api-json", "old-json", "www-rss") &&
-                chain[0].url.contains("www.reddit.com/r/wallpaper/top.json") &&
-                chain[3].url.contains("www.reddit.com/r/wallpaper/top/.rss"))
+                chain.first().kind == com.mizan.launcher.core.RedditEndpoints.Kind.RSS &&
+                chain.drop(1).all { it.kind == com.mizan.launcher.core.RedditEndpoints.Kind.JSON })
+        check("redditchain: endpoints are www .rss, then www, api, old",
+            chain.map { it.id } == listOf("www-rss", "www-json", "api-json", "old-json") &&
+                chain[0].url.contains("www.reddit.com/r/wallpaper/top/.rss") &&
+                chain[1].url.contains("www.reddit.com/r/wallpaper/top.json"))
         check("redditchain: subreddit names are cleaned into the URLs",
             com.mizan.launcher.core.RedditEndpoints.chain("r/EarthPorn").first().url
                 .contains("/r/EarthPorn/"))
