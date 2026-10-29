@@ -53,6 +53,19 @@ class Store(ctx: Context) {
         get() = prefs.getBoolean(key("clock24h"), false)
         set(v) { prefs.edit().putBoolean(key("clock24h"), v).apply() }
 
+    /** The IPTV account (Xtream Codes). Shared across profiles, like the library. */
+    var iptvServer: String
+        get() = prefs.getString(KEY_IPTV_SERVER, "") ?: ""
+        set(v) { prefs.edit().putString(KEY_IPTV_SERVER, v).apply() }
+
+    var iptvUser: String
+        get() = prefs.getString(KEY_IPTV_USER, "") ?: ""
+        set(v) { prefs.edit().putString(KEY_IPTV_USER, v).apply() }
+
+    var iptvPass: String
+        get() = prefs.getString(KEY_IPTV_PASS, "") ?: ""
+        set(v) { prefs.edit().putString(KEY_IPTV_PASS, v).apply() }
+
     /** Add a profile in the lowest free slot. Returns its id, or null when full. */
     fun addProfile(): Int? {
         val id = Profiles.add(profiles) ?: return null
@@ -78,5 +91,8 @@ class Store(ctx: Context) {
         const val KEY_PROFILES = "profiles"
         const val KEY_CURRENT = "current_profile"
         const val KEY_PATTERN = "arrow_pattern"
+        const val KEY_IPTV_SERVER = "iptv_server"
+        const val KEY_IPTV_USER = "iptv_user"
+        const val KEY_IPTV_PASS = "iptv_pass"
     }
 }

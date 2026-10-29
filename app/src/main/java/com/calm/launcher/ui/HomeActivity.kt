@@ -116,6 +116,17 @@ class HomeActivity : Activity() {
         updateClock()
         row.addView(clockView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.addView(TextView(this).apply {
+            text = "Live TV"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            setPadding(dp(20), dp(10), dp(20), dp(10))
+            background = tileBackground(focused = false)
+            isFocusable = true
+            isClickable = true
+            setOnClickListener { startActivity(Intent(this@HomeActivity, IptvActivity::class.java)) }
+            setOnFocusChangeListener { v, hasFocus -> v.background = tileBackground(focused = hasFocus) }
+        })
+        row.addView(TextView(this).apply {
             text = "Settings"
             setTextColor(Color.WHITE)
             textSize = 16f

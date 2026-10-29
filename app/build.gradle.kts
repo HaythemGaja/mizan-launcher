@@ -29,4 +29,9 @@ android {
 }
 
 // No third-party libraries: framework Views and the Kotlin stdlib only.
-dependencies {}
+// Playback: Media3 ExoPlayer with HLS, the same engine IPTV apps use for live streams.
+dependencies {
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
+}
