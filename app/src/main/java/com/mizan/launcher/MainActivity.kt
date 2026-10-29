@@ -1032,6 +1032,41 @@ class MainActivity : Activity() {
             }
             if (section != null) content.addView(section)
         }
+        // v3.16 (Glass look): the bottom App dock — the reference's
+        // signature element. It rides in the FRAME (not the scroller) so
+        // it stays put while the rows scroll, and the content gets extra
+        // bottom padding so the last row can always clear it.
+        if (prefs.glassLook && !shellSafe && !trackerStyle && !isIptvStyle()) {
+            try {
+                buildGlassDock()?.let { dock ->
+                    val lp = FrameLayout.LayoutParams(-2, -2)
+                    lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                    lp.bottomMargin = Ui.dp(this, 26)
+                    root.addView(dock, lp)
+                    // The dock floats over the scroller, so the scroller
+                    // gets a bottom inset once the dock has measured —
+                    // otherwise the last row scrolls THROUGH the glass
+                    // and its icons ghost behind the dock's icons.
+                    dock.post {
+                        try {
+                            val inset = dock.height + Ui.dp(this, 26 + 14)
+                            if (inset > scroll.paddingBottom) {
+                                scroll.setPadding(
+                                    scroll.paddingLeft,
+                                    scroll.paddingTop,
+                                    scroll.paddingRight,
+                                    inset
+                                )
+                            }
+                        } catch (e: Exception) {
+                            // Cosmetic only.
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                Prefs.noteError(this, "glassDock", e)
+            }
+        }
         // Move mode's hint bar rides on every rebuild while a
         // home-screen session is active (folder sessions show the
         // grab-time toast instead — the dialog covers this window).
@@ -2649,6 +2684,13 @@ class MainActivity : Activity() {
 
     /** The pill fill shared by every element of the unified bar. */
     private fun pillBackground(focused: Boolean): GradientDrawable {
+        if (prefs.glassLook) {
+            // v3.16 Glass look: the same translucent sheen as the dock,
+            // so the chips and the dock read as one material.
+            val d = Ui.glassPanel(this, 100)
+            if (focused) d.setStroke(Ui.dp(this, 3), 0xFFFFFFFF.toInt())
+            return d
+        }
         val d = GradientDrawable()
         d.cornerRadius = Ui.dp(this, 100).toFloat()
         d.setColor(com.mizan.launcher.core.Design.NETFLIX_BUTTON2_FILL)
@@ -5936,6 +5978,82 @@ class MainActivity : Activity() {
      * One app tile: centered icon + focus-only name pill.
      * Click/long-click: launch + the shared menu (incl. Move).
      */
+    /**
+     * v3.16 (Glass look): the bottom dock. Favorites first, then the
+     * other apps, capped at seven — the reference's row of icons in one
+     * glass slab. Each cell launches through the normal path
+     * (launchWithPin), so app locks still apply. Null when the
+     * catalogue is empty: the dock never renders as an empty slab.
+     */
+    private fun buildGlassDock(): View? {
+        val favs = try {
+            layout.favorites.mapNotNull { appsByPkg[it] }.filter { it.pkg !in layout.hidden }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val picks = (favs.ifEmpty { apps }).take(7)
+        if (picks.isEmpty()) return null
+
+        val dock = LinearLayout(this)
+        dock.orientation = LinearLayout.HORIZONTAL
+        dock.gravity = Gravity.CENTER_VERTICAL
+        dock.background = Ui.glassPanelDark(this, com.mizan.launcher.core.Design.GLASS_CORNER_DP)
+        dock.elevation = Ui.dp(this, 14).toFloat()
+        dock.setPadding(Ui.dp(this, 12), Ui.dp(this, 6), Ui.dp(this, 12), Ui.dp(this, 5))
+        for (entry in picks) dock.addView(dockCell(entry))
+        return dock
+    }
+
+    /** One dock cell: the icon, its name under it, glass focus ring. */
+    private fun dockCell(entry: AppEntry): View {
+        val cell = LinearLayout(this)
+        cell.orientation = LinearLayout.VERTICAL
+        cell.gravity = Gravity.CENTER_HORIZONTAL
+        cell.isFocusable = true
+        cell.isClickable = true
+        cell.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6))
+        // One cell width for every dock app keeps the row even.
+        cell.layoutParams = LinearLayout.LayoutParams(
+            Ui.dp(this, com.mizan.launcher.core.Design.DOCK_ICON_DP + 46), -2
+        )
+
+        val iconPx = Ui.dp(this, com.mizan.launcher.core.Design.DOCK_ICON_DP)
+        val iv = ImageView(this)
+        iv.setImageBitmap(Ui.shapedIcon(entry.icon, iconPx, effectiveIconShape()))
+        iv.layoutParams = LinearLayout.LayoutParams(iconPx, iconPx)
+
+        val label = TextView(this)
+        label.text = entry.label
+        label.textSize = com.mizan.launcher.core.Design.DOCK_LABEL_SP
+        label.setTextColor(0xE6FFFFFF.toInt())
+        label.gravity = Gravity.CENTER
+        label.maxLines = 1
+        label.ellipsize = android.text.TextUtils.TruncateAt.END
+        label.setPadding(0, Ui.dp(this, 4), 0, 0)
+        // The label gets the CELL's width, not the icon's — it was
+        // clamped to 48dp, which is why "Play Games" read "Play G…".
+        label.layoutParams = LinearLayout.LayoutParams(-1, -2)
+
+        cell.addView(iv)
+        cell.addView(label)
+
+        cell.setOnClickListener { launchWithPin(entry) }
+        cell.setOnFocusChangeListener { _, focused ->
+            cell.background = if (focused) {
+                val d = Ui.glassPanel(this, com.mizan.launcher.core.Design.RADIUS_TILE)
+                d.setStroke(Ui.dp(this, 3), 0xFFFFFFFF.toInt())
+                d
+            } else {
+                null
+            }
+            val sc = if (focused) 1.08f else 1f
+            cell.scaleX = sc
+            cell.scaleY = sc
+            cell.elevation = if (focused) Ui.dp(this, 10).toFloat() else 0f
+        }
+        return cell
+    }
+
     private fun appTile(
         entry: AppEntry,
         source: Source,

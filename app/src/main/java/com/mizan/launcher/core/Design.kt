@@ -122,6 +122,30 @@ object Design {
     const val BAR_META_SP = 16f
     const val BAR_GLYPH_SP = 19f
 
+    // ---- glass (v3.16) ------------------------------------------------
+    // The Apple-TV "liquid glass" language: surfaces are a soft white
+    // sheen with a 1dp light edge, never a flat fill, so the wallpaper
+    // still reads through them. Used by the status-bar chips and the
+    // bottom app dock when the profile's Glass look is on.
+    /** Top of the sheen (12% white). */
+    const val GLASS_TOP_ALPHA = 0x30
+    /** Bottom of the sheen (7% white) — the fill thins downwards. */
+    const val GLASS_BOTTOM_ALPHA = 0x12
+    /** The 1dp edge that makes the surface read as glass. */
+    val GLASS_STROKE: Int = 0x3DFFFFFF
+    /** Dock / popover corner radius. */
+    const val GLASS_CORNER_DP = 26
+    /** Dock icon box, dp (the reference's icons are ~48dp on a 1080p TV). */
+    const val DOCK_ICON_DP = 48
+    /** Dock label size — small, as in the reference. */
+    const val DOCK_LABEL_SP = 11f
+
+    // The dock is the one surface that sits OVER scrolling content, so
+    // it is "smoked" glass: dark enough that posters do not bleed
+    // through the icons, still translucent over the wallpaper.
+    const val GLASS_DARK_TOP_ALPHA = 0x99
+    const val GLASS_DARK_BOTTOM_ALPHA = 0x66
+
     /** Small-caps section headers: letter spacing + size, one style. */
     const val SECTION_HEADER_SP = 15f
     const val SECTION_HEADER_TRACKING = 0.14f

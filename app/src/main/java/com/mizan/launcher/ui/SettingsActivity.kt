@@ -1264,6 +1264,14 @@ class SettingsActivity : Activity() {
         content.addView(header("Status bar"))
         val sb = layout.statusBar
         content.addView(toggleRow("Show status bar", sb.showBar, "Off = clean Apple-TV style, no top bar at all") { updateStatusBar { c -> c.copy(showBar = it) } })
+        content.addView(toggleRow(
+            "Glass look",
+            prefs.glassLook,
+            "Translucent chips and a dock of your apps floating over the wallpaper — the Apple TV-style frosted look"
+        ) {
+            prefs.glassLook = it
+            rebuild()
+        })
         content.addView(toggleRow("Sticky status bar", prefs.stickyStatusBar, "The bar stays pinned at the top while the home scrolls — in the TV, Watch and IPTV views") {
             prefs.stickyStatusBar = it
             rebuild()

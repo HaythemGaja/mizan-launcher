@@ -677,6 +677,15 @@ class Prefs(ctx: Context) {
         get() = PrefsSafe.int(sp, "arrow_attempts", 0)
         set(v) { sp.edit().putInt("arrow_attempts", v).apply() }
 
+    /**
+     * v3.16: the Glass look — translucent chips + a bottom app dock,
+     * over the wallpaper. ON by default (the requested design); the
+     * toggle lives in Settings › Look & wallpaper.
+     */
+    var glassLook: Boolean
+        get() = PrefsSafe.bool(sp, "glass_look", true)
+        set(v) { sp.edit().putBoolean("glass_look", v).apply() }
+
     var safeMode: Boolean
         get() = PrefsSafe.bool(sp, "safe_mode", false)
         set(v) { sp.edit().putBoolean("safe_mode", v).apply() }

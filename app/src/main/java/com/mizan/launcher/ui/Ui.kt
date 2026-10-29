@@ -37,6 +37,42 @@ object Ui {
     }
 
     /**
+     * v3.16 (Glass look): the translucent surface — a vertical white
+     * sheen (12% → 7%) with a 1dp light edge, over whatever the
+     * wallpaper is. Shared by the status-bar chips, the bottom dock and
+     * the quick-settings popover so they read as one material.
+     */
+    fun glassPanel(ctx: Context, cornerDp: Int): GradientDrawable {
+        val d = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                (com.mizan.launcher.core.Design.GLASS_TOP_ALPHA shl 24) or 0x00FFFFFF,
+                (com.mizan.launcher.core.Design.GLASS_BOTTOM_ALPHA shl 24) or 0x00FFFFFF
+            )
+        )
+        d.cornerRadius = dp(ctx, cornerDp).toFloat()
+        d.setStroke(dp(ctx, 1).coerceAtLeast(1), com.mizan.launcher.core.Design.GLASS_STROKE)
+        return d
+    }
+
+    /**
+     * v3.16: the smoked variant used by the floating dock — dark glass
+     * so scrolling posters cannot ghost through the dock's icons.
+     */
+    fun glassPanelDark(ctx: Context, cornerDp: Int): GradientDrawable {
+        val d = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                (com.mizan.launcher.core.Design.GLASS_DARK_TOP_ALPHA shl 24),
+                (com.mizan.launcher.core.Design.GLASS_DARK_BOTTOM_ALPHA shl 24)
+            )
+        )
+        d.cornerRadius = dp(ctx, cornerDp).toFloat()
+        d.setStroke(dp(ctx, 1).coerceAtLeast(1), com.mizan.launcher.core.Design.GLASS_STROKE)
+        return d
+    }
+
+    /**
      * Make a focusable tile lift on focus — the ONLY animation in the app
      * (tv-detox ethos). Also swaps its background to the focused style.
      * [onFocusExtra] runs after the lift handling (v1.2: tile name labels
