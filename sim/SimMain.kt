@@ -4037,9 +4037,11 @@ fun section42() {
         // + dates, Details buttons, launcher-service Settings step).
         // Re-pinned in v3.14 (intentional version bump 3.13/36 → 3.14/37 —
         // profile add / edit / delete / reset + per-profile audit).
-        check("v25src: the app version is 3.14 / code 37 (bumped by v3.14)",
-            gradleSrc.contains("versionName = \"3.14\"") &&
-                gradleSrc.contains("versionCode = 37"))
+        // Re-pinned in v3.15 (intentional version bump 3.14/37 → 3.15/38 —
+        // cold-start stall + status-bar fit).
+        check("v25src: the app version is 3.15 / code 38 (bumped by v3.15)",
+            gradleSrc.contains("versionName = \"3.15\"") &&
+                gradleSrc.contains("versionCode = 38"))
     }
 }
 
@@ -5004,9 +5006,10 @@ fun section50() {
         // Re-pinned in v3.12 (intentional version bump 3.10/33 → 3.12/35).
         // Re-pinned in v3.13 (intentional version bump 3.12/35 → 3.13/36).
         // Re-pinned in v3.14 (intentional version bump 3.13/36 → 3.14/37).
-        check("v31src: the version bump is 3.14 / code 37",
-            src("app/build.gradle.kts").contains("versionCode = 37") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.14\""))
+        // Re-pinned in v3.15 (intentional version bump 3.14/37 → 3.15/38).
+        check("v31src: the version bump is 3.15 / code 38",
+            src("app/build.gradle.kts").contains("versionCode = 38") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.15\""))
     }
 }
 

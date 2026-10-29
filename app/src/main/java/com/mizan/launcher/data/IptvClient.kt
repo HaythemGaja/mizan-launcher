@@ -79,6 +79,15 @@ object IptvClient {
     private const val K_LAST_ERROR = "iptv_last_error"
     private const val K_STORE_V2 = "iptv_store_v2"
 
+    /**
+     * v3.15: one-shot guard for the pre-v3.6 series-body migration.
+     * See [migrateLegacySeriesInfo].
+     */
+    private const val K_SERIES_PURGE = "iptv_series_purge_v1"
+
+    /** Prefix of the pre-v3.6 per-series body keys. */
+    private const val SERIES_KEY_PREFIX = "iptv_series_info_"
+
     /** The giant pre-v2.4 prefs documents, purged by [ensureStore]. */
     private val LEGACY_KEYS = listOf(
         "iptv_cache_live_cats", "iptv_cache_live",
@@ -187,8 +196,59 @@ object IptvClient {
             } catch (e: Exception) {
                 // Migration trouble must never block the store.
             }
+            try {
+                migrateLegacySeriesInfo(appCtx, prefs(appCtx))
+            } catch (e: Exception) {
+                // Series-body migration is best-effort; the read
+                // fallback keeps working if it fails.
+            }
             storeReady = true
         }
+    }
+
+    /**
+     * v3.15 (startup stall): pre-v3.6 cached every series body as ONE
+     * prefs string. On Haythem's box that was 6.7 MB across ~140 keys
+     * — an 11 MB mizan_launcher.xml that the framework parses, on a
+     * background thread but behind the first prefs read, at every
+     * process start (the "10 s cold start").
+     *
+     * v3.6 already moved new bodies to files/iptv/series_info/ and
+     * kept the prefs key as a read fallback; this pass finishes the
+     * job: copy each legacy body into that file slot (only when no
+     * fresher file exists), then drop the key, once.
+     */
+    private fun migrateLegacySeriesInfo(ctx: Context, p: android.content.SharedPreferences) {
+        if (PrefsSafe.bool(p, K_SERIES_PURGE, false)) return
+        val keys = p.all.keys.filter { it.startsWith(SERIES_KEY_PREFIX) }
+        val ed = p.edit()
+        if (keys.isNotEmpty()) {
+            val dir = File(storeDir(ctx), "series_info")
+            if (!dir.isDirectory) dir.mkdirs()
+            val fp = fingerprint(ctx).toString()
+            for (k in keys) {
+                val rest = k.removePrefix(SERIES_KEY_PREFIX)
+                val body = PrefsSafe.strOrNull(p, k)
+                val sep = rest.indexOf('_')
+                if (body != null && sep > 0 && rest.substring(0, sep) == fp) {
+                    val target = File(dir, rest + ".json")
+                    if (!target.isFile) {
+                        try {
+                            val tmp = File(dir, target.name + ".tmp")
+                            tmp.writeText(body)
+                            if (target.exists()) target.delete()
+                            tmp.renameTo(target)
+                        } catch (e: Exception) {
+                            // Drop the key regardless: it is a cache,
+                            // and the panel re-fetches on demand.
+                        }
+                    }
+                }
+                ed.remove(k)
+            }
+        }
+        ed.putBoolean(K_SERIES_PURGE, true)
+        ed.commit()
     }
 
     /** Delete the whole store (Settings › Clear sources): files + memos; prefs untouched. */

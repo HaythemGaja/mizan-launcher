@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-28 03:15 UTC
+Date: 2026-10-29 01:33 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -368,7 +368,7 @@ PASS  tileswitch: codec round-trip with tiles off
 PASS  tileswitch: sound independently off, others on
 PASS  tileswitch: v1.2 status strings decode to defaults (Wi-Fi tile off since v2.1)
 PASS  tileswitch: tiles survive the layout codec
-PASS  tileswitch: garbage tiles segment fails open to defaults (Wi-Fi off, others on ? v2.1)
+PASS  tileswitch: garbage tiles segment fails open to defaults (Wi-Fi off, others on — v2.1)
 PASS  tilecodec: v2.0 7-char segment migrates the Wi-Fi tile to off
 PASS  tilecodec: 8-char segment honours the Wi-Fi flag
 PASS  tilecodec: re-enabled Wi-Fi tile survives encode/decode
@@ -487,8 +487,8 @@ PASS  tree: breadcrumb is root-to-folder
 PASS  tree: roots are the parentless folders
 PASS  tree: fresh id skips taken ids
 PASS  tree: a folder cannot contain itself
-PASS  tree: cycle ? an ancestor cannot move under its descendant
-PASS  tree: max depth ? a height-3 subtree fits nowhere deeper
+PASS  tree: cycle — an ancestor cannot move under its descendant
+PASS  tree: max depth — a height-3 subtree fits nowhere deeper
 PASS  tree: re-parenting a leaf up a level is legal
 PASS  tree: legal parents exclude self, descendants, too-deep targets
 PASS  tree: move re-parents (old parent loses the entry)
@@ -549,33 +549,33 @@ PASS  homestyle: watch survives the codec (v2.3, kept in v3.8)
 PASS  homestyle: root reorder permutes only the root slots
 PASS  homestyle: root reorder keeps nesting intact
 PASS  homestyle: root reorder with the current order is a no-op
-PASS  tracker: codec ? tracker migrates to watch, garbage still decodes to tv
-PASS  tracker: upnext parse ? fields land, id-less item dropped
-PASS  tracker: parse is fail-open ? garbage and null give empty lists
-PASS  tracker: continue parse ? progress counts land
-PASS  tracker: movies parse ? planned/poster/watched land, null date reads blank
-PASS  tracker: tracked parse ? watched[] becomes a count
-PASS  tracker: hero order ? upnext+backdrop, continue+backdrop, rest
+PASS  tracker: codec — tracker migrates to watch, garbage still decodes to tv
+PASS  tracker: upnext parse — fields land, id-less item dropped
+PASS  tracker: parse is fail-open — garbage and null give empty lists
+PASS  tracker: continue parse — progress counts land
+PASS  tracker: movies parse — planned/poster/watched land, null date reads blank
+PASS  tracker: tracked parse — watched[] becomes a count
+PASS  tracker: hero order — upnext+backdrop, continue+backdrop, rest
 PASS  tracker: hero featured pick is the first upnext with a backdrop
 PASS  tracker: hero cycle wraps forward and backward
 PASS  tracker: hero falls back to continue when upnext has no backdrop
 PASS  tracker: hero falls back to first upnext when nothing has a backdrop
 PASS  tracker: hero of an empty cycle is null
 PASS  tracker: continue hero carries no episode coordinates
-PASS  tracker: countdown ? today, tomorrow, in N d
-PASS  tracker: countdown ? past is Aired, far future is the date itself
-PASS  tracker: countdown ? month/year boundaries use real day math
-PASS  tracker: countdown ? empty or malformed dates give no label
+PASS  tracker: countdown — today, tomorrow, in N d
+PASS  tracker: countdown — past is Aired, far future is the date itself
+PASS  tracker: countdown — month/year boundaries use real day math
+PASS  tracker: countdown — empty or malformed dates give no label
 PASS  tracker: airing-today counts only today's items
 PASS  tracker: pill text composes the numbers the data supports
-PASS  tracker: merge ? tracker cards first, in snapshot order
-PASS  tracker: merge ? system titles matching a tracker title drop out
-PASS  tracker: merge ? unique system titles survive once, with their index
+PASS  tracker: merge — tracker cards first, in snapshot order
+PASS  tracker: merge — system titles matching a tracker title drop out
+PASS  tracker: merge — unique system titles survive once, with their index
 PASS  tracker: title normalization ignores case, spaces, punctuation
-PASS  tracker: movies ? planned first by release date, then the rest, watched excluded
-PASS  tracker: movies ? unknown release dates sort last within their group
-PASS  tracker: movies ? all-watched falls back to the full sorted list
-PASS  tracker: movies ? locally-marked movies stay out even in the fallback
+PASS  tracker: movies — planned first by release date, then the rest, watched excluded
+PASS  tracker: movies — unknown release dates sort last within their group
+PASS  tracker: movies — all-watched falls back to the full sorted list
+PASS  tracker: movies — locally-marked movies stay out even in the fallback
 PASS  tracker: marked codec round-trips and skips garbage lines
 PASS  tracker: withMarked replaces the same item instead of duplicating it
 PASS  tracker: filterUpNext hides only the marked episode
@@ -584,31 +584,31 @@ PASS  tracker: prune keeps entries the snapshot is not fresher than
 PASS  tracker: prune drops a tv entry once a fresher snapshot lost the episode
 PASS  tracker: prune keeps a tv entry while the episode is still in the snapshot
 PASS  tracker: prune drops a movie entry once the snapshot flags it watched
-PASS  tracker: search ? prefix hits (shows then movies) before substring hits
+PASS  tracker: search — prefix hits (shows then movies) before substring hits
 PASS  tracker: search detail counts watched episodes
 PASS  tracker: search finds movies with the tracked detail
 PASS  tracker: search is case-insensitive substring, prefix first
 PASS  names: normalize trims and collapses whitespace runs
 PASS  names: blank or null normalizes to no-custom-name
 PASS  names: cap is 16 chars and never leaves a trailing space
-PASS  names: default labels ? Guest for the flagged profile, Profile N otherwise
-PASS  names: display ? custom name wins, blank falls back to the default
+PASS  names: default labels — Guest for the flagged profile, Profile N otherwise
+PASS  names: display — custom name wins, blank falls back to the default
 PASS  grace: windows and labels line up; garbage coerces to Every time
 PASS  grace: window 0 (Every time) never grants, even with a fresh stamp
 PASS  grace: no stamp never grants
 PASS  grace: inside the window grants (5 min, 1 ms before the edge)
-PASS  grace: expiry is exact ? at the boundary the gate prompts again
+PASS  grace: expiry is exact — at the boundary the gate prompts again
 PASS  grace: a stamp in the future (clock moved back) never grants
 PASS  grace: longer windows hold proportionally (30 min at 29:59)
-PASS  tracker status: classify ? not installed beats everything
-PASS  tracker status: classify ? a permission refusal is reported even with cached data
-PASS  tracker status: classify ? answered+data is NONE, answered-empty is EMPTY, silent is OTHER
+PASS  tracker status: classify — not installed beats everything
+PASS  tracker status: classify — a permission refusal is reported even with cached data
+PASS  tracker status: classify — answered+data is NONE, answered-empty is EMPTY, silent is OTHER
 PASS  tracker status: diag line forms for every state
 PASS  tracker status: diag OK form carries per-section counts and the snapshot time (v2.1)
 PASS  tracker status: diag NONE without data reads as the empty state
-PASS  tracker status: fallback line ? absent tracker shows NO line
-PASS  tracker status: fallback line ? permission state is actionable
-PASS  tracker status: fallback line ? empty/other/none ask for one tracker open
+PASS  tracker status: fallback line — absent tracker shows NO line
+PASS  tracker status: fallback line — permission state is actionable
+PASS  tracker status: fallback line — empty/other/none ask for one tracker open
 PASS  netflix: page + brand tokens
 PASS  poster metrics: height is two tile heights, width is 2:3
 PASS  poster metrics: portrait, and follows the size scale
@@ -705,40 +705,40 @@ PASS  iptv: live url is /live/user/pass/id.m3u8
 PASS  iptv: vod url uses container_extension, defaulting to mp4
 PASS  iptv: episode url is /series/user/pass/episodeId.ext
 PASS  iptv: timeshift url is /timeshift/user/pass/durationMin/startYmdHis/id.ts
-PASS  iptv: auth probe ? 1 true, 0 false, string ids accepted, junk null
+PASS  iptv: auth probe — 1 true, 0 false, string ids accepted, junk null
 PASS  iptv: categories parse (string+numeric ids, blank names skipped, key stamped)
 PASS  iptv: live parse skips bad ids + blank names, resolves category names
 PASS  iptv: tv_archive flag drives catch-up availability
 PASS  iptv: vod parse keeps container_extension + numeric rating as text
 PASS  iptv: series list parse
-PASS  iptv: series info ? seasons sort numerically, ghost episodes skipped
-PASS  iptv: series info ? episode fields (ext, duration, plot)
-PASS  iptv: m3u channels + groups (quote-aware name, ungrouped ? Playlist)
-PASS  iptv: m3u channel identity ? tvg-id/logo/direct url, stable ids
+PASS  iptv: series info — seasons sort numerically, ghost episodes skipped
+PASS  iptv: series info — episode fields (ext, duration, plot)
+PASS  iptv: m3u channels + groups (quote-aware name, ungrouped → Playlist)
+PASS  iptv: m3u channel identity — tvg-id/logo/direct url, stable ids
 PASS  iptv: favorites codec round-trips hostile names
 PASS  iptv: favorites toggle adds then removes by identity key
 PASS  iptv: favorites decode is fail-open on garbage
-PASS  iptv: shouldClear ? near the end or ?95% is finished; unknown duration is not
+PASS  iptv: shouldClear — near the end or ≥95% is finished; unknown duration is not
 PASS  iptv: resume store replaces by key and drops finished entries
 PASS  iptv: resumeFor hides sub-threshold positions
 PASS  iptv: continue list is vod/episode only, newest first
 PASS  iptv: resume codec round-trips
 PASS  iptv: search is case-insensitive across all three catalogues
 PASS  iptv: search excludes hidden categories
-PASS  iptv: home rows order ? favorites, live categories, continue, movies, series
+PASS  iptv: home rows order — favorites, live categories, continue, movies, series
 PASS  iptv: home live card carries the EPG now title + progress
 PASS  iptv: home rows drop locked categories (empty category rows never render)
 PASS  iptv: home rows with no data compose to nothing
 PASS  iptv: xmltv parses channels, unescapes entities, unwraps CDATA, skips broken spans
 PASS  iptv: xmltv timezone offsets convert to the same absolute instant
 PASS  iptv: now/next selection at a fixed clock + progress fraction
-PASS  iptv: short epg ? base64 titles, listing times read as UTC
+PASS  iptv: short epg — base64 titles, listing times read as UTC
 PASS  iptv: adult markers match case-insensitively
 PASS  iptv: lock store codecs round-trip
-PASS  iptv: stamp validity ? grace window vs session rule
-PASS  iptv: isLocked ? no pattern means nothing locks; stored + adult lock; a valid stamp opens
+PASS  iptv: stamp validity — grace window vs session rule
+PASS  iptv: isLocked — no pattern means nothing locks; stored + adult lock; a valid stamp opens
 PASS  iptv: hiddenKeys composes the decision over a category list
-PASS  iptv: status classify precedence ? unconfigured, data beats auth, auth, empty, error
+PASS  iptv: status classify precedence — unconfigured, data beats auth, auth, empty, error
 PASS  iptv: diag line carries counts + time, never credentials
 PASS  iptv: empty-state lines per kind
 PASS  iptv: diag line names the failure class after 'not answering' when one is recorded
@@ -765,13 +765,13 @@ PASS  watch: auto-mark fires at exactly 90%, not at 89%
 PASS  watch: auto-mark never fires twice, never tokenless, never on a partial watch
 PASS  watch: badge only when matched; hero labels name the episode, movies plain
 PASS  watch: diag line is counts-only
-PASS  iptv232: hostile EPG index ? homeRowsOrEmpty fails open to no rows
+PASS  iptv232: hostile EPG index — homeRowsOrEmpty fails open to no rows
 PASS  iptv232: the same composition with a sane EPG still composes rows
-PASS  iptv232: home rows stay capped on a 5,000-entry catalogue (live + movies ? ROW_CARD_CAP)
-PASS  iptv232: the favorites row is capped too (60 stored ? ROW_CARD_CAP)
+PASS  iptv232: home rows stay capped on a 5,000-entry catalogue (live + movies ≤ ROW_CARD_CAP)
+PASS  iptv232: the favorites row is capped too (60 stored → ROW_CARD_CAP)
 PASS  iptv232: the home VIEW cap trims any row to HOME_ROW_VIEW_CAP (20)
 PASS  iptv232: browser grid page caps a 5,000-channel category at GRID_CAP (200), total preserved
-PASS  iptv232: search results page the same way (5,000 matches ? 200 shown)
+PASS  iptv232: search results page the same way (5,000 matches → 200 shown)
 PASS  iptv232: a list under the cap pages whole and untruncated
 PASS  iptv232: the browser rebuild is guarded and records as iptvbrowser
 PASS  iptv232: the browser pages its grids through gridPage
@@ -802,7 +802,7 @@ PASS  iptvstore: swap only when every attempted catalogue endpoint succeeded
 PASS  iptvstore: XMLTV stream delivers the same programmes as the document parse
 PASS  iptvstore: guide window keeps now/next, drops the long past and the far future
 PASS  iptvstore: an oversized programme segment is dropped, the stream resyncs
-PASS  iptvstore: sliced home composes favorites ? live ? movies ? series
+PASS  iptvstore: sliced home composes favorites → live → movies → series
 PASS  iptvstore: sliced home falls back to a flat Live row without categories
 PASS  iptvstore: the client purges the legacy prefs documents on first v2.4 run
 PASS  iptvstore: no whole-catalogue snapshot survives in the client (no cached(), no raw snapshot)
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.14 / code 37 (bumped by v3.14)
+PASS  v25src: the app version is 3.15 / code 38 (bumped by v3.15)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -878,7 +878,7 @@ PASS  v26src: no foreground service anywhere in the player (standing rule)
 PASS  v26src: the aspect mode persists per profile (player_aspect)
 PASS  v26src: Details carries the IPTV episode fallback + its header note
 PASS  v26src: LibraryLogic accepts the io:<ClassName> token form
-PASS  v26src: tracker 1.14.5 returns io:<simple exception class name>
+FAIL  v26src: tracker 1.14.5 returns io:<simple exception class name>  
 PASS  resolve: a proxy success stands and the direct path never runs
 PASS  resolve: proxy failure + no launcher key surfaces the proxy error, direct uncalled
 PASS  resolve: proxy failure + launcher key + direct success answers via direct
@@ -907,20 +907,20 @@ PASS  repo: keyed matchAll == per-title matchOne under the repo core
 PASS  repo: 'Dune 2021 1080p' contains-matches the yearless 'Dune'; 'Missing Show' stays unmatched
 PASS  discovery: trending/all parses tv+movie, drops people + blank titles, keeps TMDB order
 PASS  discovery: per-type trending forces the type when media_type is absent
-PASS  discovery: a trending title flags the ? IPTV badge only when the catalogue matches
+PASS  discovery: a trending title flags the ▶ IPTV badge only when the catalogue matches
 PASS  discovery: tv facts parse (next episode + genres + rating)
-PASS  discovery: tv facts ? a null next_episode_to_air reads blank (no guessing from seasons)
+PASS  discovery: tv facts — a null next_episode_to_air reads blank (no guessing from seasons)
 PASS  discovery: movie facts parse (release date + genres)
 PASS  soon: future-only, strictly parsed (Feb 30 rejected), sorted ascending
 PASS  soon: shows carry episode coordinates, movies none
-PASS  soon: chips ? today / tomorrow / in N days / the bare date; past + unparseable read blank
+PASS  soon: chips — today / tomorrow / in N days / the bare date; past + unparseable read blank
 PASS  soon: the strict parser round-trips real dates and rejects invented ones
 PASS  soon: the row caps at 20
 PASS  foryou: seed weights follow the tracker (tv completion curve, movie watched flag)
 PASS  foryou: seeds are the top titles by weight x rating (weight gate > 0.4)
 PASS  foryou: affinity spreads each title's weight over its genres; top genres ranked
-PASS  foryou: recommendation picks ? poster required, reason names the seed, score = weight*10 + rating
-PASS  foryou: discover picks ? representative-title reason, affinity x2 scoring
+PASS  foryou: recommendation picks — poster required, reason names the seed, score = weight*10 + rating
+PASS  foryou: discover picks — representative-title reason, affinity x2 scoring
 PASS  foryou: merge dedupes, excludes tracked, sorts by score
 PASS  foryou: merge cap applies
 PASS  foryou: the discover path mirrors the tracker engine's params
@@ -938,18 +938,18 @@ PASS  v27src: diagnostics carries the discovery line
 PASS  v27src: the direct client accepts discover/ (the proxy allowlist has none)
 PASS  migrate: a pre-v2.7 stored order has the focus rows appended at the end
 PASS  migrate: the appended rows splice into their canonical slots
-PASS  migrate: idempotent ? a second pass changes nothing
+PASS  migrate: idempotent — a second pass changes nothing
 PASS  migrate: an untouched canonical order is a no-op
 PASS  migrate: only the still-appended rows move (comingsoon drops on decode)
 PASS  migrate: a focus row parked mid-list (before foryou) is never itself moved
 PASS  migrate: the user's other rows keep their relative order exactly
 PASS  migrate: the hidden set drops removed keys; the splice still applies
-PASS  tabs: Watch = Home ? Library ? Apps ? Live (v3.9)
+PASS  tabs: Watch = Home · Library · Apps · Live (v3.9)
 PASS  tabs: only Home is selected, and it is STAY
 PASS  tabs: Library opens the library; Apps jumps focus to All Apps; Live opens IPTV Live
 PASS  tabs: the TV style has no tab bar; watch (and legacy tracker/iptv keys) share the Watch tabs
 PASS  hero: a matched title's primary is Play (v2.9 rule)
-PASS  hero: an unmatched title's primary is Details ? never the tracker
+PASS  hero: an unmatched title's primary is Details — never the tracker
 PASS  startup: both timings recorded
 PASS  startup: nothing recorded renders dashes, never a fake 0
 PASS  startup: a zero first frame is honest; a missing full stays a dash
@@ -957,24 +957,24 @@ PASS  v28src: both media homes build the pill bar from the pure model
 PASS  v28src: the landscape rail + circular All Apps builders exist and are used
 PASS  v28src: the hero primary routes through the pinned decision; Open Tracker is never a hero button
 PASS  v28src: cold start is staged (warm worker + deferred prepares + shell lines)
-PASS  v28src: Details has no Open in Tracker anywhere ? the More overflow is gone with it
+PASS  v28src: Details has no Open in Tracker anywhere — the More overflow is gone with it
 PASS  v28src: IPTV cards carry the LIVE pill + in-frame progress + focus border
 PASS  v28src: settings nav fixes are in (no selectable dead stop, index memory, focus net, startup line)
 PASS  v28src: the window background is the brand splash, not a black void
 PASS  v28src: DiagLog records the startup milestones
 PASS  v28src: the one-time order migration is wired into the sections read
-== (47) v2.9: audit fixes ? play routing, artwork fit, unified bar, scrub, discovery source ==
+== (47) v2.9: audit fixes — play routing, artwork fit, unified bar, scrub, discovery source ==
 PASS  route: a matched card's OK press plays
 PASS  route: an unmatched card's OK press opens Details (never the tracker)
-PASS  route: a matched movie hero leads with ? Play
-PASS  route: a matched show hero leads with ? Play S3 E7
-PASS  route: an unmatched hero leads with Details ? Play is never offered
+PASS  route: a matched movie hero leads with ▶ Play
+PASS  route: a matched show hero leads with ▶ Play S3 E7
+PASS  route: an unmatched hero leads with Details — Play is never offered
 PASS  resolve: idle + press starts finding
 PASS  resolve: a second press while finding is ignored (no double resolve)
 PASS  resolve: finding + found hands off to the player
 PASS  resolve: finding + not found fails (the caller falls back to Details)
 PASS  resolve: failed + press retries the find
-PASS  resolve: the button reads Finding stream? only while finding
+PASS  resolve: the button reads Finding stream… only while finding
 PASS  art: landscape art in a landscape frame crops to fill
 PASS  art: a portrait poster in a landscape frame renders COMPLETE, never cropped
 PASS  art: a poster in its own 2:3 frame fills it
@@ -986,7 +986,7 @@ PASS  bar: showBar off hides the whole status group but never the tabs
 PASS  bar: clock+date+weather all off drops the info pill; glyphs follow their toggles
 PASS  bar: the guest pill appears only for a guest profile outside safe mode
 PASS  bar: safe mode drops weather/guest but keeps clock+date info
-PASS  scrub: a credential URL in an error becomes ?url?
+PASS  scrub: a credential URL in an error becomes ‹url›
 PASS  scrub: an api_key parameter value is redacted
 PASS  scrub: a plain message passes through untouched
 PASS  scrub: null and blank become empty; long text is capped
@@ -1005,9 +1005,9 @@ PASS  v29src: persisted error lines pass through the scrub
 PASS  v29src: the details header fits a poster complete (no banner crop)
 -- section 48: v3.0 crash hardening (startup health, section guards, depth caps, prefs funnel)
 PASS  health: threshold is two consecutive uncleared starts
-PASS  health: modeFor ? 0/1 uncleared is NORMAL, 2+ is SAFE_SHELL, negatives coerce to NORMAL
+PASS  health: modeFor — 0/1 uncleared is NORMAL, 2+ is SAFE_SHELL, negatives coerce to NORMAL
 PASS  health: [die, die] -> the THIRD launch is the safe shell
-PASS  health: one clean render breaks the run ? [die, clear, die, die] stays NORMAL throughout
+PASS  health: one clean render breaks the run — [die, clear, die, die] stays NORMAL throughout
 PASS  health: the launch after two consecutive deaths is SAFE_SHELL, and its clean render clears
 PASS  health: after a cleared safe-shell launch the next launch is NORMAL again
 PASS  health: the notice names safe mode and points at Diagnostics
@@ -1019,7 +1019,7 @@ PASS  guard: a throwing section (Error included) yields its tile; the others sti
 PASS  json: the depth cap is 64
 PASS  json: a 5000-deep document parses to null instead of overflowing the stack
 PASS  json: nesting inside the cap parses (60 levels), past it reads as malformed (100 levels)
-PASS  json: a wide shallow document (200 siblings at depth 3) parses ? depth is per-branch, not cumulative
+PASS  json: a wide shallow document (200 siblings at depth 3) parses — depth is per-branch, not cumulative
 PASS  json: malformed documents read as null (truncated, bad token, trailing garbage, empty)
 PASS  stream: a small array still streams element by element
 PASS  stream: a hostile deeply-nested element fails as IllegalArgumentException, not StackOverflowError
@@ -1081,10 +1081,10 @@ PASS  v31: prune under the cap deletes nothing
 PASS  v31: prune over the cap deletes oldest first and never the section being written
 PASS  v31: prune keeps the written section even when it alone busts the cap
 PASS  v31: the credential tripwire fires on Xtream/TMDB shapes and passes clean snapshot JSON
-PASS  v31: the diagnostics line names coverage, oldest age, and size ? never content
-PASS  v31: decide precedence ? loading beats failure, failure beats data, data beats empty
+PASS  v31: the diagnostics line names coverage, oldest age, and size — never content
+PASS  v31: decide precedence — loading beats failure, failure beats data, data beats empty
 PASS  v31: only ERROR is retryable
-PASS  v31: retry routing ? tracker, discovery, iptv, apps, unknown
+PASS  v31: retry routing — tracker, discovery, iptv, apps, unknown
 PASS  v31: a section with data never reports loading, even mid-refresh
 PASS  v31: loading is tracker-fetching for tracker rows, discovery-unloaded for discovery rows
 PASS  v31: Play-in drops Sreeb itself and blank packages, sorts the rest by label
@@ -1094,11 +1094,11 @@ PASS  v31src: tracker home renders loading placeholders at configured positions 
 PASS  v31src: Play-in entries exist in card menus and the hero/menu paths use the shared resolvers
 PASS  v31src: quick-settings routes the internal Sort sections target to Settings by category
 PASS  v31src: the indexed store replaces the home-cache mirror (legacy read only)
-PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app packages
+PASS  v31src: Play-in discovers handlers via the intent query — no hardcoded app packages
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.14 / code 37
+PASS  v31src: the version bump is 3.15 / code 38
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1146,7 +1146,7 @@ PASS  clear53: safe-shell completed render clears immediately (0ms)
 PASS  clear53: degraded build holds the clear in both modes
 PASS  clear53: [die, die] -> safe shell, and its clean render clears immediately
 PASS  clear53: after the cleared safe launch the next launch is NORMAL
-PASS  clear53: user-exit or immediate clear never disables re-arming ? two more deaths re-arm safe mode
+PASS  clear53: user-exit or immediate clear never disables re-arming — two more deaths re-arm safe mode
 PASS  clear53: degraded safe render holds the clear (counter stays)
 PASS  clear53: notice names safe mode, Diagnostics, and the exit action
 PASS  auto53src: unlock dialog auto-submits at the stored length
@@ -1233,15 +1233,15 @@ PASS  death55: record codec round-trips and strips pipes
 PASS  death55: malformed records decode to null (fail-open)
 PASS  key55: keyOnlyOf drops the name, keeps id + squash + year
 PASS  key55: key-only match == classic match (tv + movies)
-PASS  key55: exact tier beats contains ? Reacher finds exact Reacher, not Preacher
-PASS  key55: repo contains case ? Reacher finds catalogue Preacher when no exact exists
+PASS  key55: exact tier beats contains — Reacher finds exact Reacher, not Preacher
+PASS  key55: repo contains case — Reacher finds catalogue Preacher when no exact exists
 PASS  key55: exact tier wins and year narrows the pool
 PASS  key55: undated Dune hits the exact tier on both years, flagged possible
 PASS  key55: contains tier orders shortest first when years tie
 PASS  key55: movie Dune finds the 2021 VOD exactly enough (contains, year-agreeing)
 PASS  key55: no match stays no match
 PASS  key55: empty title never matches, empty catalogue never matches
-PASS  src55: App.onCreate warms slim only ? no full parse, no discovery preload
+PASS  src55: App.onCreate warms slim only — no full parse, no discovery preload
 PASS  src55: App captures trim warnings for the death record
 PASS  src55: parallel colddwarm threads are gone; the chain kick replaces them
 PASS  src55: home build reads the cached match table, never kicks a recompute
@@ -1309,12 +1309,12 @@ PASS  src57: provider action queue is gone; writes go through LibraryLocal
 PASS  src57: one-time import is the sole provider contact (flag-gated, marked as the exception)
 PASS  src57: no live provider read outside TrackerClient (no launcherdata string in any screen/action/local file)
 PASS  src57: TMDB is direct-only (no proxy, no proxy-first resolution)
-PASS  src57: Details unlock ? Add to my list for untracked titles, old gate toast gone
+PASS  src57: Details unlock — Add to my list for untracked titles, old gate toast gone
 PASS  src57: no Open Tracker entry in any card menu (menus only, bodies scoped)
 PASS  src57: hero buttons no longer gated on the tracker app being installed
 PASS  src57: missed row wired end to end (section, filter, worker, chain tail, retry)
 PASS  src57: local writes are serialized + atomic (one lock, index rewrite, memo install)
-PASS  src57: poster fix ? portrait cards FIT_CENTER, landscape cards poster-first, hero stays backdrop
+PASS  src57: poster fix — portrait cards FIT_CENTER, landscape cards poster-first, hero stays backdrop
 PASS  src57: diagnostics library line replaces the tracker line
 PASS  src57: hero rule (missed first, today/blank tier, fallback) + no-refresh untouched (local re-read only)
 PASS  slim58: version is 2 (v1 files must decode as absent)
@@ -1325,7 +1325,7 @@ PASS  slim58: Missed composes right after Up Next when available
 PASS  slim58: Missed is hidden when its section is hidden (sort control still works)
 PASS  hero58: today item is a hero even when Coming Soon also lists it today
 PASS  hero58: a future-dated Coming Soon twin still excludes the item from the hero
-PASS  hero58: tier order unchanged ? missed still leads today
+PASS  hero58: tier order unchanged — missed still leads today
 PASS  hero58: future Up Next items never enter the schedule tiers
 PASS  hero58: For You fallback present without a cached backdrop (blank, not invented)
 PASS  poster58: blank Up Next poster fills from the cache; present poster untouched
@@ -1345,7 +1345,7 @@ PASS  src58: media-home family is Watch-only
 PASS  src58: both bars use the pill builders + the fit pass (Settings stays on screen)
 PASS  src58: no foreground service anywhere (standing rule)
 PASS  watch59: final styles are TV/Watch only; iptv migrates to Watch
-PASS  watch59: Watch tabs are Home ? Library ? Apps ? Live, Live last
+PASS  watch59: Watch tabs are Home · Library · Apps · Live, Live last
 PASS  watch59: raw iptv/tracker keys land on the Watch tabs (defensive mapping)
 PASS  missed59: pendingWatchedFor scopes adds/removes to one show
 PASS  missed59: same S/E coords on another show do NOT filter its missed item
@@ -1361,7 +1361,7 @@ PASS  src59: Trending TV + Movies join the visible-first match set and warm up
 PASS  src59: a matched Trending show without a library twin plays S1 E1 (no mark token)
 PASS  src59: the full pass matches Trending from disk (type-strict, library wins duplicates)
 PASS  src59: Up Next + Missed cards are portrait (no landscape builder, no over-blur branch)
-PASS  src59: scope guard ? Continue cards keep landscapeCard; hero tier order untouched
+PASS  src59: scope guard — Continue cards keep landscapeCard; hero tier order untouched
 PASS  src59: picker lists TV/Watch only (explicit list, no IPTV key)
 PASS  src59: no foreground service in the newly touched data files (standing rule)
 PASS  want60: only planned + zero-watched + no-Continue is wanted
@@ -1374,8 +1374,8 @@ PASS  want60: filterForYou drops overlay-dismissed picks
 PASS  want60: prune keeps a dismiss while its pick is in the snapshot, drops it once it leaves
 PASS  want60: For You menu offers Refresh For You (forces a discovery recompute)
 PASS  want60: groupMissed yields one group per show, most overdue first
-PASS  want60: range labels ? cross-season, same-season, single
-PASS  want60: date labels ? aired date + days ago, 1-day singular, no invented dates
+PASS  want60: range labels — cross-season, same-season, single
+PASS  want60: date labels — aired date + days ago, 1-day singular, no invented dates
 PASS  want60: allMissedEpisodes skips watched, future, dateless and season 0
 PASS  want60: Details checkbox is its own focusable toggle; Play is a focusable button, still gated on unaired
 PASS  want60: Settings Home & launcher gains a launcher-service step + diagnostics line
@@ -1399,10 +1399,9 @@ PASS  prof61: guest gate works for any profile number
 PASS  prof61: Prefs generalizes current/guest coercion via ProfileSet
 PASS  prof61: Prefs owns add/delete/reset with the prefix filter
 PASS  prof61: delete clears the guest flag only for its own profile; reset leaves it alone
-PASS  prof61: Settings profiles section is a picker + add/delete/reset, not a 1?2 toggle
+PASS  prof61: Settings profiles section is a picker + add/delete/reset, not a 1↔2 toggle
 PASS  prof61: delete and reset confirmations are distinct
 PASS  prof61: backup export/import iterate the profile set, not hardcoded 1..2
 PASS  prof61: status-bar switcher lists every existing profile except current
 PASS  prof61: no foreground service in the newly touched files (standing rule)
-RESULT: 1188 passed, 0 failed, 1188 total
-```
+RESULT: 1187 passed, 1 failed, 1188 total

@@ -11,8 +11,8 @@ android {
         applicationId = "com.mizan.launcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 37
-        versionName = "3.14"
+        versionCode = 38
+        versionName = "3.15"
     }
     signingConfigs {
         // Pinned debug keystore in persistent workspace storage. The default
@@ -21,7 +21,13 @@ android {
         // update. Absolute path: the Gradle daemon runs as root, so a
         // user.home-relative path would resolve to /root and fail.
         create("pinnedDebug") {
-            storeFile = file("/home/hatch/workspace/.keystores/mizanlauncher-debug.keystore")
+            // The release/update build must keep ONE signing key or the
+            // TV refuses the update ("App not installed"). The default
+            // is the original build-VM path; set MIZAN_KEYSTORE to point
+            // a checkout at its own copy (see .gitignore).
+            val keystorePath = System.getenv("MIZAN_KEYSTORE")?.takeIf { it.isNotBlank() }
+                ?: "/home/hatch/workspace/.keystores/mizanlauncher-debug.keystore"
+            storeFile = file(keystorePath)
             storePassword = "android"
             keyAlias = "mizanlauncher"
             keyPassword = "android"

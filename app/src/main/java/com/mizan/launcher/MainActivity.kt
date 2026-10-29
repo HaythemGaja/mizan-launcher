@@ -118,6 +118,22 @@ class MainActivity : Activity() {
     private var networkView: TextView? = null
     private var firstTile: View? = null
 
+    // v3.15: the ISO day string, recomputed only when the day changes.
+    // See todayIso() — the per-call SimpleDateFormat it replaces was
+    // the ANR's main-thread stall (ICU currency table init).
+    private var todayIsoCache: String = ""
+    private var todayIsoEpochDay: Long = Long.MIN_VALUE
+
+    private val todayIsoCached: String
+        get() {
+            val epochDay = java.time.LocalDate.now().toEpochDay()
+            if (epochDay != todayIsoEpochDay) {
+                todayIsoEpochDay = epochDay
+                todayIsoCache = java.time.LocalDate.ofEpochDay(epochDay).toString()
+            }
+            return todayIsoCache
+        }
+
     // ---- v2.0 state ----
     /** This profile's custom artwork, parsed once per rebuild. */
     private var artworkByPkg: Map<String, ArtworkStore.Entry> = emptyMap()
@@ -1872,8 +1888,9 @@ class MainActivity : Activity() {
         val stamp = IptvClient.storeStamp(this)
         val fetchedAt = IptvClient.fetchedAt(this)
         if (fetchedAt > 0L) {
-            val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
-                .format(java.util.Date(fetchedAt))
+            val timeText = com.mizan.launcher.core.TimeFmt.format(
+                "h:mm a", java.util.Locale.US, fetchedAt
+            )
             content.addView(trackerInfoLine("IPTV · Updated $timeText"))
         }
         if (iptvHomeStamp != stamp) {
@@ -2446,71 +2463,163 @@ class MainActivity : Activity() {
     private fun fitBarRow(row: LinearLayout) {
         row.post {
             try {
-                val parent = row.parent as? View ?: return@post
-                val avail = parent.width - row.paddingLeft - row.paddingRight
-                if (avail <= 0) return@post
-                var total = 0
-                var anyText = false
-                for (i in 0 until row.childCount) {
-                    val child = row.getChildAt(i)
-                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
-                    total += child.measuredWidth + lp.leftMargin + lp.rightMargin
-                }
-                if (total <= avail) return@post
-                fun ellipsizeDeep(v: View) {
-                    if (v is TextView) {
-                        v.maxLines = 1
-                        v.ellipsize = android.text.TextUtils.TruncateAt.END
-                        anyText = true
-                    } else if (v is ViewGroup) {
-                        for (j in 0 until v.childCount) ellipsizeDeep(v.getChildAt(j))
-                    }
-                }
-                var weightedTotal = 0
-                for (i in 0 until row.childCount) {
-                    val child = row.getChildAt(i)
-                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
-                    if (child !is TextView && child !is ViewGroup) {
-                        // Plain spacer: collapses when shrinking.
-                        lp.width = 0
-                        lp.weight = 0f
-                        child.layoutParams = lp
-                        continue
-                    }
-                    weightedTotal += child.measuredWidth
-                }
-                if (weightedTotal <= 0) return@post
-                var margins = 0
-                for (i in 0 until row.childCount) {
-                    val child = row.getChildAt(i)
-                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
-                    if (lp.weight > 0f || child is TextView || child is ViewGroup) {
-                        margins += lp.leftMargin + lp.rightMargin
-                    }
-                }
-                val remaining = (avail - margins).coerceAtLeast(0)
-                for (i in 0 until row.childCount) {
-                    val child = row.getChildAt(i)
-                    val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
-                    if (child is TextView || child is ViewGroup) {
-                        ellipsizeDeep(child)
-                        lp.width = 0
-                        lp.weight = child.measuredWidth.toFloat() /
-                            weightedTotal.toFloat() * remaining
-                        // Weight is a share, not pixels: scale the
-                        // shares so they sum to the remaining width.
-                        // (LinearLayout normalizes weights, so the
-                        // absolute scale is irrelevant — only the
-                        // ratios matter; the factor above keeps
-                        // them proportional to measured widths.)
-                        child.layoutParams = lp
-                    }
-                }
-                if (anyText) row.requestLayout()
+                fitBarRowNow(row)
             } catch (e: Exception) {
                 // Bar stays as built; a fit failure never breaks home.
             }
         }
+    }
+
+    /**
+     * v3.15 (bar fit, second pass): the v3.8 pass shrank EVERY child
+     * proportionally whenever the row overflowed, and that is what
+     * turned "Home"/"Library"/"Settings" into "H…"/"Lib…"/"Se…" on a
+     * 1080p panel with font scale 1.15 — the labels were sacrificed so
+     * the full-width date and five word tiles could stay.
+     *
+     * It now spends space on ornament before labels, in this order:
+     *   1. tighter gaps + text -8%
+     *   2. text -14%
+     *   3. drop the optional info (date, then weather)
+     *   4. text -20%
+     *   5. proportional ellipsis (old behaviour, last resort only)
+     * No tile is ever removed from the row, so every one stays
+     * D-pad reachable; only the last resort truncates a label.
+     */
+    private fun fitBarRowNow(row: LinearLayout) {
+        val parent = row.parent as? View ?: return
+        val avail = parent.width - row.paddingLeft - row.paddingRight
+        if (avail <= 0) return
+
+        fun naturalWidth(): Int {
+            var total = 0
+            for (i in 0 until row.childCount) {
+                val child = row.getChildAt(i)
+                if (child.visibility == View.GONE) continue
+                val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+                if (lp.weight > 0f) continue // flexible spacer
+                child.measure(
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                )
+                total += child.measuredWidth + lp.leftMargin + lp.rightMargin
+            }
+            return total
+        }
+
+        if (naturalWidth() <= avail) return
+
+        val texts = ArrayList<TextView>()
+        fun collect(v: View) {
+            if (v is TextView) texts.add(v)
+            else if (v is ViewGroup) for (j in 0 until v.childCount) collect(v.getChildAt(j))
+        }
+        for (i in 0 until row.childCount) collect(row.getChildAt(i))
+        val base = FloatArray(texts.size) { texts[it].textSize }
+
+        fun scaleText(factor: Float) {
+            for (i in texts.indices) {
+                texts[i].setTextSize(
+                    android.util.TypedValue.COMPLEX_UNIT_PX, base[i] * factor
+                )
+            }
+        }
+
+        // 1. Tighter tile gaps (each 8dp margin -> 4dp) and slightly
+        // smaller type. Labels still read in full.
+        for (i in 0 until row.childCount) {
+            val child = row.getChildAt(i)
+            val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+            if (lp.weight > 0f) continue
+            lp.rightMargin = Ui.dp(this, 4)
+            child.layoutParams = lp
+        }
+        scaleText(0.92f)
+        if (naturalWidth() <= avail) {
+            row.requestLayout()
+            return
+        }
+
+        scaleText(0.86f)
+        if (naturalWidth() <= avail) {
+            row.requestLayout()
+            return
+        }
+
+        // 2. Drop the optional info before touching any label: the
+        // date first (the clock is the glanceable one), then the
+        // weather chip. Both come back on any wider screen.
+        fun belongsToRow(v: View?): Boolean {
+            if (v == null) return false
+            var p: Any? = v.parent
+            while (p is View) {
+                if (p === row) return true
+                p = p.parent
+            }
+            return false
+        }
+        // Hiding an info element must take its "·" separator with
+        // it, otherwise the pill reads "9:01 PM · · 16°".
+        fun hideWithSeparator(v: View?) {
+            if (v == null) return
+            val holder = v.parent as? ViewGroup ?: return
+            v.visibility = View.GONE
+            val idx = holder.indexOfChild(v)
+            if (idx > 0) {
+                val prev = holder.getChildAt(idx - 1)
+                if (prev is TextView && prev.text.toString().trim() == "·") {
+                    prev.visibility = View.GONE
+                }
+            }
+        }
+        val date = dateView
+        if (belongsToRow(date)) hideWithSeparator(date)
+        if (naturalWidth() <= avail) {
+            row.requestLayout()
+            return
+        }
+        val weather = row.findViewWithTag<View>("weather")
+        if (weather != null && weather.visibility != View.GONE) {
+            hideWithSeparator(weather)
+            if (naturalWidth() <= avail) {
+                row.requestLayout()
+                return
+            }
+        }
+
+        // 3. Still too narrow (a very small panel or huge font
+        // scale): shrink once more.
+        scaleText(0.80f)
+        if (naturalWidth() <= avail) {
+            row.requestLayout()
+            return
+        }
+
+        // 4. Last resort — proportional squeeze + ellipsis. Weight is
+        // a share, so the measured width alone is the correct value;
+        // the v3.8 `* remaining` scaling was meaningless (and made the
+        // children's weights depend on the screen width).
+        var weightedTotal = 0
+        for (i in 0 until row.childCount) {
+            val child = row.getChildAt(i)
+            val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+            if (lp.weight > 0f) continue
+            weightedTotal += child.measuredWidth
+        }
+        if (weightedTotal <= 0) return
+        for (i in 0 until row.childCount) {
+            val child = row.getChildAt(i)
+            val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+            if (lp.weight > 0f) continue
+            if (child is TextView) {
+                child.maxLines = 1
+                child.ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            lp.width = 0
+            lp.weight = child.measuredWidth.toFloat()
+            child.layoutParams = lp
+        }
+        row.requestLayout()
     }
 
     /** The pill fill shared by every element of the unified bar. */
@@ -3890,8 +3999,22 @@ class MainActivity : Activity() {
     // simply means no hero and no tracker rows.
     // ---------------------------------------------------------------
 
-    private fun todayIso(): String =
-        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    /**
+     * Today's ISO date (yyyy-MM-dd, device time zone).
+     *
+     * v3.15 (startup stall, ANR evidence): this used to build a
+     * SimpleDateFormat per call — and callers run it once per card
+     * (missedCard, hero, rows), so one home composition created
+     * dozens of them. The FIRST SimpleDateFormat.format() in a
+     * process initialises DecimalFormatSymbols, which makes ICU
+     * build its whole currency table on the calling (main) thread:
+     * seconds on this box, logged as "MAIN THREAD STUCK" with
+     * todayIso at the top of the stack. java.time formats the same
+     * ISO string without touching DecimalFormat at all, and
+     * LocalDate.toString() is already ISO-8601 — no pattern, no
+     * parser, no allocation of a formatter.
+     */
+    private fun todayIso(): String = todayIsoCached
 
     /**
      * The v2.3 Watch hint row: one line, OK dismisses it for this
@@ -6881,6 +7004,12 @@ class MainActivity : Activity() {
 
     // -------------------------------------------------------------- top bar data
 
+    // v3.15: the bar's clock/date go through core/TimeFmt. The clock
+    // ticks once a second; the old per-tick SimpleDateFormat paid ICU's
+    // currency-table init on the main thread (the ANR's stack).
+    private fun formatBarTime(pattern: String, now: Date): String =
+        com.mizan.launcher.core.TimeFmt.format(pattern, Locale.getDefault(), now.time)
+
     private fun updateClock() {
         try {
             val now = Date()
@@ -6890,8 +7019,8 @@ class MainActivity : Activity() {
                 layout.statusBar
             }
             val datePattern = cfg.datePattern()
-            dateView?.text = SimpleDateFormat(datePattern, Locale.getDefault()).format(now)
-            clockView?.text = SimpleDateFormat(cfg.clockPattern(), Locale.getDefault()).format(now)
+            dateView?.text = formatBarTime(datePattern, now)
+            clockView?.text = formatBarTime(cfg.clockPattern(), now)
             // v2.1: the network element is a GLYPH now (core/WifiLabel
             // mapping) — symbol + dimming, no SSID/word text.
             networkView?.let { glyph ->

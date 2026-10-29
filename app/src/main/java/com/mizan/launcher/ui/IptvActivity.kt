@@ -307,8 +307,9 @@ class IptvActivity : Activity() {
         if (progress.isNotEmpty()) {
             progressLineView = countLine(box, progress)
         } else if (snap.fetchedAt > 0L) {
-            val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
-                .format(java.util.Date(snap.fetchedAt))
+            val timeText = com.mizan.launcher.core.TimeFmt.format(
+                "h:mm a", java.util.Locale.US, snap.fetchedAt
+            )
             progressLineView = countLine(box, "Updated $timeText")
         }
 

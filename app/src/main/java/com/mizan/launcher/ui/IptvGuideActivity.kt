@@ -175,8 +175,9 @@ class IptvGuideActivity : Activity() {
         if (progress.isNotEmpty()) {
             progressLineView = noteLine(box, progress)
         } else if (snap.fetchedAt > 0L) {
-            val timeText = SimpleDateFormat("h:mm a", Locale.US)
-                .format(Date(snap.fetchedAt))
+            val timeText = com.mizan.launcher.core.TimeFmt.format(
+                "h:mm a", Locale.US, snap.fetchedAt
+            )
             progressLineView = noteLine(box, "Updated $timeText")
         }
 

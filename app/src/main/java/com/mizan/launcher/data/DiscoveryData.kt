@@ -738,9 +738,8 @@ object DiscoveryData {
         return out
     }
 
-    private fun todayIso(): String =
-        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-            .format(java.util.Date())
+    /** v3.15: java.time — see LibraryLocal.todayIso (ICU stall). */
+    private fun todayIso(): String = java.time.LocalDate.now().toString()
 
     // ------------------------------------------------------------ diagnostics
 

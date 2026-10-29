@@ -55,7 +55,9 @@ class MizanDreamService : DreamService() {
         root.addView(clockView)
 
         val date = TextView(this)
-        date.text = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Date())
+        date.text = com.mizan.launcher.core.TimeFmt.format(
+            "EEEE, MMMM d", Locale.getDefault(), System.currentTimeMillis()
+        )
         date.setTextColor(preset.subText)
         date.alpha = 0.6f
         date.textSize = 22f
@@ -80,7 +82,9 @@ class MizanDreamService : DreamService() {
 
     private fun updateClock() {
         try {
-            clockView?.text = SimpleDateFormat("h:mm", Locale.getDefault()).format(Date())
+            clockView?.text = com.mizan.launcher.core.TimeFmt.format(
+                "h:mm", Locale.getDefault(), System.currentTimeMillis()
+            )
         } catch (e: Exception) {
             // Cosmetic only.
         }

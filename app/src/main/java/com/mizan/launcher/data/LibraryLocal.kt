@@ -74,10 +74,13 @@ object LibraryLocal {
     @Volatile
     var onMissedChanged: (() -> Unit)? = null
 
-    /** Device local date, yyyy-MM-dd (the missed row's "today"). */
-    fun todayIso(): String =
-        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-            .format(java.util.Date())
+    /**
+     * Device local date, yyyy-MM-dd (the missed row's "today").
+     * v3.15: java.time, not SimpleDateFormat — the latter's first call
+     * in a process builds ICU's currency table on the calling thread
+     * (seconds on TV hardware); this is called per missed card.
+     */
+    fun todayIso(): String = java.time.LocalDate.now().toString()
 
     // ------------------------------------------------------------ overlay folding + pruning
 

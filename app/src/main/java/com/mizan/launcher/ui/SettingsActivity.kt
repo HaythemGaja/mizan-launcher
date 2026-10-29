@@ -1161,8 +1161,7 @@ class SettingsActivity : Activity() {
             iptvProgressView = pv
             content.addView(pv)
         } else if (idx != null && idx.fetchedAt > 0L) {
-            val timeText = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
-                .format(java.util.Date(idx.fetchedAt))
+            val timeText = com.mizan.launcher.core.TimeFmt.format("h:mm a", idx.fetchedAt)
             val uv = info("Updated $timeText — data refreshes only when you save the account or tap Refresh.")
             iptvProgressView = uv
             content.addView(uv)

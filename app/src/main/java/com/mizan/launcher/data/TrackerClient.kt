@@ -512,8 +512,7 @@ object TrackerClient {
                 0L
             }
             val whenText = if (last > 0) {
-                java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault())
-                    .format(java.util.Date(last))
+                com.mizan.launcher.core.TimeFmt.format("MMM d, h:mm a", last)
             } else {
                 "never"
             }
