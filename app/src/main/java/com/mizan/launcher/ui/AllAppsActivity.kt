@@ -184,12 +184,12 @@ class AllAppsActivity : Activity() {
         }
         val cols = prefs.columns
         for ((category, group) in AppCategories.sections(catItems)) {
-            val header = TextView(this)
-            header.text = category
-            header.setTextColor(accent); header.textSize = 20f
-            header.setTypeface(header.typeface, android.graphics.Typeface.BOLD)
-            header.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4))
-            box.addView(header)
+            // v3.16 (redesign): the same section header the home uses —
+            // white small-caps with the accent rule — instead of a third
+            // heading style (accent, 20sp, no rule).
+            box.addView(
+                Ui.sectionHeader(this, category, 0xFFFFFFFF.toInt(), accent)
+            )
             var i = 0
             while (i < group.size) {
                 val rowView = LinearLayout(this)
