@@ -113,6 +113,10 @@ class MainActivity : Activity() {
     private var textColour: Int = 0
     private var subColour: Int = 0
 
+    // v3.15: the status-bar row currently on screen, so a late text
+    // update (weather lands after layout) can re-run the fit.
+    private var barRow: LinearLayout? = null
+
     private var clockView: TextView? = null
     private var dateView: TextView? = null
     private var networkView: TextView? = null
@@ -2515,12 +2519,19 @@ class MainActivity : Activity() {
             else if (v is ViewGroup) for (j in 0 until v.childCount) collect(v.getChildAt(j))
         }
         for (i in 0 until row.childCount) collect(row.getChildAt(i))
-        val base = FloatArray(texts.size) { texts[it].textSize }
+
+        // The fit runs again whenever late text lands (weather), so the
+        // sizes must always scale from the ORIGINAL, never from the
+        // result of the previous pass — otherwise two fits halve the
+        // labels. The map rides on the row's tag.
+        @Suppress("UNCHECKED_CAST")
+        val base = (row.tag as? HashMap<TextView, Float>) ?: HashMap<TextView, Float>().also { row.tag = it }
+        for (tv in texts) if (!base.containsKey(tv)) base[tv] = tv.textSize
 
         fun scaleText(factor: Float) {
-            for (i in texts.indices) {
-                texts[i].setTextSize(
-                    android.util.TypedValue.COMPLEX_UNIT_PX, base[i] * factor
+            for (tv in texts) {
+                tv.setTextSize(
+                    android.util.TypedValue.COMPLEX_UNIT_PX, (base[tv] ?: tv.textSize) * factor
                 )
             }
         }
@@ -2546,7 +2557,15 @@ class MainActivity : Activity() {
             return
         }
 
-        // 2. Drop the optional info before touching any label: the
+        // 2. Try one more type step before giving anything up — on a
+        // 1080p panel this is usually what keeps the date visible.
+        scaleText(0.80f)
+        if (naturalWidth() <= avail) {
+            row.requestLayout()
+            return
+        }
+
+        // 3. Still too wide: drop the optional info before touching any label: the
         // date first (the clock is the glanceable one), then the
         // weather chip. Both come back on any wider screen.
         fun belongsToRow(v: View?): Boolean {
@@ -2585,14 +2604,6 @@ class MainActivity : Activity() {
                 row.requestLayout()
                 return
             }
-        }
-
-        // 3. Still too narrow (a very small panel or huge font
-        // scale): shrink once more.
-        scaleText(0.80f)
-        if (naturalWidth() <= avail) {
-            row.requestLayout()
-            return
         }
 
         // 4. Last resort — proportional squeeze + ellipsis. Weight is
@@ -2714,10 +2725,10 @@ class MainActivity : Activity() {
                 }
             }
         }
-        // v3.8: fit pass — Settings is the last tile, so it is
-        // the one clipped when the bar overflows; this pass
-        // shrinks the row proportionally instead, on both the
-        // normal bar and the sticky bar (same builder).
+        // v3.15: fit pass (see fitBarRowNow) — shared by the normal and
+        // sticky bars. The row is remembered so late text (weather)
+        // can re-trigger it.
+        barRow = row
         fitBarRow(row)
         wrap.addView(row)
         buildHomeHint()?.let { wrap.addView(it) }
@@ -2985,6 +2996,7 @@ class MainActivity : Activity() {
         if (cfg.showClock) {
             clockView = TextView(this).apply {
                 setTextColor(textColour)
+                maxLines = 1
                 textSize = com.mizan.launcher.core.Design.BAR_CLOCK_SP * scale
                 typeface = android.graphics.Typeface.create(
                     "sans-serif-medium", android.graphics.Typeface.NORMAL
@@ -2997,6 +3009,7 @@ class MainActivity : Activity() {
             if (infoItems > 0) infoSep(left)
             dateView = TextView(this).apply {
                 setTextColor(subColour)
+                maxLines = 1
                 textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
             }
             left.addView(dateView)
@@ -3012,6 +3025,10 @@ class MainActivity : Activity() {
             val weather = TextView(this)
             weather.tag = "weather_text"
             weather.setTextColor(subColour)
+            // v3.15: "58°F Clear sky" must never wrap the bar onto two
+            // lines — one line, ellipsised if the row is tight.
+            weather.maxLines = 1
+            weather.ellipsize = android.text.TextUtils.TruncateAt.END
             weather.textSize = com.mizan.launcher.core.Design.BAR_META_SP * scale
             if (overHero) weather.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
             weatherWrap.addView(weather)
@@ -3149,7 +3166,14 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            hero.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
+            // v3.15: the info cluster used to be the flexible child
+            // (weight 1), so a wide tile group starved it and the
+            // weather text was ellipsised mid-word. The cluster now
+            // takes its natural width, a spacer absorbs the slack, and
+            // the whole row goes through the same fit pass as the
+            // unified bar when it genuinely cannot fit.
+            hero.addView(left)
+            hero.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
             // RIGHT (v2.1): the status GLYPHS first (Guest pill,
             // Wi-Fi, Bluetooth — non-focusable, no word labels,
             // dimmed when off), then the action tiles in ONE
@@ -3223,6 +3247,8 @@ class MainActivity : Activity() {
             // Settings (last) stays visible here too.
             fitBarRow(right)
             hero.addView(right)
+            barRow = hero
+            fitBarRow(hero)
             wrap.addView(hero)
         }
 
@@ -4400,9 +4426,18 @@ class MainActivity : Activity() {
             overview.maxLines = 3
             overview.ellipsize = android.text.TextUtils.TruncateAt.END
             overview.setShadowLayer(4f, 0f, 1f, 0xCC000000.toInt())
-            val olp = LinearLayout.LayoutParams(-1, -2)
-            olp.setMargins(0, Ui.dp(this, 5), 0, 0)
+            // v3.15: the overview used to run the full width of the
+            // screen (minus 120dp), which on a 1080p panel produced a
+            // 4-line block clipped mid-word over the artwork. Capped at
+            // ~52% of the screen it reads as a column, like the
+            // reference apps, and the extra line spacing keeps three
+            // lines comfortable.
+            val olp = LinearLayout.LayoutParams(
+                (resources.displayMetrics.widthPixels * 0.52f).toInt(), -2
+            )
+            olp.setMargins(0, Ui.dp(this, 8), 0, 0)
             overview.layoutParams = olp
+            overview.setLineSpacing(Ui.dp(this, 4).toFloat(), 1f)
             host.addView(overview)
         }
 
@@ -7068,7 +7103,11 @@ class MainActivity : Activity() {
         val weatherView = findWeatherView()
         if (weatherView == null && prefs.wallpaperKind != "weather") return
         val cached = prefs.cachedWeather
-        if (weatherView != null && cached.isNotEmpty()) weatherView.text = cached
+        if (weatherView != null && cached.isNotEmpty()) {
+            weatherView.text = cached
+            // Late text -> the row may now overflow: fit again.
+            barRow?.let { fitBarRow(it) }
+        }
         setWeatherVisibility(if (cached.isEmpty()) View.GONE else View.VISIBLE)
     }
 
@@ -7097,6 +7136,7 @@ class MainActivity : Activity() {
                         val v = findWeatherView()
                         if (v != null) {
                             v.text = snap.text
+                            barRow?.let { fitBarRow(it) }
                             setWeatherVisibility(View.VISIBLE)
                         }
                         // Fresh conditions may change the background.
