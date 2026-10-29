@@ -742,16 +742,12 @@ class DetailsActivity : Activity() {
         box: LinearLayout,
         seasons: List<LibraryLogic.SeasonInfo>
     ) {
-        val header = TextView(this)
-        header.text = "EPISODES"
-        header.setTextColor(accent)
-        header.textSize = Design.SECTION_HEADER_SP
-        header.letterSpacing = Design.SECTION_HEADER_TRACKING
-        header.setTypeface(header.typeface, Typeface.BOLD)
-        val hlp = LinearLayout.LayoutParams(-1, -2)
-        hlp.setMargins(0, Ui.dp(this, 22), 0, Ui.dp(this, 8))
-        header.layoutParams = hlp
-        box.addView(header)
+        // v3.16 (redesign): the section heading is the HOME's heading —
+        // white small-caps with the accent rule — not a second, red
+        // variant. One screen used to spell "EPISODES" in accent red at
+        // a different tracking, which read as a different component
+        // bolted onto the page.
+        box.addView(Ui.sectionHeader(this, "Episodes", 0xFFFFFFFF.toInt(), accent))
 
         // Season chips.
         val chips = LinearLayout(this)
