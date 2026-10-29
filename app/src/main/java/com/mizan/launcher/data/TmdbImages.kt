@@ -68,7 +68,13 @@ object TmdbImages {
     private val inFlight = HashSet<String>()
     private val threadNo = AtomicInteger(0)
 
-    private val pool = object : ThreadPoolExecutor(
+    // NOTE (v3.16 fix): the first cut of this pool overrode execute()
+    // to push the request at the HEAD of the deque (LIFO), which also
+    // bypassed ThreadPoolExecutor's worker startup — the queue then
+    // never drained and NO poster ever loaded. A plain executor, with
+    // its workers prestarted, is the correct shape; FIFO ordering is
+    // fine here because a home build enqueues rows top-down anyway.
+    private val pool = ThreadPoolExecutor(
         2, 2, 30L, TimeUnit.SECONDS, imageQueue,
         { r ->
             Thread(r, "mizan-tmdb-img-" + threadNo.incrementAndGet()).apply {
@@ -76,12 +82,10 @@ object TmdbImages {
                 priority = Thread.NORM_PRIORITY - 1
             }
         }
-    ) {
-        override fun execute(command: Runnable) {
-            // LIFO: newest first.
-            imageQueue.offerFirst(command)
-        }
-    }.apply { allowCoreThreadTimeOut(true) }
+    ).apply {
+        allowCoreThreadTimeOut(true)
+        prestartAllCoreThreads()
+    }
 
     private fun cacheKey(url: String, maxDim: Int): String = "$url@$maxDim"
 
