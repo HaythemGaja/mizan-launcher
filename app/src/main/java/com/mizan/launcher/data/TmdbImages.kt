@@ -7,7 +7,10 @@ import android.os.Looper
 import android.widget.ImageView
 import java.net.HttpURLConnection
 import java.net.URL
-import kotlin.concurrent.thread
+import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Image loading for posters, backdrops and IPTV logos (v1.8;
@@ -49,6 +52,37 @@ object TmdbImages {
     private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * v3.15 (startup stall): the loader used to spawn ONE NAMED THREAD
+     * PER IMAGE (`thread { ... }`). A home build asks for 100+ posters
+     * while the main thread is laying out, and `Thread.start()` is
+     * serialised VM work — the watchdog caught the main thread sitting
+     * inside nativeCreate/Thread.start for seconds, once per card.
+     *
+     * One small pool now serves every image. The queue is LIFO: the
+     * newest request is the row the user is looking at, so it wins over
+     * rows composed earlier. Duplicate requests for a URL already in
+     * flight are dropped (the ImageView tag check makes that safe).
+     */
+    private val imageQueue = LinkedBlockingDeque<Runnable>()
+    private val inFlight = HashSet<String>()
+    private val threadNo = AtomicInteger(0)
+
+    private val pool = object : ThreadPoolExecutor(
+        2, 2, 30L, TimeUnit.SECONDS, imageQueue,
+        { r ->
+            Thread(r, "mizan-tmdb-img-" + threadNo.incrementAndGet()).apply {
+                isDaemon = true
+                priority = Thread.NORM_PRIORITY - 1
+            }
+        }
+    ) {
+        override fun execute(command: Runnable) {
+            // LIFO: newest first.
+            imageQueue.offerFirst(command)
+        }
+    }.apply { allowCoreThreadTimeOut(true) }
+
     private fun cacheKey(url: String, maxDim: Int): String = "$url@$maxDim"
 
     /** The cached bitmap for [url] at the default size bucket, or null (never blocks). */
@@ -79,14 +113,26 @@ object TmdbImages {
             return
         }
         target.tag = url
-        thread(name = "mizan-tmdb-img") {
-            val bmp = download(url, maxDim) ?: return@thread
-            synchronized(lock) { putCached(cacheKey(url, maxDim), bmp) }
-            mainHandler.post {
-                if (target.tag == url) {
-                    target.setImageBitmap(bmp)
-                    onApplied?.invoke()
+        val key = cacheKey(url, maxDim)
+        synchronized(lock) {
+            // Already queued/downloading: the tag above is enough, this
+            // request would only duplicate the network work.
+            if (!inFlight.add(key)) return
+        }
+        pool.execute {
+            try {
+                val bmp = download(url, maxDim)
+                if (bmp != null) {
+                    synchronized(lock) { putCached(key, bmp) }
+                    mainHandler.post {
+                        if (target.tag == url) {
+                            target.setImageBitmap(bmp)
+                            onApplied?.invoke()
+                        }
+                    }
                 }
+            } finally {
+                synchronized(lock) { inFlight.remove(key) }
             }
         }
     }

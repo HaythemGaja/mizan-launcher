@@ -34,6 +34,14 @@ class WatcherService : AccessibilityService() {
 
     private var lastRelaunchAt: Long = 0
     private var lastOwnForegroundAt: Long = 0
+
+    // v3.15 (boot storm): a cold launcher takes a moment to draw, and
+    // while it does the stock launcher keeps re-taking the screen — the
+    // flat 2 s debounce then relaunches us dozens of times in the first
+    // seconds after boot (measured: 224). Consecutive relaunches now
+    // back off 2s → 4s → 8s → 16s → 30s, and the ladder resets once
+    // Mizan has actually stayed in front for 10 s.
+    private var consecutiveRelaunches = 0
     private var screenReceiver: BroadcastReceiver? = null
 
     override fun onServiceConnected() {
@@ -70,8 +78,11 @@ class WatcherService : AccessibilityService() {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName) {
-            // Mizan is foreground — remember it for the loop guard.
+            // Mizan is foreground — remember it for the loop guard, and
+            // once it has held the screen for 10 s, drop the backoff.
+            val prev = lastOwnForegroundAt
             lastOwnForegroundAt = System.currentTimeMillis()
+            if (prev > 0 && lastOwnForegroundAt - prev > 10_000) consecutiveRelaunches = 0
             return
         }
         if (pkg !in STOCK_LAUNCHERS) return
@@ -100,9 +111,17 @@ class WatcherService : AccessibilityService() {
             )
         } catch (e: Exception) { 0 }
         if (now - ownPrefsAt < 1_000) return
-        // Debounce: max one relaunch per 2 seconds.
-        if (now - lastRelaunchAt < 2_000) return
+        // Debounce with backoff while the stock launcher keeps winning.
+        val gap = if (now - lastOwnForegroundAt > 10_000) {
+            consecutiveRelaunches = 0
+            2_000L
+        } else {
+            val step = consecutiveRelaunches.coerceIn(0, 4)
+            (2_000L shl step).coerceAtMost(30_000L)
+        }
+        if (now - lastRelaunchAt < gap) return
         lastRelaunchAt = now
+        consecutiveRelaunches = (consecutiveRelaunches + 1).coerceAtMost(5)
         try {
             val intent = Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

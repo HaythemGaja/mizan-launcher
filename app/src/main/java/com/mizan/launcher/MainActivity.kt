@@ -117,6 +117,15 @@ class MainActivity : Activity() {
     // update (weather lands after layout) can re-run the fit.
     private var barRow: LinearLayout? = null
 
+    // v3.15: one prompt per launch at most, and no nagging sooner than
+    // this after the last one.
+    private var homePromptShown = false
+
+    private companion object {
+        const val KEY_HOME_PROMPT = "home_prompt_at"
+        const val HOME_PROMPT_EVERY_MS = 3L * 24 * 60 * 60 * 1000
+    }
+
     private var clockView: TextView? = null
     private var dateView: TextView? = null
     private var networkView: TextView? = null
@@ -460,6 +469,11 @@ class MainActivity : Activity() {
             // open/resume never pays for a network call here.
             updateWeatherWidget()
             firstTile?.post { if (currentFocus == null) firstTile?.requestFocus() }
+            // v3.15: a launcher that is not the default home is never
+            // started by the TV, so "opens with the TV" can only be
+            // fixed by asking once, after the first frame (never on the
+            // startup path).
+            firstTile?.post { maybePromptForHome() }
         } catch (e: Throwable) {
             // v3.0: Throwable, not Exception (an inflation OOM is
             // an Error) — and the failure now renders the EMERGENCY
@@ -4243,12 +4257,23 @@ class MainActivity : Activity() {
             content.addView(buildLibraryEntryRow())
         }
 
-        for (key in renderKeys) {
+        // v3.15 (first-frame cost): the home used to build EVERY row
+        // before the first frame — on this box's real data that is
+        // ~100 cards of ImageViews, text and gradients, which is where
+        // the 3–10 s cold start went once the ICU stall was gone.
+        // The first three rows still build synchronously (they are what
+        // the user sees); the rest are appended right after the first
+        // frame, in the same order, so focus order and scrolling are
+        // unchanged.
+        val eagerKeys = renderKeys.take(3)
+        val deferredKeys = renderKeys.drop(3)
+
+        fun addSection(key: String) {
             // v3.1: a loading section renders its placeholder and
             // nothing else — it never delays its neighbours.
             if (sectionLoading(key, continueCards)) {
                 content.addView(sectionLoadingTile(trackerTileLabel(key)))
-                continue
+                return
             }
             try {
                 when (key) {
@@ -4285,6 +4310,18 @@ class MainActivity : Activity() {
                 content.addView(
                     sectionErrorTile(trackerTileLabel(key)) { retrySection(key) }
                 )
+            }
+        }
+
+        for (key in eagerKeys) addSection(key)
+        if (deferredKeys.isNotEmpty()) {
+            content.post {
+                try {
+                    for (key in deferredKeys) addSection(key)
+                } catch (e: Throwable) {
+                    // A dead activity mid-append is not a crash: the rows
+                    // that landed stay, the first frame is already up.
+                }
             }
         }
         startHeroRotation()
@@ -7034,6 +7071,53 @@ class MainActivity : Activity() {
             lastNowPlayingSignature = sig
         } else if (sig != last) {
             rebuild() // buildNowPlayingSection refreshes the signature
+        }
+    }
+
+    /**
+     * v3.15: "Sreeb should start with the TV" is, on Android TV, the
+     * same thing as "Sreeb is the default home" — the system starts the
+     * resolved HOME activity at boot; there is no separate startup hook
+     * an ordinary app can use (background activity starts are blocked
+     * since Android 10).
+     *
+     * So when Sreeb is not the resolved home, ask once, right after the
+     * first frame, with the system's own consent dialog
+     * (HomeStatus.requestIntent). If the build has neither the role
+     * dialog nor the Home-apps screen, fall back to the documented adb
+     * command in Settings › Home & launcher. Fail-open: a launcher must
+     * never fail to draw because a dialog could not be shown.
+     */
+    private fun maybePromptForHome() {
+        try {
+            if (homePromptShown || prefs.safeMode || guestActive()) return
+            if (com.mizan.launcher.data.HomeStatus.isDefaultHome(this)) return
+            val now = System.currentTimeMillis()
+            val last = prefs.sp.getLong(KEY_HOME_PROMPT, 0L)
+            if (now - last < HOME_PROMPT_EVERY_MS) return
+            homePromptShown = true
+            val ask = com.mizan.launcher.data.HomeStatus.requestIntent(this)
+            if (ask == null) return
+            prefs.sp.edit().putLong(KEY_HOME_PROMPT, now).apply()
+            val dlg = android.app.AlertDialog.Builder(this)
+                .setTitle("Make Sreeb your home screen")
+                .setMessage(
+                    "Sreeb isn't the TV's home app yet, so the TV starts on its own " +
+                        "launcher. Set Sreeb as home and it opens as soon as the TV does."
+                )
+                .setPositiveButton("Set as home") { _, _ ->
+                    try {
+                        startActivity(ask)
+                    } catch (e: Exception) {
+                        Prefs.noteError(this, "homePrompt", e)
+                    }
+                }
+                .setNegativeButton("Not now", null)
+                .create()
+            dlg.setOnDismissListener { homePromptShown = false }
+            dlg.show()
+        } catch (e: Exception) {
+            Prefs.noteError(this, "maybePromptForHome", e)
         }
     }
 

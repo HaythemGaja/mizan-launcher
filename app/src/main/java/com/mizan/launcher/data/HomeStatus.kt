@@ -64,6 +64,38 @@ object HomeStatus {
     }
 
     /**
+     * v3.15: the intent that asks Android to make Sreeb the home app —
+     * the RoleManager dialog where the build supports it, else the
+     * system's Home-app settings screen. Null when neither exists, so
+     * callers can fall back to the documented adb command.
+     *
+     * This is the only sanctioned way an app can become the default
+     * launcher: Android requires the user to confirm, and a launcher
+     * that is the resolved HOME activity is started by the system at
+     * boot — there is no separate "run at startup" path on TV.
+     */
+    fun requestIntent(ctx: Context): Intent? {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val rm = ctx.getSystemService(android.app.role.RoleManager::class.java)
+                if (rm != null &&
+                    rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME) &&
+                    !rm.isRoleHeld(android.app.role.RoleManager.ROLE_HOME)
+                ) {
+                    return rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_HOME)
+                }
+            }
+        } catch (e: Exception) {
+            // Fall through to the settings screen variant.
+        }
+        return try {
+            Intent(Settings.ACTION_HOME_SETTINGS)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
      * The exact ADB command that sets Sreeb as default home (Step 4 since v3.13).
      *
      * v2.3.1: set-home-activity LEADS — verified live on Haythem's
