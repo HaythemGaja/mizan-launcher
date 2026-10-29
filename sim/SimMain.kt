@@ -1871,7 +1871,7 @@ fun main() {
         // after Up Next, so the foryou swap happens over the
         // longer list.
         check("sections: move up swaps with the previous row",
-            moved.order == listOf("upnext", "missed", "wanttowatch", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "folders", "allapps"))
+            moved.order == listOf("upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "foryou", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: moves at the edges and for the hero are no-ops",
             ts.move(defCfg, ts.UPNEXT, -1) == defCfg &&
                 ts.move(defCfg, ts.ALLAPPS, 1) == defCfg &&
@@ -1883,7 +1883,7 @@ fun main() {
                 // v3.3 RE-PINNED (ask 47): comingsoon merged into upnext.
                 // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
                 // v3.7 RE-PINNED (Missed row): Missed composes after Up Next.
-                listOf("hero", "allapps", "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders"))
+                listOf("hero", "allapps", "upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders"))
         // RE-PINNED in v2.7 (new sections compose when available).
         // v3.1 RE-PINNED (ask 37): MOVIENIGHT is gone, so the data-empty
         // gate uses foryou; hidden upnext + gated foryou both drop.
@@ -1891,7 +1891,7 @@ fun main() {
             ts.compose(ts.setShown(defCfg, ts.UPNEXT, false)) { it != ts.FORYOU } ==
                 // v3.4 RE-PINNED (ask 51): folders composes in its canonical slot.
                 // v3.7 RE-PINNED (Missed row): Missed composes after the hero.
-                listOf("hero", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies", "favorites", "folders", "allapps"))
+                listOf("hero", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "trendingmovies", "favorites", "folders", "allapps"))
         check("sections: unknown keys are dropped by normalize",
             ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).hidden.isEmpty() &&
                 ts.normalize(setOf("bogus"), listOf("bogus", "upnext")).order.first() == "upnext")
@@ -3301,8 +3301,70 @@ fun main() {
     // ---------- (61) v3.14: profile add / edit / delete / reset + per-profile audit ----------
     section61()
 
+    // ---------- (62) v3.16: This week (schedule row) ----------
+    section62()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
+}
+
+/**
+ * v3.16 "This week": the schedule row's window, ordering and guards.
+ * Pure core logic — the row renders through TrackerLogic.thisWeek.
+ */
+fun section62() {
+    run {
+        val tl = TrackerLogic
+        fun item(id: Int, title: String, date: String, s: Int = 1, e: Int = 1) =
+            TrackerLogic.UpNextItem(
+                tmdbId = id.toLong(), title = title, sub = "S$s E$e", dateIso = date,
+                poster = "", backdrop = "", overview = "", season = s, episode = e,
+                type = "tv"
+            )
+
+        val today = "2026-10-29"
+        val items = listOf(
+            item(1, "Today Show", today),
+            item(2, "Tomorrow Show", "2026-10-30"),
+            item(3, "Day Six", "2026-11-03"),
+            item(4, "Day Seven", "2026-11-05"),       // one past a 7-day window (Oct 29 + 6)
+            item(5, "Yesterday", "2026-10-28"),        // past
+            item(6, "No Date", ""),
+            item(7, "No Episode", "2026-10-31", 1, 0)
+        )
+        val week = tl.thisWeek(items, today, 7)
+        check("week: keeps today", week.any { it.title == "Today Show" })
+        check("week: keeps day six (window is inclusive)", week.any { it.title == "Day Six" })
+        check("week: drops day seven", week.none { it.title == "Day Seven" })
+        check("week: drops yesterday", week.none { it.title == "Yesterday" })
+        check("week: drops an item with no date", week.none { it.title == "No Date" })
+        check("week: drops an item with no episode", week.none { it.title == "No Episode" })
+        check("week: earliest first, title breaks ties",
+            week.map { it.title } == listOf("Today Show", "Tomorrow Show", "Day Six"))
+
+        // A narrower window narrows the row; zero days is empty, not a crash.
+        check("week: a 2-day window keeps only today + tomorrow",
+            tl.thisWeek(items, today, 2).map { it.title } ==
+                listOf("Today Show", "Tomorrow Show"))
+        check("week: zero days is empty", tl.thisWeek(items, today, 0).isEmpty())
+        check("week: an unparseable today is empty, not a crash",
+            tl.thisWeek(items, "not-a-date", 7).isEmpty())
+
+        // Duplicates collapse to one card (same show/season/episode).
+        val dup = listOf(
+            item(9, "Dup Show", "2026-10-30"),
+            item(9, "Dup Show", "2026-10-30")
+        )
+        check("week: duplicate episodes collapse", tl.thisWeek(dup, today, 7).size == 1)
+
+        // The section joins the canonical order right after Want to Watch,
+        // and a stored order that predates it gains it in that slot.
+        val cfg = TrackerSections.decode("allapps,missed,wanttowatch,upnext,continue,foryou,favorites,folders")
+        val at = cfg.order.indexOf(TrackerSections.SCHEDULE)
+        check("week: stored order gains This week",
+            at >= 0 && cfg.order.getOrNull(at - 1) == TrackerSections.WANTTOWATCH)
+        check("week: label is human", TrackerSections.label(TrackerSections.SCHEDULE) == "This week")
+    }
 }
 
 /** v2.6 checks — top-level because main() reached the JVM method-size limit. */
@@ -3469,9 +3531,17 @@ fun section43() {
         check("v26src: LibraryLogic accepts the io:<ClassName> token form",
             librarySrc.contains("startsWith(\"io:\")") &&
                 librarySrc.contains("tmdbErrorToken"))
+        // The tracker app is a SIBLING checkout, not part of this repo.
+        // When it is absent the check is not applicable — it must read
+        // as skipped, not as a regression (this is what made a clean
+        // clone report a red sim).
         val trackerSrc = src("../tvshows-movies-tracker/app/java/com/haythem/tvtracker/LauncherDataProvider.java")
-        check("v26src: tracker 1.14.5 returns io:<simple exception class name>",
-            trackerSrc.contains("\"io:\" + e.getClass().getSimpleName()"))
+        if (trackerSrc.isEmpty()) {
+            println("SKIP  v26src: tracker 1.14.5 returns io:<simple exception class name> (sibling tracker checkout not present)")
+        } else {
+            check("v26src: tracker 1.14.5 returns io:<simple exception class name>",
+                trackerSrc.contains("\"io:\" + e.getClass().getSimpleName()"))
+        }
     }
 }
 
@@ -3807,7 +3877,7 @@ fun section45() {
         // v3.7 RE-PINNED (Missed row): Missed joins after Up Next.
         check("sections: v2.7 canonical order is the directive's focus order",
             tsx.CANONICAL == listOf(
-                "hero", "upnext", "missed", "wanttowatch", "continue", "trendingtv",
+                "hero", "upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "folders", "allapps"
             ))
         check("sections: v2.7 labels",
@@ -3821,7 +3891,7 @@ fun section45() {
                 // v3.4 RE-PINNED (ask 51): folders appends after the trending rows.
                 // v3.7 RE-PINNED (Missed row): Missed splices after Up Next.
                 listOf(
-                    "upnext", "missed", "wanttowatch", "continue", "foryou", "favorites",
+                    "upnext", "missed", "wanttowatch", "schedule", "continue", "foryou", "favorites",
                     "allapps", "trendingtv", "trendingmovies", "folders"
                 ))
 
@@ -4064,7 +4134,7 @@ fun section46() {
         // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
         check("migrate: the appended rows splice into their canonical slots",
             migrated.order == listOf(
-                "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         check("migrate: idempotent — a second pass changes nothing",
@@ -4080,7 +4150,7 @@ fun section46() {
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(partial).order == listOf(
-                "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         val parked = tsx.decode(
@@ -4090,7 +4160,7 @@ fun section46() {
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(parked).order == listOf(
-                "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
+                "upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "trendingmovies",
                 "foryou", "favorites", "allapps", "folders"
             ))
         val custom = tsx.decode(
@@ -4100,7 +4170,7 @@ fun section46() {
             // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
             // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
             tsx.migrateOrder(custom).order == listOf(
-                "upnext", "missed", "wanttowatch", "continue", "trendingtv",
+                "upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv",
                 "trendingmovies", "foryou", "favorites", "allapps", "folders"
             ))
         val hiddenCfg = tsx.decode(
@@ -4113,7 +4183,7 @@ fun section46() {
                 // v3.4 RE-PINNED (ask 51): folders stays appended at the end.
                 // v3.7 RE-PINNED (Missed row): Missed rides after Up Next.
                 tsx.migrateOrder(hiddenCfg).order == listOf(
-                    "upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies",
+                    "upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "trendingmovies",
                     "foryou", "favorites", "allapps", "folders"
                 ))
 
@@ -5380,7 +5450,7 @@ fun section53() {
         check("merge53: stored order + hidden set mentioning comingsoon drop it on read",
             // v3.4 RE-PINNED (ask 51): folders appends in its canonical slot.
             // v3.7 RE-PINNED (Missed row): Missed splices after Up Next.
-            decoded.order == listOf("upnext", "missed", "wanttowatch", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders", "allapps") &&
+            decoded.order == listOf("upnext", "missed", "wanttowatch", "schedule", "continue", "trendingtv", "trendingmovies", "foryou", "favorites", "folders", "allapps") &&
                 "comingsoon" !in decoded.hidden)
         check("merge53: compose never emits comingsoon",
             !TrackerSections.compose(decoded) { true }.contains("comingsoon"))
@@ -6182,7 +6252,7 @@ fun section57() {
                 TrackerSections.CANONICAL.indexOf(TrackerSections.UPNEXT) + 1)
         check("missed57: pre-v3.7 order gains Missed after Up Next (not appended at the end)",
             TrackerSections.decode("upnext,continue,foryou,favorites,allapps|").order ==
-                listOf("upnext", "missed", "wanttowatch", "continue", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
+                listOf("upnext", "missed", "wanttowatch", "schedule", "continue", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
         check("missed57: Missed label + compose gating (shown, available, hideable)",
             TrackerSections.label(TrackerSections.MISSED) == "Missed" &&
                 TrackerSections.compose(TrackerSections.decode("upnext,missed,continue|")) { it == "upnext" || it == "missed" } ==
@@ -6191,7 +6261,7 @@ fun section57() {
                     listOf("upnext", "continue"))
         check("missed57: deliberate Missed position is preserved (normalize never re-splices a stored Missed)",
             TrackerSections.decode("continue,upnext,missed,foryou,favorites,allapps|").order ==
-                listOf("continue", "upnext", "missed", "wanttowatch", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
+                listOf("continue", "upnext", "missed", "wanttowatch", "schedule", "foryou", "favorites", "allapps", "trendingtv", "trendingmovies", "folders"))
 
         // ---- Missed fingerprint: content, not lengths ----
         val titlesA = listOf(

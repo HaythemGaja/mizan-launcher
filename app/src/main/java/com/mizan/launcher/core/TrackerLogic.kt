@@ -533,6 +533,39 @@ object TrackerLogic {
      * 30 days → "in N d", further out → the date itself ("Nov 14").
      * An empty or unparseable date yields "" (no label).
      */
+    /**
+     * v3.16 "This week": the episodes of the tracked shows that air
+     * from today through [days]-1 days ahead, earliest first — the one
+     * view a media tracker is expected to have and this home lacked
+     * (Up Next shows only the NEXT episode per show, Missed only the
+     * past ones, so nothing answered "what's on this week?").
+     *
+     * Same guards as [missedRow]: a real coordinate, a parseable date,
+     * one entry per (show, season, episode), deterministic order
+     * (date, then title). A date outside the window — or an item with
+     * no date — never enters the row. Pure: no Android, no clock of
+     * its own, so the sim can pin it.
+     */
+    fun thisWeek(
+        items: List<UpNextItem>,
+        todayIso: String,
+        days: Int = 7
+    ): List<UpNextItem> {
+        if (days <= 0) return emptyList()
+        val today = isoDays(todayIso.trim()) ?: return emptyList()
+        val last = today + (days - 1).toLong()
+        val seen = HashSet<String>()
+        return items.filter { item ->
+            if (item.season <= 0 || item.episode <= 0) return@filter false
+            val d = isoDays(item.dateIso.trim()) ?: return@filter false
+            if (d < today || d > last) return@filter false
+            seen.add(item.tmdbId.toString() + "|" + item.season + "|" + item.episode)
+        }.sortedWith(
+            compareBy<UpNextItem> { isoDays(it.dateIso.trim()) ?: Long.MAX_VALUE }
+                .thenBy { it.title.lowercase() }
+        )
+    }
+
     fun countdownLabel(dateIso: String, todayIso: String): String {
         val date = isoDays(dateIso) ?: return ""
         val today = isoDays(todayIso) ?: return ""

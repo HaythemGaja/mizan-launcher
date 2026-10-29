@@ -69,6 +69,7 @@ object TrackerSections {
     const val UPNEXT = "upnext"
     const val MISSED = "missed"
     const val WANTTOWATCH = "wanttowatch"
+    const val SCHEDULE = "schedule"
     const val CONTINUE = "continue"
     const val TRENDINGTV = "trendingtv"
     const val TRENDINGMOVIES = "trendingmovies"
@@ -79,8 +80,8 @@ object TrackerSections {
 
     /** Every section, in the order a fresh profile sees them (v3.7: Missed joins after Up Next; v3.13: Want to Watch joins after Missed). */
     val CANONICAL: List<String> = listOf(
-        HERO, UPNEXT, MISSED, WANTTOWATCH, CONTINUE, TRENDINGTV, TRENDINGMOVIES,
-        FORYOU, FAVORITES, FOLDERS, ALLAPPS
+        HERO, UPNEXT, MISSED, WANTTOWATCH, SCHEDULE, CONTINUE, TRENDINGTV,
+        TRENDINGMOVIES, FORYOU, FAVORITES, FOLDERS, ALLAPPS
     )
 
     /** The reorderable rows (everything except the hero). */
@@ -96,6 +97,7 @@ object TrackerSections {
         UPNEXT -> "Up Next"
         MISSED -> "Missed"
         WANTTOWATCH -> "Want to Watch"
+        SCHEDULE -> "This week"
         CONTINUE -> "Continue Watching"
         TRENDINGTV -> "Trending TV"
         TRENDINGMOVIES -> "Trending Movies"
@@ -135,6 +137,17 @@ object TrackerSections {
             cleanOrder.remove(WANTTOWATCH)
             val at = cleanOrder.indexOf(MISSED)
             if (at >= 0) cleanOrder.add(at + 1, WANTTOWATCH) else cleanOrder.add(0, WANTTOWATCH)
+        }
+        // v3.16: same rule for This week — a profile whose stored order
+        // predates it gains it right after Want to Watch. Runs AFTER the
+        // Want to Watch splice: on a v2.x stored order both rows are
+        // "missing", and anchoring This week first would park it at the
+        // end when Want to Watch then moved up.
+        val scheduleWasStored = SCHEDULE in order
+        if (!scheduleWasStored) {
+            cleanOrder.remove(SCHEDULE)
+            val at = cleanOrder.indexOf(WANTTOWATCH)
+            if (at >= 0) cleanOrder.add(at + 1, SCHEDULE) else cleanOrder.add(0, SCHEDULE)
         }
         return Config(cleanHidden, cleanOrder)
     }

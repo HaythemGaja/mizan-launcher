@@ -4225,6 +4225,11 @@ class MainActivity : Activity() {
             TrackerSections.MISSED to tMissedGroups.isNotEmpty(),
             // v3.13: Want to Watch — planned, unstarted shows.
             TrackerSections.WANTTOWATCH to tWantShows.isNotEmpty(),
+            // v3.16: This week — the next seven days of airings. Unlike
+            // the other data rows it renders even when empty (with its
+            // "nothing airs" line), because "nothing this week" is
+            // information, not a broken row.
+            TrackerSections.SCHEDULE to true,
             // v2.7 focus rows: Trending rides the discovery state
             // (empty until the worker first lands).
             TrackerSections.CONTINUE to continueCards.isNotEmpty(),
@@ -4307,6 +4312,9 @@ class MainActivity : Activity() {
         // the user sees); the rest are appended right after the first
         // frame, in the same order, so focus order and scrolling are
         // unchanged.
+        // v3.16: the week's upcoming episodes, computed once per build
+        // (the row and its placeholders read the same list).
+        val tThisWeek = TrackerLogic.thisWeek(tUpNext, todayIso())
         val eagerKeys = renderKeys.take(3)
         val deferredKeys = renderKeys.drop(3)
 
@@ -4327,6 +4335,8 @@ class MainActivity : Activity() {
                         content.addView(buildMissedSection(tMissedGroups))
                     TrackerSections.WANTTOWATCH ->
                         content.addView(buildWantToWatchSection(tWantShows))
+                    TrackerSections.SCHEDULE ->
+                        content.addView(buildScheduleSection(tThisWeek))
                     TrackerSections.CONTINUE ->
                         buildTrackerContinueSection(continueCards, system)
                             ?.let { content.addView(it) }
@@ -4367,6 +4377,32 @@ class MainActivity : Activity() {
             }
         }
         startHeroRotation()
+    }
+
+    /**
+     * v3.16 "This week": the schedule row. One card per upcoming
+     * episode inside the next seven days, earliest first; the existing
+     * Up Next card carries the day label in its meta line ("Today",
+     * "Tomorrow", "in 3 d"), so the row needs no new card design and
+     * keeps the same OK/play and hold-OK mark-watched behaviour.
+     *
+     * Renders an explanatory line instead of an empty row when the
+     * window is quiet — a tracker with nothing airing this week is a
+     * normal state, not a broken section.
+     */
+    private fun buildScheduleSection(items: List<TrackerLogic.UpNextItem>): View {
+        val box = section("This week")
+        if (items.isEmpty()) {
+            val hint = TextView(this)
+            hint.text = "Nothing airs in the next seven days."
+            hint.setTextColor(subColour)
+            hint.textSize = 17f
+            box.addView(hint)
+            return box
+        }
+        val row = pagedRow(items) { upNextCard(it) }
+        box.addView(horizontalScroller(row))
+        return box
     }
 
     /** v2.1: the standalone My Library entry row (no-hero case). */
