@@ -13,10 +13,18 @@ against an Onn Google TV device).
 - Arrow-pattern lock (D-pad directions) for apps, folders, and Settings
 - Full-screen All Apps tab, app search with a D-pad keyboard
 - Favorites, Recently Used, HDMI inputs, Continue Watching, Now Playing
+- Media tracker: Up Next, Missed, Want to Watch, **This week** (the next
+  seven days of airings), Continue Watching, Trending, For You — plus a
+  season-by-season checklist in Details (per-season progress, mark one
+  episode, a season, or everything before a chosen episode)
 - Profiles, including a Guest profile with locked settings
 - Status bar you control: clock/date formats, per-tile switches,
   Wi-Fi network name, or hide the bar entirely
 - iPhone-style on/off switches and two-column Roku-style Settings
+- **Media tracker settings** page: live library counters, re-import from
+  the tracker app, the launcher's own TMDB key
+- Optional **Glass look**: translucent chips and a floating app dock
+  over the wallpaper (Settings › Look & wallpaper)
 
 ## Notes
 
