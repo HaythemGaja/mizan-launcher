@@ -6081,7 +6081,13 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             emptyList()
         }
-        val picks = (favs.ifEmpty { apps }).take(7)
+        // v3.16: favorites FIRST, then the rest of the catalogue —
+        // not "favorites if any, else everything". A profile with a
+        // single favorite used to get a one-icon dock floating in the
+        // middle of the screen; the dock is an app shelf, so it fills.
+        val picks = (favs + apps)
+            .distinctBy { it.pkg }
+            .take(7)
         if (picks.isEmpty()) return null
 
         val dock = LinearLayout(this)
