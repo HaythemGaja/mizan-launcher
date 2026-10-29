@@ -117,6 +117,7 @@ class SettingsActivity : Activity() {
         "weather" to "Weather",
         "lockprofiles" to "Lock & profiles",
         "nowplaying" to "Now playing",
+        "tracker" to "Media tracker",
         "iptv" to "IPTV",
         "data" to "Data & about"
     )
@@ -126,6 +127,7 @@ class SettingsActivity : Activity() {
         "home" to "🏠", "look" to "🎨", "homescreen" to "▦", "sortsections" to "↕",
         "statusbar" to "🕐",
         "weather" to "🌦", "lockprofiles" to "🔒", "nowplaying" to "♪",
+        "tracker" to "🎬",
         "iptv" to "📺", "data" to "💾"
     )
 
@@ -138,6 +140,7 @@ class SettingsActivity : Activity() {
         "statusbar" to "The top bar: clock, date, weather, quick tiles",
         "weather" to "Location and units for the home weather",
         "lockprofiles" to "Arrow pattern, app locks, profiles, Guest",
+        "tracker" to "Your shows and movies: library, TMDB, watched state",
         "nowplaying" to "What's playing in other apps, shown at home",
         "iptv" to "Your IPTV account, playlist, and catalogues",
         "data" to "Backup, safe mode, and diagnostics"
@@ -741,6 +744,7 @@ class SettingsActivity : Activity() {
             "weather" -> buildWeatherDetail(content)
             "lockprofiles" -> buildLockProfilesDetail(content)
             "nowplaying" -> buildNowPlayingDetail(content)
+            "tracker" -> buildTrackerDetail(content)
             "iptv" -> buildIptvDetail(content)
             "data" -> buildDataDetail(content)
             else -> {
@@ -1190,6 +1194,85 @@ class SettingsActivity : Activity() {
     }
 
     /** Data & about (v1.5): the v1.4 Backup and Safe mode categories merged. */
+    /**
+     * v3.16: "Media tracker" — the app's headline feature finally has a
+     * home in Settings. Before this, the TMDB key lived under "Data &
+     * about" next to backup/restore, and the library could not be
+     * re-imported at all without clearing app data.
+     *
+     * Everything here is read-only or explicitly user-triggered; the
+     * import runs on a worker thread (it is IPC to the tracker app) and
+     * reports its outcome in a toast, never a silent no-op.
+     */
+    private fun buildTrackerDetail(content: LinearLayout) {
+        content.addView(header("Your library"))
+        content.addView(info(com.mizan.launcher.data.TrackerClient.libraryDiag(this)))
+        content.addView(row(
+            "Re-import from the tracker app",
+            "Ask the tracker app for its current library and replace the local copy"
+        ) {
+            toast("Importing…")
+            Thread {
+                val result = com.mizan.launcher.data.TrackerClient.reimport(this)
+                runOnUiThread {
+                    val msg = when (result) {
+                        com.mizan.launcher.data.TrackerClient.ImportResult.IMPORTED ->
+                            "Library imported"
+                        com.mizan.launcher.data.TrackerClient.ImportResult.STORE_CURRENT ->
+                            "The library is already up to date"
+                        com.mizan.launcher.data.TrackerClient.ImportResult.NO_PROVIDER ->
+                            "The tracker app isn't installed — keeping the local copy"
+                        com.mizan.launcher.data.TrackerClient.ImportResult.NO_DATA ->
+                            "The tracker app has no library to share yet"
+                    }
+                    toast(msg)
+                    rebuild()
+                }
+            }.start()
+        })
+        content.addView(row("Open My Library", "All your shows and movies, with their watched progress") {
+            try {
+                startActivity(Intent(this, LibraryActivity::class.java))
+            } catch (e: Exception) {
+                failOpen("openLibrary", e)
+            }
+        })
+        content.addView(row("Sort home rows", "Reorder, hide or show the tracker rows on the home screen") {
+            openCategory("sortsections")
+        })
+
+        // v2.6: the launcher's OWN TMDB key (optional). TMDB reads
+        // normally go through the tracker app (its key never leaves
+        // the tracker); when the proxy fails, a key saved here lets
+        // Sreeb call TMDB directly as a fallback. Same hygiene as
+        // the IPTV credentials: stored only in prefs — never in
+        // backups, diagnostics or logs — and shown as set/not-set.
+        content.addView(header("TMDB"))
+        content.addView(info("Optional. Sreeb reads TMDB through the tracker app first; if that fails, a key saved here lets Sreeb reach TMDB directly instead. It's stored only on this TV — never in backups, diagnostics or logs. Leave it empty to clear it."))
+        content.addView(row("TMDB API key", if (prefs.tmdbKey.isEmpty()) "Not set" else "Set") {
+            KeyboardDialog.show(this, "TMDB API key", accent, prefs.tmdbKey, 80, symbols = true, masked = true) { text ->
+                prefs.tmdbKey = text.trim()
+                rebuild()
+            }
+        })
+
+        content.addView(header("Watched state"))
+        content.addView(info(
+            "Marks live on this TV, per profile: an episode you mark watched stays watched " +
+                "even if the tracker app is removed, and season marks are stored the same way. " +
+                "Backups carry them with the rest of your settings."
+        ))
+    }
+
+    /** Jump the two-column nav to another category and render it. */
+    private fun openCategory(id: String) {
+        val idx = categories.indexOfFirst { it.first == id }
+        if (idx < 0) return
+        nav.select(idx)
+        nav.enterDetail()
+        rebuild()
+    }
+
     private fun buildDataDetail(content: LinearLayout) {
         content.addView(header("Backup & restore"))
                 content.addView(row("Export settings", "Save all settings as a JSON file") {
@@ -1205,20 +1288,6 @@ class SettingsActivity : Activity() {
                         .setType("application/json")
                     try { startActivityForResult(intent, 42) } catch (e: Exception) { failOpen("import", e) }
                 })
-        // v2.6: the launcher's OWN TMDB key (optional). TMDB reads
-        // normally go through the tracker app (its key never leaves
-        // the tracker); when the proxy fails, a key saved here lets
-        // Sreeb call TMDB directly as a fallback. Same hygiene as
-        // the IPTV credentials: stored only in prefs — never in
-        // backups, diagnostics or logs — and shown as set/not-set.
-        content.addView(header("TMDB"))
-        content.addView(info("Optional. Sreeb reads TMDB through the tracker app first; if that fails, a key saved here lets Sreeb reach TMDB directly instead. It's stored only on this TV — never in backups, diagnostics or logs. Leave it empty to clear it."))
-        content.addView(row("TMDB API key", if (prefs.tmdbKey.isEmpty()) "Not set" else "Set") {
-            KeyboardDialog.show(this, "TMDB API key", accent, prefs.tmdbKey, 80, symbols = true, masked = true) { text ->
-                prefs.tmdbKey = text.trim()
-                rebuild()
-            }
-        })
         content.addView(header(appVersionLabel()))
         content.addView(info(diagnosticsText()))
         content.addView(row("Copy diagnostics", "Copy all of the above — including the freeze/crash logs — to report a problem") {

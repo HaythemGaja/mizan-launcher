@@ -535,6 +535,21 @@ object TrackerClient {
 
     // ------------------------------------------------------------ v3.7 one-time import (sole provider contact)
 
+    /**
+     * v3.16: Settings › Media tracker — drop the "imported" latch and
+     * ask the tracker app for its library again. The latch exists so
+     * the import happens once; this is the explicit "do it again" the
+     * user can ask for after the tracker app added titles.
+     */
+    fun reimport(ctx: Context): ImportResult {
+        return try {
+            Prefs(ctx.applicationContext).libraryImported = false
+            runOneTimeImport(ctx)
+        } catch (e: Exception) {
+            ImportResult.NO_DATA
+        }
+    }
+
     /** Outcome of one import attempt (see [runOneTimeImport]). */
     enum class ImportResult { IMPORTED, STORE_CURRENT, NO_PROVIDER, NO_DATA }
 
