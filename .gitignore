@@ -5,3 +5,6 @@ local.properties
 *.apk
 *.jar.bak
 sim/*.jar
+*.keystore
+*.jks
+.keystores/
