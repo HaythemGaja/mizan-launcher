@@ -15,7 +15,7 @@ package com.calm.launcher.core
  *
  * v3.0: nesting is capped at [MAX_DEPTH]. The reader recurses per
  * container, and every document this parser touches is network-fed
- * (TMDB, IPTV panels, tracker snapshots) — a hostile deeply-nested
+ * (tracker snapshots) — a hostile deeply-nested
  * payload recursed until StackOverflowError, an Error that escapes
  * every `catch (e: Exception)` in the parse paths and kills the
  * thread (on the main thread: the process). Past the cap the reader

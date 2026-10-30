@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Calm horizon mark, drawn for small sizes: one pale moon over two
+     horizon lines. No fine detail, no text, so it stays readable on a
+     TV app row. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="@color/calm_icon_moon"
+        android:pathData="M54,21a19,19 0 1,0 0.1,0z" />
+    <path
+        android:fillColor="@color/calm_icon_horizon_light"
+        android:pathData="M26,68h56v7H26z" />
+    <path
+        android:fillColor="@color/calm_icon_horizon_dark"
+        android:pathData="M34,82h40v7H34z" />
+</vector>

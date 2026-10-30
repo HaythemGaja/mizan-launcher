@@ -58,9 +58,6 @@ class SettingsActivity : Activity() {
         val profileNo = store.currentProfile
         list.addView(row("Profile", "Profile $profileNo of ${store.profiles.size}") { profileMenu() })
 
-        val iptvValue = if (store.iptvServer.isEmpty()) "Not set" else store.iptvUser
-        list.addView(row("IPTV account", iptvValue) { iptvAccountMenu() })
-
         val hasPattern = store.arrowPattern.isNotEmpty()
         list.addView(row("Arrow lock", if (hasPattern) "Set — locks need it to open" else "Not set") {
             if (!hasPattern) {
@@ -124,37 +121,6 @@ class SettingsActivity : Activity() {
             }
             .setNegativeButton("Close", null)
             .show()
-    }
-
-    /** Server, user and password, checked against the server before anything is saved. */
-    private fun iptvAccountMenu() {
-        Dialogs.text(this, "IPTV server (e.g. http://host:port)", store.iptvServer) { server ->
-            if (server == null) return@text
-            Dialogs.text(this, "Username", store.iptvUser) { user ->
-                if (user == null) return@text
-                Dialogs.text(this, "Password", store.iptvPass) { pass ->
-                    if (pass == null) return@text
-                    toast("Checking the account…")
-                    Thread {
-                        val ok = com.calm.launcher.data.XtreamClient.checkLogin(
-                            com.calm.launcher.data.XtreamClient.account(server, user, pass)
-                        )
-                        runOnUiThread {
-                            if (isFinishing || isDestroyed) return@runOnUiThread
-                            if (ok) {
-                                store.iptvServer = server.trim()
-                                store.iptvUser = user.trim()
-                                store.iptvPass = pass.trim()
-                                toast("IPTV account saved")
-                            } else {
-                                toast("Couldn't sign in — account not changed")
-                            }
-                            rebuild()
-                        }
-                    }.start()
-                }
-            }
-        }
     }
 
     private fun lockMenu() {

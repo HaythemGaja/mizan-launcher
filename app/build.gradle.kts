@@ -11,8 +11,8 @@ android {
         applicationId = "com.calm.launcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3"
+        versionCode = 4
+        versionName = "0.4"
     }
     // Pinned signing key (same pattern as Sreeb): the keystore file lives
     // only on the builder's machine, never in the repo. Builds run as root,
@@ -47,9 +47,5 @@ android {
 }
 
 // No third-party libraries: framework Views and the Kotlin stdlib only.
-// Playback: Media3 ExoPlayer with HLS, the same engine IPTV apps use for live streams.
-dependencies {
-    implementation("androidx.media3:media3-exoplayer:1.4.1")
-    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
-    implementation("androidx.media3:media3-ui:1.4.1")
-}
+// v0.4: Live TV (and its Media3 ExoPlayer playback) was removed, so the
+// app has no dependencies left at all.

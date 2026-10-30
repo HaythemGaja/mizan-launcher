@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Calm launcher icon: deep teal ground, pale moon, soft horizon lines. -->
+    <color name="calm_icon_background">#0E3B3C</color>
+    <color name="calm_icon_moon">#E9F2EC</color>
+    <color name="calm_icon_horizon_light">#8FC3B4</color>
+    <color name="calm_icon_horizon_dark">#5C9A88</color>
+</resources>

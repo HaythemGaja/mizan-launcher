@@ -3,7 +3,11 @@
 A small, fast Android TV home screen. No ads, no accounts, no network,
 no third-party libraries, no foreground services.
 
-## What it does (v0.2)
+## What it does (v0.4)
+
+- **Launcher icon**: a calm horizon mark — deep teal rounded square, pale
+  moon over two horizon lines — as a vector adaptive icon plus a wide TV
+  banner, so it reads at small sizes on a TV app row.
 
 - **Clock** with 12- or 24-hour time (set in Settings).
 - **Folders**: one level deep, each app in at most one. Long-press an app → Move to folder.
@@ -20,8 +24,12 @@ no third-party libraries, no foreground services.
 
 ## Not yet (planned)
 
-- IPTV and the tracker integration: both depend on accounts or another app,
-  so they need decisions before they're built.
+- The tracker integration: it depends on another app, so it needs a
+  decision before it's built.
+- Live TV was REMOVED in v0.4 (the home tile, the IPTV screen and player,
+  the Xtream/EPG code, the Settings account row, and the Media3 player
+  libraries are all gone). Any IPTV account saved on a TV before v0.4 is
+  simply ignored afterwards.
 - Photo wallpapers (needs a file picker).
 - Nested folders, profile renaming, and Settings-level folder management.
 

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV leanback banner: the same calm horizon mark, widened for the
+     320x180 banner slot. Vector only, no text, no fine detail. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="@color/calm_icon_background"
+        android:pathData="M0,0h320v180H0z" />
+    <path
+        android:fillColor="@color/calm_icon_moon"
+        android:pathData="M160,32a30,30 0 1,0 0.1,0z" />
+    <path
+        android:fillColor="@color/calm_icon_horizon_light"
+        android:pathData="M100,112h120v9H100z" />
+    <path
+        android:fillColor="@color/calm_icon_horizon_dark"
+        android:pathData="M120,132h80v9H120z" />
+</vector>
