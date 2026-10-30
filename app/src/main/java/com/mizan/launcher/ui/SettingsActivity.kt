@@ -1358,6 +1358,7 @@ class SettingsActivity : Activity() {
         content.addView(toggleRow("Tile: Sound", sb.showTileSound) { updateStatusBar { c -> c.copy(showTileSound = it) } })
         content.addView(toggleRow("Tile: Picture", sb.showTilePicture) { updateStatusBar { c -> c.copy(showTilePicture = it) } })
         content.addView(toggleRow("Tile: Settings gear", sb.showTileSettings, "The ⚙ Settings button inside the bar (corner gear is separate)") { updateStatusBar { c -> c.copy(showTileSettings = it) } })
+        content.addView(toggleRow("Tile: Profile", sb.showTileProfile, "The 👤 profile pill in the bar — profile switching stays available in Settings › Lock & profiles") { updateStatusBar { c -> c.copy(showTileProfile = it) } })
         content.addView(toggleRow("Tile: Search", sb.showTileSearch, "Opens Sreeb's app Search screen (the remote's Search key works too)") { updateStatusBar { c -> c.copy(showTileSearch = it) } })
         content.addView(toggleRow("Tile: All Apps", sb.showTileAllApps, "Opens the full-screen All Apps tab — every app, foldered ones included") { updateStatusBar { c -> c.copy(showTileAllApps = it) } })
         content.addView(row("Clock format", if (sb.clock24h) "24-hour" else "12-hour") {
@@ -1412,7 +1413,7 @@ class SettingsActivity : Activity() {
         // sits next to the Home style picker it belongs to. The hero
         // is always first when shown; the other sections reorder.
         content.addView(header("Library sections"))
-        content.addView(info("Only applies when Home style is Watch. A section with nothing in it never appears, even when switched on."))
+        content.addView(info("Only applies when Home style is Watch. A section with nothing in it never appears, even when switched on. When Home style is TV, these toggles change nothing — use Home screen rows instead."))
         val sectionsCfg = prefs.trackerSectionsConfig()
         val ts = com.mizan.launcher.core.TrackerSections
         content.addView(toggleRow(
@@ -1799,6 +1800,12 @@ class SettingsActivity : Activity() {
      */
     private fun buildHomeScreenDetail(content: LinearLayout) {
         content.addView(header("Home screen rows"))
+        // v3.17: these rows gate the TV home only — on a Watch home
+        // they change nothing, which used to read as "settings don't
+        // work". Say so in the open instead of hiding the page.
+        if (com.mizan.launcher.core.HomeStyle.isWatch(prefs.homeStyle)) {
+            content.addView(info("These rows are the TV home — they don't affect your Watch home; use Sort sections."))
+        }
         // Show the EFFECTIVE order — stored orders from older
         // versions gain the new rows at their canonical positions, and
         // the normalized order is what row options below edit.

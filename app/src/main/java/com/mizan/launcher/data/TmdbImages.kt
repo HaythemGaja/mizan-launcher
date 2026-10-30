@@ -59,13 +59,20 @@ object TmdbImages {
      * serialised VM work — the watchdog caught the main thread sitting
      * inside nativeCreate/Thread.start for seconds, once per card.
      *
-     * One small pool now serves every image. The queue is LIFO: the
-     * newest request is the row the user is looking at, so it wins over
-     * rows composed earlier. Duplicate requests for a URL already in
-     * flight are dropped (the ImageView tag check makes that safe).
+     * One small pool now serves every image.
+     *
+     * v3.17 (poster delivery): duplicate requests for a URL already
+     * in flight used to be DROPPED — and completion posted the
+     * bitmap only to the original target. When the home rebuilt
+     * cold-shell → warm-home mid-download, the new card's request
+     * was dropped and the bitmap went to a discarded view, so the
+     * new card stayed blank forever. Every load() call now
+     * registers its target as a waiter for the key; completion
+     * applies the bitmap to EVERY waiter whose view tag still
+     * equals the URL, then clears the list.
      */
     private val imageQueue = LinkedBlockingDeque<Runnable>()
-    private val inFlight = HashSet<String>()
+    private val waiters = HashMap<String, MutableList<Pair<android.widget.ImageView, (() -> Unit)?>>>()
     private val threadNo = AtomicInteger(0)
 
     // NOTE (v3.16 fix): the first cut of this pool overrode execute()
@@ -98,11 +105,12 @@ object TmdbImages {
 
     /**
      * Load [url] into [target]: cache hit applies immediately;
-     * otherwise a background download applies on completion — but
-     * only if the view still wants this URL (its tag), so recycled
-     * row cards never flash the wrong poster. [onApplied] fires on
-     * the main thread right after the bitmap is set; it never
-     * fires on failure (fail-open).
+     * otherwise a background download applies on completion to
+     * every waiter for the URL — but only if the view still wants
+     * this URL (its tag), so recycled row cards never flash the
+     * wrong poster. [onApplied] fires on the main thread right
+     * after the bitmap is set on its own view; it never fires on
+     * failure (fail-open, no retry storm).
      */
     fun load(
         url: String,
@@ -118,25 +126,31 @@ object TmdbImages {
         }
         target.tag = url
         val key = cacheKey(url, maxDim)
-        synchronized(lock) {
-            // Already queued/downloading: the tag above is enough, this
-            // request would only duplicate the network work.
-            if (!inFlight.add(key)) return
+        val alreadyDownloading = synchronized(lock) {
+            val list = waiters.getOrPut(key) { mutableListOf() }
+            val wasPresent = list.isNotEmpty()
+            if (list.none { it.first === target }) list.add(target to onApplied)
+            wasPresent
         }
+        // A waiter registered while a download is already in flight
+        // is served by that download's completion; starting a second
+        // download would only duplicate the network work.
+        if (alreadyDownloading) return
         pool.execute {
-            try {
-                val bmp = download(url, maxDim)
-                if (bmp != null) {
-                    synchronized(lock) { putCached(key, bmp) }
-                    mainHandler.post {
-                        if (target.tag == url) {
-                            target.setImageBitmap(bmp)
-                            onApplied?.invoke()
+            val bmp = download(url, maxDim)
+            if (bmp != null) {
+                synchronized(lock) { putCached(key, bmp) }
+            }
+            val served = synchronized(lock) { waiters.remove(key) } ?: emptyList()
+            if (bmp != null) {
+                mainHandler.post {
+                    for ((view, cb) in served) {
+                        if (view.tag == url) {
+                            view.setImageBitmap(bmp)
+                            cb?.invoke()
                         }
                     }
                 }
-            } finally {
-                synchronized(lock) { inFlight.remove(key) }
             }
         }
     }

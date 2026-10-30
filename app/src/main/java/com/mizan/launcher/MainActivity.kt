@@ -3017,14 +3017,20 @@ class MainActivity : Activity() {
 
     /**
      * The Apps tab: move focus into this page's All Apps section
-     * (its first focusable descendant). Fail-open: a hidden/absent
-     * section says so instead of stranding focus.
+     * (its first focusable descendant). v3.17: when the section
+     * is hidden/absent the tab used to dead-end on a toast — now
+     * it opens the full All Apps screen instead, so the tab
+     * never does nothing.
      */
     private fun focusAllAppsSection() {
         val anchor = allAppsAnchor
         val target = anchor?.let { firstFocusableDescendant(it) }
         if (target == null) {
-            Toast.makeText(this, "All Apps is hidden for this profile", Toast.LENGTH_SHORT).show()
+            runCatching {
+                startActivity(
+                    Intent(this, com.mizan.launcher.ui.AllAppsActivity::class.java)
+                )
+            }
             return
         }
         anchor.requestRectangleOnScreen(
@@ -4293,14 +4299,18 @@ class MainActivity : Activity() {
             // v2.8: on the cold shell the app list has not landed
             // yet — the two app-backed sections join at the warm
             // rebuild instead of flashing their empty-state hints.
-            TrackerSections.FAVORITES to (!coldStart && layout.isRowVisible("favorites")),
-            // v3.4 (ask 51): folders are a regular tracker-home
-            // section now (they used to render only on the TV
-            // home, so on Watch a created folder had nowhere to
-            // show). Folder data is prefs-local, so no cold-shell
-            // gate: it renders as soon as the row is visible.
-            TrackerSections.FOLDERS to layout.isRowVisible("folders"),
-            TrackerSections.ALLAPPS to (!coldStart && layout.isRowVisible("apps"))
+            // v3.17 (double-gate fix): these three sections used
+            // to ALSO require the TV row toggle (layout.isRowVisible)
+            // — so a TV row Hidden vetoed a Watch section Shown
+            // with nothing saying so. Watch sections now obey
+            // only Watch toggles (TrackerSections.isShown, applied
+            // in renderKeys below); the TV rows keep gating only
+            // the TV home. Favorites/All Apps keep the cold-shell
+            // suppression; Folders renders its New-folder tile
+            // even with no folders, so it has no gate at all.
+            TrackerSections.FAVORITES to !coldStart,
+            TrackerSections.FOLDERS to true,
+            TrackerSections.ALLAPPS to !coldStart
         )
         val order = TrackerSections.compose(sectionsCfg) { available[it] == true }
         // v3.1 (ask 39): the render list is compose() PLUS loading

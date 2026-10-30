@@ -51,6 +51,12 @@ data class StatusBarConfig(
      * separate safety element (see MainActivity) and is NOT this tile.
      */
     val showTileSettings: Boolean = true,
+    /**
+     * The Profile pill in the bar (v3.17: previously unconditional
+     * outside safe mode). Hideable on its own; profile switching
+     * stays available in Settings › Lock & profiles.
+     */
+    val showTileProfile: Boolean = true,
     /** true = 24-hour clock, false = 12-hour with AM/PM. */
     val clock24h: Boolean = false,
     val showSeconds: Boolean = false,
@@ -148,7 +154,7 @@ object StatusBarLogic {
             if (cfg.showTileSearch) out.add(BarTile.SEARCH)
             if (cfg.showTileWifi) out.add(BarTile.WIFI)
         }
-        if (!safeMode) out.add(BarTile.PROFILE)
+        if (!safeMode && cfg.showTileProfile) out.add(BarTile.PROFILE)
         if (safeMode || cfg.showTileSettings) out.add(BarTile.SETTINGS)
         return out
     }
@@ -163,7 +169,9 @@ object StatusBarLogic {
  * segment (5 fields instead of 6) and decodes with every tile switch
  * at its default. v2.1 appends an 8th tile char (the authoritative
  * Wi-Fi tile flag; pre-v2.1 segments decode with that tile OFF —
- * the v2.1 default). Values are validated against the known key
+ * the v2.1 default). v3.17 appends a 9th tile char (the Profile
+ * pill flag; pre-v3.17 segments decode with it ON — the old
+ * default). Values are validated against the known key
  * lists; unknown values fall back to defaults field-by-field
  * (fail-open), never throw.
  */
@@ -183,7 +191,10 @@ object StatusBarCodec {
             // Char 1 mirrors it for pre-v2.1 readers. Pre-v2.1 strings
             // (7 chars, char 1 usually '1' from the old default) must
             // NOT resurrect the tile: v2.1 turned it off by default.
-            c.showTileWifi)) {
+            c.showTileWifi,
+            // v3.17: char 9 is the Profile pill flag. Old/short
+            // segments decode with it ON (the pre-v3.17 default).
+            c.showTileProfile)) {
             tiles.append(if (b) '1' else '0')
         }
         // Date/size/bg/opacity keys come from closed lists (letters, digits,
@@ -236,6 +247,9 @@ object StatusBarCodec {
             showTileSettings = tile(4, d.showTileSettings),
             showTileSearch = tile(5, d.showTileSearch),
             showTileAllApps = tile(6, d.showTileAllApps),
+            // v3.17: char 9 is the Profile pill flag; any shorter
+            // segment (every pre-v3.17 config) decodes with it ON.
+            showTileProfile = tile(8, d.showTileProfile),
             dateFormat = parts.getOrNull(base)?.takeIf { it in StatusBarConfig.DATE_FORMATS } ?: d.dateFormat,
             textSize = parts.getOrNull(base + 1)?.takeIf { it in StatusBarConfig.TEXT_SIZES } ?: d.textSize,
             background = parts.getOrNull(base + 2)?.takeIf { it in StatusBarConfig.BACKGROUNDS } ?: d.background,

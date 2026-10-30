@@ -3308,6 +3308,9 @@ fun main() {
     // ---------- (62) v3.16: This week (schedule row) ----------
     section62()
 
+    // ---------- (63) v3.17: Watch/TV double-gate fix, poster waiter delivery, Apps tab fallback, Profile pill toggle ----------
+    section63()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -4113,9 +4116,12 @@ fun section42() {
         // profile add / edit / delete / reset + per-profile audit).
         // Re-pinned in v3.16 (intentional version bump 3.15/38 → 3.16/39 —
         // Glass look: dock + translucent chips).
-        check("v25src: the app version is 3.16 / code 39 (bumped by v3.16)",
-            gradleSrc.contains("versionName = \"3.16\"") &&
-                gradleSrc.contains("versionCode = 39"))
+        // Re-pinned in v3.17 (intentional version bump 3.16/39 → 3.17/40 —
+        // Watch/TV double-gate fix, poster waiter delivery, Apps tab
+        // fallback, Profile pill toggle).
+        check("v25src: the app version is 3.17 / code 40 (bumped by v3.17)",
+            gradleSrc.contains("versionName = \"3.17\"") &&
+                gradleSrc.contains("versionCode = 40"))
     }
 }
 
@@ -5081,9 +5087,10 @@ fun section50() {
         // Re-pinned in v3.13 (intentional version bump 3.12/35 → 3.13/36).
         // Re-pinned in v3.14 (intentional version bump 3.13/36 → 3.14/37).
         // Re-pinned in v3.16 (intentional version bump 3.15/38 → 3.16/39).
-        check("v31src: the version bump is 3.16 / code 39",
-            src("app/build.gradle.kts").contains("versionCode = 39") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.16\""))
+        // Re-pinned in v3.17 (intentional version bump 3.16/39 → 3.17/40).
+        check("v31src: the version bump is 3.17 / code 40",
+            src("app/build.gradle.kts").contains("versionCode = 40") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.17\""))
     }
 }
 
@@ -5636,8 +5643,14 @@ fun section54() {
             mainSrc.contains("row:iptv:folders"))
         check("src54: safe shell bypasses folder dedupe (no vanishing apps)",
             mainSrc.contains("shellSafe") && mainSrc.contains("safeMode || safeShell"))
-        check("src54: tracker home availability gates folders on its visibility row",
-            mainSrc.contains("TrackerSections.FOLDERS to layout.isRowVisible(\"folders\")"))
+        // Re-pinned in v3.17 (double-gate fix): the Watch Folders
+        // section no longer requires the TV folders row — a TV row
+        // Hidden used to veto a Watch section Shown with nothing
+        // saying so. Folders now renders whenever its section is
+        // shown (it always has content: the New-folder tile).
+        check("src54: tracker home availability no longer gates folders on the TV row",
+            mainSrc.contains("TrackerSections.FOLDERS to true") &&
+                !mainSrc.contains("TrackerSections.FOLDERS to layout.isRowVisible(\"folders\")"))
         check("src54: landscapeCard scales home row cards",
             mainSrc.contains("homeRowCardWidthPx(cm.tileWidthPx)"))
         check("src54: IPTV home rows pass the 0.75 scale, browser keeps default",
@@ -7060,5 +7073,101 @@ fun section61() {
             !prefsSrc.contains("startForegroundService(") &&
                 !settingsSrc.contains("startForegroundService(") &&
                 !mainSrc.contains("startForegroundService("))
+    }
+}
+
+/**
+ * v3.17 (spec §63): four fixes in one batch.
+ * (1) Watch/TV double-gate: the Watch home's Favorites, Folders and
+ * All Apps sections used to require BOTH the Watch section toggle
+ * and the TV row toggle, so a TV row Hidden vetoed a Watch section
+ * Shown with nothing saying so. (2) Poster delivery: TmdbImages
+ * used to drop a duplicate in-flight request and deliver only to
+ * the original view, so a card rebuilt mid-download stayed blank
+ * forever. (3) Apps tab fallback: the tab dead-ended on a toast
+ * when its section was absent. (4) Profile pill toggle: the pill
+ * had no switch at all.
+ */
+fun section63() {
+    run {
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) {
+            ""
+        }
+
+        // ---- (1) Profile pill flag: default, codec, barTiles ----
+        check("prof63: Profile pill defaults ON",
+            StatusBarConfig().showTileProfile)
+        val offCfg = StatusBarConfig(showTileProfile = false)
+        check("prof63: codec round-trips Profile OFF",
+            !StatusBarCodec.decode(StatusBarCodec.encode(offCfg)).showTileProfile)
+        check("prof63: codec round-trips Profile ON",
+            StatusBarCodec.decode(StatusBarCodec.encode(StatusBarConfig())).showTileProfile)
+        check("prof63: an 8-char (pre-v3.17) tile segment decodes Profile ON",
+            StatusBarCodec.decode(StatusBarCodec.encode(StatusBarConfig()).dropLast(1)).showTileProfile)
+        check("prof63: a 7-char (pre-v2.1) tile segment decodes Profile ON",
+            StatusBarCodec.decode(
+                "111111100|0111111|weekday_month_day|medium|transparent|solid"
+            ).showTileProfile)
+        check("prof63: barTiles includes PROFILE when the flag is on",
+            StatusBarLogic.barTiles(StatusBarConfig(), false).contains(StatusBarLogic.BarTile.PROFILE))
+        check("prof63: barTiles omits PROFILE when the flag is off",
+            !StatusBarLogic.barTiles(offCfg, false).contains(StatusBarLogic.BarTile.PROFILE))
+        check("prof63: barTiles still suppresses PROFILE in safe mode even when on",
+            !StatusBarLogic.barTiles(StatusBarConfig(), true).contains(StatusBarLogic.BarTile.PROFILE))
+        check("prof63: barTiles still shows SETTINGS in safe mode (unchanged)",
+            StatusBarLogic.barTiles(StatusBarConfig(), true).contains(StatusBarLogic.BarTile.SETTINGS))
+
+        // ---- (2) Double-gate: source pins on the Watch builder ----
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        check("prof63: Watch FAVORITES availability no longer reads the TV row",
+            mainSrc.contains("TrackerSections.FAVORITES to !coldStart") &&
+                !mainSrc.contains("TrackerSections.FAVORITES to (!coldStart && layout.isRowVisible(\"favorites\"))"))
+        check("prof63: Watch FOLDERS availability no longer reads the TV row",
+            mainSrc.contains("TrackerSections.FOLDERS to true") &&
+                !mainSrc.contains("TrackerSections.FOLDERS to layout.isRowVisible(\"folders\")"))
+        check("prof63: Watch ALLAPPS availability no longer reads the TV row",
+            mainSrc.contains("TrackerSections.ALLAPPS to !coldStart") &&
+                !mainSrc.contains("TrackerSections.ALLAPPS to (!coldStart && layout.isRowVisible(\"apps\"))"))
+        check("prof63: TV home still skips hidden rows (untouched)",
+            mainSrc.contains("if (!shellSafe && !layout.isRowVisible(key)) continue"))
+
+        // ---- (3) Apps tab fallback: source pin on the handler ----
+        val focusStart = mainSrc.indexOf("private fun focusAllAppsSection")
+        val focusBody = if (focusStart < 0) "" else mainSrc.substring(
+            focusStart,
+            (mainSrc.indexOf("private fun", focusStart + 10).takeIf { it > 0 } ?: mainSrc.length)
+        )
+        check("prof63: absent All Apps section opens the All Apps screen, not a toast",
+            focusBody.contains("AllAppsActivity") &&
+                !focusBody.contains("All Apps is hidden for this profile"))
+
+        // ---- (4) Poster waiter delivery: source pins on TmdbImages ----
+        val imgSrc = src("app/src/main/java/com/mizan/launcher/data/TmdbImages.kt")
+        check("prof63: loader keeps a waiter list per key instead of dropping duplicates",
+            imgSrc.contains("waiters") && imgSrc.contains("getOrPut(key)") &&
+                !imgSrc.contains("inFlight"))
+        check("prof63: completion applies the bitmap to every waiter whose tag still matches",
+            imgSrc.contains("for ((view, cb) in served)") &&
+                imgSrc.contains("if (view.tag == url)"))
+        check("prof63: loader pool, timeouts and decode bounds untouched",
+            imgSrc.contains("prestartAllCoreThreads()") &&
+                imgSrc.contains("MAX_DOWNLOAD_BYTES") &&
+                imgSrc.contains("DEFAULT_MAX_DIM"))
+
+        // ---- (5) Settings wiring: toggle + style-scope notes ----
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("prof63: Status bar detail has a Tile: Profile toggle",
+            settingsSrc.contains("Tile: Profile") &&
+                settingsSrc.contains("showTileProfile = it"))
+        check("prof63: Home screen rows page notes it is TV-only on a Watch home",
+            settingsSrc.contains("These rows are the TV home"))
+        check("prof63: Library sections note states the TV reverse",
+            settingsSrc.contains("use Home screen rows instead"))
+        check("prof63: no foreground service in the newly touched files (standing rule)",
+            !mainSrc.contains("startForegroundService(") &&
+                !settingsSrc.contains("startForegroundService(") &&
+                !imgSrc.contains("startForegroundService("))
     }
 }
