@@ -307,6 +307,27 @@ class MainActivity : Activity() {
         // frame → home complete) — App.onCreate marked the zero.
         DiagLog.markStartup("main created")
         prefs = Prefs(this)
+        // v3.19 one-shot: the first launch after the update
+        // makes Clean the active home (the CleanYourTV-style
+        // launcher is now the home); the flag means a later
+        // deliberate switch to TV/Watch is never overridden.
+        // Safe mode still forces the TV render regardless.
+        try {
+            if (!prefs.cleanDefaultApplied319) {
+                prefs.homeStyle = com.mizan.launcher.core.HomeStyle.CLEAN
+                prefs.cleanDefaultApplied319 = true
+            }
+        } catch (e: Exception) {
+            // The default must never block the first frame.
+        }
+        // v3.19: re-arm the phone-remote listener when it was
+        // left enabled (App.onCreate does the same at process
+        // start; start() is idempotent).
+        try {
+            if (prefs.remoteEnabled) com.mizan.launcher.data.RemoteServer.start(this)
+        } catch (e: Exception) {
+            // A listener failure must never break the home.
+        }
         // v3.2: fine-grained stage marks for the diagnostics
         // `startup stages:` line — the next slow-start photo can
         // name the stage instead of just the 10 s total.
@@ -332,6 +353,13 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // v3.19: the live-home nudge for phone-remote commands
+        // (a pending flag in prefs covers the not-alive case).
+        com.mizan.launcher.data.RemoteRefresh.onRefresh = {
+            handler.post {
+                if (!isFinishing && !isDestroyed) rebuild()
+            }
+        }
         rebuild()
     }
 
@@ -343,12 +371,22 @@ class MainActivity : Activity() {
             // Teardown only.
         }
         com.mizan.launcher.data.ColdChainRunner.onLanded = null
+        // v3.19: drop the live-home remote nudge (the pending
+        // flag in prefs still carries the request to next build).
+        com.mizan.launcher.data.RemoteRefresh.onRefresh = null
         super.onDestroy()
     }
 
     override fun onResume() {
         super.onResume()
         if (::prefs.isInitialized) rebuild()
+        // v3.19: consume a pending remote refresh (the rebuild
+        // above already applied it).
+        try {
+            if (::prefs.isInitialized && prefs.remoteRefreshPending) prefs.remoteRefreshPending = false
+        } catch (e: Exception) {
+            // Cosmetic only.
+        }
         // The watcher reads this to avoid a relaunch loop against us.
         try {
             prefs.sp.edit().putLong("own_foreground_at", System.currentTimeMillis()).apply()
@@ -4624,8 +4662,23 @@ class MainActivity : Activity() {
                     com.mizan.launcher.core.CleanHome.FORYOU ->
                         content.addView(buildForYouSection(tPicks))
                     com.mizan.launcher.core.CleanHome.DOCK -> {
-                        content.addView(buildFavoritesSection())
-                        content.addView(buildAppsSectionCircular())
+                        // v3.19: the CleanYourTV dock band — one
+                        // calm translucent band behind favorites
+                        // + apps, instead of two bare sections.
+                        val band = LinearLayout(this)
+                        band.orientation = LinearLayout.VERTICAL
+                        val bandBg = GradientDrawable()
+                        bandBg.shape = GradientDrawable.RECTANGLE
+                        bandBg.cornerRadius = Ui.dp(this, 16).toFloat()
+                        bandBg.setColor(0x22000000.toInt())
+                        band.background = bandBg
+                        band.setPadding(
+                            Ui.dp(this, 16), Ui.dp(this, 12),
+                            Ui.dp(this, 16), Ui.dp(this, 12)
+                        )
+                        band.addView(buildFavoritesSection())
+                        band.addView(buildAppsSectionCircular())
+                        content.addView(band)
                     }
                 }
             } catch (e: Throwable) {
@@ -6637,6 +6690,13 @@ class MainActivity : Activity() {
      * (fail-open, mirroring the app-lock rule).
      */
     private fun openFolderGated(folder: Folder) {
+        // v3.19: the phone-remote folder-lock toggle suspends
+        // enforcement (the folder's own locked flag untouched).
+        if (!com.mizan.launcher.core.RemoteProtocol.folderRequiresPrompt(
+                folder.locked, prefs.remoteFolderLockEnabled)) {
+            openFolder(folder)
+            return
+        }
         when (FolderLogic.folderGate(folder, prefs.arrowPin.isNotEmpty())) {
             FolderGate.OPEN -> openFolder(folder)
             FolderGate.PROMPT_PATTERN -> {
@@ -7334,7 +7394,11 @@ class MainActivity : Activity() {
      * Locked + pattern -> the unlock prompt; success runs [onPass].
      */
     private fun gateLockedApp(pkg: String, label: String, onPass: () -> Unit) {
-        if (!prefs.lockedApps.contains(pkg)) {
+        // v3.19: the phone-remote app-lock toggle suspends
+        // enforcement (membership untouched — re-enabling
+        // restores exactly the old locks).
+        if (!com.mizan.launcher.core.RemoteProtocol.appRequiresPrompt(
+                prefs.lockedApps.contains(pkg), prefs.remoteAppLockEnabled)) {
             onPass()
             return
         }

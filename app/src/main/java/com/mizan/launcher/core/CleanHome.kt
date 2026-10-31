@@ -46,6 +46,18 @@ object CleanHome {
     val ORDER: List<String> = listOf(HERO, UPNEXT, MISSED, FORYOU, DOCK)
 
     /**
+     * v3.19 one-shot default: the first launch after the update
+     * makes Clean the active home (Haythem: "build it as sreeb
+     * update to not lose data" + CleanYourTV launcher as the
+     * home). [alreadyApplied] is the persisted flag — once set,
+     * the user's own later style choice is never overridden
+     * again. Safe mode still forces the TV render regardless
+     * of the saved style, so this never fights safe mode.
+     */
+    fun defaultStyle(current: String, alreadyApplied: Boolean): String =
+        if (alreadyApplied) current else HomeStyle.CLEAN
+
+    /**
      * Which sections render, in fixed order, from data
      * availability alone. A library section renders only when
      * it has something to show (an empty section never renders

@@ -690,6 +690,54 @@ class Prefs(ctx: Context) {
         get() = PrefsSafe.bool(sp, "safe_mode", false)
         set(v) { sp.edit().putBoolean("safe_mode", v).apply() }
 
+    // ---- phone remote (GLOBAL, v3.19) ----
+    /**
+     * The LAN-only phone-remote listener (core/RemoteProtocol,
+     * data/RemoteServer). OFF by default — nothing listens
+     * until Haythem switches it on in Settings › Phone remote.
+     * The pairing code is a 6-digit code shown on the TV; it
+     * is the only credential and it is never in backups,
+     * diagnostics, or logs. The two lock flags default ON so
+     * enabling the remote changes nothing about enforcement
+     * until the phone explicitly toggles one off; the
+     * per-app / per-folder membership is never touched, so
+     * re-enabling restores exactly the old locks.
+     */
+    var remoteEnabled: Boolean
+        get() = PrefsSafe.bool(sp, "phone_remote_enabled", false)
+        set(v) { sp.edit().putBoolean("phone_remote_enabled", v).apply() }
+
+    var pairingCode: String
+        get() = PrefsSafe.str(sp, "phone_remote_code", "")
+        set(v) { sp.edit().putString("phone_remote_code", v).apply() }
+
+    var remoteAppLockEnabled: Boolean
+        get() = PrefsSafe.bool(sp, "phone_remote_applock", true)
+        set(v) { sp.edit().putBoolean("phone_remote_applock", v).apply() }
+
+    var remoteFolderLockEnabled: Boolean
+        get() = PrefsSafe.bool(sp, "phone_remote_folderlock", true)
+        set(v) { sp.edit().putBoolean("phone_remote_folderlock", v).apply() }
+
+    /** A remote "refresh home" request waiting for the next home build. */
+    var remoteRefreshPending: Boolean
+        get() = PrefsSafe.bool(sp, "phone_remote_refresh", false)
+        set(v) { sp.edit().putBoolean("phone_remote_refresh", v).apply() }
+
+    /** v3.19 one-shot: the first launch after the update made Clean the active home. */
+    var cleanDefaultApplied319: Boolean
+        get() = PrefsSafe.bool(sp, "clean_default_v319", false)
+        set(v) { sp.edit().putBoolean("clean_default_v319", v).apply() }
+
+    /** Phone-remote rate limiting (v3.19): consecutive bad codes + lockout end, persisted so a restart doesn't reset the lockout. */
+    var remoteFailureCount: Int
+        get() = PrefsSafe.int(sp, "phone_remote_failures", 0)
+        set(v) { sp.edit().putInt("phone_remote_failures", v).apply() }
+
+    var remoteLockoutUntilMs: Long
+        get() = PrefsSafe.long(sp, "phone_remote_lockout", 0L)
+        set(v) { sp.edit().putLong("phone_remote_lockout", v).apply() }
+
     // ---- Launcher-owned library (GLOBAL, v3.7) ----
     /**
      * v3.7: the one-time tracker import is CLOSED once this

@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-31 18:06 UTC
+Date: 2026-10-31 18:30 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.18 / code 41 (bumped by v3.18)
+PASS  v25src: the app version is 3.19 / code 42 (bumped by v3.19)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1098,7 +1098,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.18 / code 41
+PASS  v31src: the version bump is 3.19 / code 42
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1458,5 +1458,30 @@ PASS  clean64: picker offers Clean Tracker and labels it
 PASS  clean64: Sort sections page is a fixed-layout note for Clean
 PASS  clean64: Home screen rows page notes the fixed layout for Clean
 PASS  clean64: Status bar page notes fixed minimal chrome for Clean
-RESULT: 1242 passed, 0 failed, 1242 total
+PASS  remote65: 6 digits is a valid pairing code
+PASS  remote65: short, alpha and empty codes are invalid
+PASS  remote65: status reports style, theme, locks, lockSet, library count
+PASS  remote65: status never leaks the arrow code or any credential
+PASS  remote65: missing code is refused without counting a failure
+PASS  remote65: wrong code is refused and counted
+PASS  remote65: five wrong codes lock out even the right code
+PASS  remote65: after the lockout window the right code works again
+PASS  remote65: malformed JSON and unknown commands are errors, never crashes
+PASS  remote65: setStyle accepts clean/tv/watch only
+PASS  remote65: setTheme accepts preset ids only
+PASS  remote65: lock toggles need real booleans and then stick
+PASS  remote65: setArrowCode accepts 4-8 arrows only, never stores garbage
+PASS  remote65: refresh marks pending and nothing else changes
+PASS  remote65: first v3.19 launch makes Clean active whatever the old style
+PASS  remote65: once applied, the user's own style is never overridden
+PASS  remote65: app prompt needs membership AND enforcement on
+PASS  remote65: folder prompt needs locked flag AND enforcement on
+PASS  remote65: MainActivity applies the one-shot Clean default on first launch
+PASS  remote65: lock gates consult the remote toggles
+PASS  remote65: Clean dock renders inside a dock band
+PASS  remote65: live-home remote nudge is wired and cleared
+PASS  remote65: Settings has a Phone remote page (toggle, code, revoke)
+PASS  remote65: server binds a site-local address only, is no service, no Compose
+PASS  remote65: protocol port is the documented 47819
+RESULT: 1267 passed, 0 failed, 1267 total
 ```

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- LAN sockets need INTERNET even though nothing leaves the home Wi-Fi. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:label="Sreeb Remote"
+        android:usesCleartextTraffic="true">
+        <!-- Cleartext is required: the TV listener speaks plain HTTP
+             on the LAN (no TLS on a home network with no hostname).
+             The app never contacts any other host — see RemoteClient:
+             every URL is http://<typed-IP>:47819/v1/command. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

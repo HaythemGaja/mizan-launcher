@@ -87,6 +87,16 @@ class App : Application() {
         } catch (e: Exception) {
             // Warm-up is an optimisation; the chain warms on survival.
         }
+        // v3.19: re-arm the phone-remote listener when it was
+        // left enabled (MainActivity does the same on home
+        // start; start() is idempotent).
+        try {
+            if (com.mizan.launcher.data.Prefs(this).remoteEnabled) {
+                com.mizan.launcher.data.RemoteServer.start(this)
+            }
+        } catch (e: Exception) {
+            // A listener failure must never break process start.
+        }
     }
 
     /**

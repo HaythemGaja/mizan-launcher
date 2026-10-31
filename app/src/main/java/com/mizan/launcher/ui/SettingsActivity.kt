@@ -119,7 +119,8 @@ class SettingsActivity : Activity() {
         "nowplaying" to "Now playing",
         "tracker" to "Media tracker",
         "iptv" to "IPTV",
-        "data" to "Data & about"
+        "data" to "Data & about",
+        "phoneremote" to "Phone remote"
     )
 
     /** v1.6: one glyph per category in the nav list (visual anchors). */
@@ -128,7 +129,8 @@ class SettingsActivity : Activity() {
         "statusbar" to "🕐",
         "weather" to "🌦", "lockprofiles" to "🔒", "nowplaying" to "♪",
         "tracker" to "🎬",
-        "iptv" to "📺", "data" to "💾"
+        "iptv" to "📺", "data" to "💾",
+        "phoneremote" to "📱"
     )
 
     /** v1.6: one-line description under the category name in the detail header. */
@@ -143,7 +145,8 @@ class SettingsActivity : Activity() {
         "tracker" to "Your shows and movies: library, TMDB, watched state",
         "nowplaying" to "What's playing in other apps, shown at home",
         "iptv" to "Your IPTV account, playlist, and catalogues",
-        "data" to "Backup, safe mode, and diagnostics"
+        "data" to "Backup, safe mode, and diagnostics",
+        "phoneremote" to "Control this launcher from your phone on your Wi-Fi"
     )
 
     /** Tag marking a detail view as a card title (see groupDetailIntoCards). */
@@ -747,6 +750,7 @@ class SettingsActivity : Activity() {
             "tracker" -> buildTrackerDetail(content)
             "iptv" -> buildIptvDetail(content)
             "data" -> buildDataDetail(content)
+            "phoneremote" -> buildPhoneRemoteDetail(content)
             else -> {
                 content.addView(header("Settings"))
                 content.addView(info("Nothing here."))
@@ -1271,6 +1275,57 @@ class SettingsActivity : Activity() {
         nav.select(idx)
         nav.enterDetail()
         rebuild()
+    }
+
+    /**
+     * v3.19: the phone-remote listener controls. OFF by
+     * default: nothing listens until this toggle goes on. The
+     * pairing code is generated on first enable, shown here,
+     * and can be regenerated any time; Revoke stops the
+     * listener AND regenerates the code, so a previously
+     * paired phone can no longer connect. The address row
+     * shows the LAN address the phone must use (same Wi-Fi).
+     */
+    private fun buildPhoneRemoteDetail(content: LinearLayout) {
+        content.addView(header("Phone remote"))
+        content.addView(info(
+            "Your phone controls this launcher over your home Wi-Fi only — " +
+                "nothing goes to the internet, and nothing listens until you switch this on."
+        ))
+        content.addView(toggleRow("Phone remote", prefs.remoteEnabled) { on ->
+            prefs.remoteEnabled = on
+            if (on) {
+                if (prefs.pairingCode.isEmpty()) {
+                    prefs.pairingCode = com.mizan.launcher.data.RemoteServer.generateCode()
+                }
+                com.mizan.launcher.data.RemoteServer.start(this)
+            } else {
+                com.mizan.launcher.data.RemoteServer.stop()
+            }
+            rebuild()
+        })
+        if (prefs.remoteEnabled) {
+            val running = com.mizan.launcher.data.RemoteServer.isRunning()
+            val addr = com.mizan.launcher.data.RemoteServer.boundAddress
+            content.addView(row(
+                "TV address",
+                if (running && addr != null) addr
+                else "Not listening — ${com.mizan.launcher.data.RemoteServer.lastError ?: "no LAN address"}"
+            ) { rebuild() })
+            content.addView(row("Pairing code", prefs.pairingCode) {
+                prefs.pairingCode = com.mizan.launcher.data.RemoteServer.generateCode()
+                rebuild()
+            })
+            content.addView(info("Tap the pairing code to make a new one. The phone app needs the TV address + this code."))
+            content.addView(row("Revoke access", "Stop the listener and make a new code") {
+                com.mizan.launcher.data.RemoteServer.stop()
+                prefs.remoteEnabled = false
+                prefs.pairingCode = com.mizan.launcher.data.RemoteServer.generateCode()
+                rebuild()
+            })
+        } else {
+            content.addView(info("Switch it on to see the TV address and pairing code."))
+        }
     }
 
     private fun buildDataDetail(content: LinearLayout) {

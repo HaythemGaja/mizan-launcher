@@ -48,6 +48,7 @@ import com.mizan.launcher.core.RedditCacheCodec
 import com.mizan.launcher.core.RedditWallpapers
 import com.mizan.launcher.core.HomeStyle
 import com.mizan.launcher.core.CleanHome
+import com.mizan.launcher.core.RemoteProtocol
 import com.mizan.launcher.core.IptvLogic
 import com.mizan.launcher.core.IptvEpg
 import com.mizan.launcher.core.IptvLocks
@@ -3314,6 +3315,7 @@ fun main() {
 
     // ---------- (64) v3.18: Clean Tracker home style ----------
     section64()
+    section65()
 
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
@@ -4125,9 +4127,11 @@ fun section42() {
         // fallback, Profile pill toggle).
         // Re-pinned in v3.18 (intentional version bump 3.17/40 → 3.18/41 —
         // Clean Tracker home style).
-        check("v25src: the app version is 3.18 / code 41 (bumped by v3.18)",
-            gradleSrc.contains("versionName = \"3.18\"") &&
-                gradleSrc.contains("versionCode = 41"))
+        // Re-pinned in v3.19 (intentional version bump 3.18/41 → 3.19/42 —
+        // Clean as the post-update home, phone-remote listener, remote lock toggles).
+        check("v25src: the app version is 3.19 / code 42 (bumped by v3.19)",
+            gradleSrc.contains("versionName = \"3.19\"") &&
+                gradleSrc.contains("versionCode = 42"))
     }
 }
 
@@ -5098,9 +5102,10 @@ fun section50() {
         // Re-pinned in v3.16 (intentional version bump 3.15/38 → 3.16/39).
         // Re-pinned in v3.17 (intentional version bump 3.16/39 → 3.17/40).
         // Re-pinned in v3.18 (intentional version bump 3.17/40 → 3.18/41).
-        check("v31src: the version bump is 3.18 / code 41",
-            src("app/build.gradle.kts").contains("versionCode = 41") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.18\""))
+        // Re-pinned in v3.19 (intentional version bump 3.18/41 → 3.19/42).
+        check("v31src: the version bump is 3.19 / code 42",
+            src("app/build.gradle.kts").contains("versionCode = 42") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.19\""))
     }
 }
 
@@ -7270,4 +7275,178 @@ fun section64() {
         check("clean64: Status bar page notes fixed minimal chrome for Clean",
             settingsSrc.contains("fixed minimal chrome"))
     }
+}
+
+/** v3.19 checks — phone-remote v1 protocol, Clean one-shot default, remote lock flags. */
+fun section65() {
+    run {
+        // ---- pairing-code validation ----
+        check("remote65: 6 digits is a valid pairing code",
+            RemoteProtocol.isValidPairingCode("123456"))
+        check("remote65: short, alpha and empty codes are invalid",
+            !RemoteProtocol.isValidPairingCode("12345") &&
+                !RemoteProtocol.isValidPairingCode("abcdef") &&
+                !RemoteProtocol.isValidPairingCode("") &&
+                !RemoteProtocol.isValidPairingCode(null))
+
+        fun freshStore(): FakeRemoteStore = FakeRemoteStore()
+        fun req(code: String?, cmd: String, extra: String = ""): String {
+            val pairing = if (code == null) "" else "\"pairing\":\"$code\","
+            return "{$pairing\"command\":\"$cmd\"$extra}"
+        }
+
+        // ---- status + auth ----
+        run {
+            val s = freshStore()
+            val out = RemoteProtocol.handle(req("123456", "status"), 1000L, s)
+            check("remote65: status reports style, theme, locks, lockSet, library count",
+                out.contains("\"ok\":true") && out.contains("\"style\":\"tv\"") &&
+                    out.contains("\"themeId\":\"apple_black\"") &&
+                    out.contains("\"appLock\":true") && out.contains("\"folderLock\":true") &&
+                    out.contains("\"lockSet\":false") && out.contains("\"libraryTitles\":45") &&
+                    out.contains("Apple Black") && out.contains("Midnight"))
+            check("remote65: status never leaks the arrow code or any credential",
+                !out.contains("UDLR") && !out.contains("tmdb") && !out.contains("xtream"))
+        }
+        run {
+            val s = freshStore()
+            check("remote65: missing code is refused without counting a failure",
+                RemoteProtocol.handle("{\"command\":\"status\"}", 1000L, s)
+                    .contains("missing_code") && s.failureCount == 0)
+            check("remote65: wrong code is refused and counted",
+                RemoteProtocol.handle(req("000000", "status"), 1000L, s)
+                    .contains("bad_code") && s.failureCount == 1 &&
+                    s.style == "tv")
+        }
+        run {
+            val s = freshStore()
+            repeat(5) { RemoteProtocol.handle(req("000000", "status"), 1000L, s) }
+            check("remote65: five wrong codes lock out even the right code",
+                RemoteProtocol.handle(req("123456", "status"), 2000L, s)
+                    .contains("locked_out"))
+            check("remote65: after the lockout window the right code works again",
+                RemoteProtocol.handle(req("123456", "status"), 1000L + RemoteProtocol.LOCKOUT_MS + 1, s)
+                    .contains("\"ok\":true"))
+        }
+        run {
+            val s = freshStore()
+            check("remote65: malformed JSON and unknown commands are errors, never crashes",
+                RemoteProtocol.handle("{not json", 1000L, s).contains("bad_request") &&
+                    RemoteProtocol.handle(req("123456", "explode"), 1000L, s)
+                        .contains("unknown_command"))
+        }
+
+        // ---- mutations validate before they write ----
+        run {
+            val s = freshStore()
+            check("remote65: setStyle accepts clean/tv/watch only",
+                RemoteProtocol.handle(req("123456", "setStyle", ",\"style\":\"clean\""), 1000L, s)
+                    .contains("\"style\":\"clean\"") && s.style == "clean" &&
+                    RemoteProtocol.handle(req("123456", "setStyle", ",\"style\":\"bogus\""), 1000L, s)
+                        .contains("bad_style") && s.style == "clean" &&
+                    RemoteProtocol.handle(req("123456", "setStyle", ",\"style\":\"Clean\""), 1000L, s)
+                        .contains("bad_style") && s.style == "clean")
+        }
+        run {
+            val s = freshStore()
+            check("remote65: setTheme accepts preset ids only",
+                RemoteProtocol.handle(req("123456", "setTheme", ",\"themeId\":\"midnight\""), 1000L, s)
+                    .contains("\"themeId\":\"midnight\"") && s.themeId == "midnight" &&
+                    RemoteProtocol.handle(req("123456", "setTheme", ",\"themeId\":\"nope\""), 1000L, s)
+                        .contains("bad_theme") && s.themeId == "midnight")
+        }
+        run {
+            val s = freshStore()
+            check("remote65: lock toggles need real booleans and then stick",
+                RemoteProtocol.handle(req("123456", "setAppLock", ",\"enabled\":false"), 1000L, s)
+                    .contains("\"appLock\":false") && !s.appLockEnabled &&
+                    RemoteProtocol.handle(req("123456", "setAppLock", ",\"enabled\":\"yes\""), 1000L, s)
+                        .contains("bad_value") && !s.appLockEnabled &&
+                    RemoteProtocol.handle(req("123456", "setFolderLock", ",\"enabled\":false"), 1000L, s)
+                        .contains("\"folderLock\":false") && !s.folderLockEnabled)
+        }
+        run {
+            val s = freshStore()
+            check("remote65: setArrowCode accepts 4-8 arrows only, never stores garbage",
+                RemoteProtocol.handle(req("123456", "setArrowCode", ",\"arrowCode\":\"UDLR\""), 1000L, s)
+                    .contains("\"lockSet\":true") && s.arrowPin == "UDLR" &&
+                    RemoteProtocol.handle(req("123456", "setArrowCode", ",\"arrowCode\":\"UD\""), 1000L, s)
+                        .contains("bad_code_value") && s.arrowPin == "UDLR" &&
+                    RemoteProtocol.handle(req("123456", "setArrowCode", ",\"arrowCode\":\"1234\""), 1000L, s)
+                        .contains("bad_code_value") && s.arrowPin == "UDLR")
+        }
+        run {
+            val s = freshStore()
+            check("remote65: refresh marks pending and nothing else changes",
+                RemoteProtocol.handle(req("123456", "refresh"), 1000L, s)
+                    .contains("\"ok\":true") && s.refreshPending &&
+                    s.style == "tv" && s.themeId == "apple_black")
+        }
+
+        // ---- Clean one-shot default ----
+        check("remote65: first v3.19 launch makes Clean active whatever the old style",
+            CleanHome.defaultStyle("tv", false) == "clean" &&
+                CleanHome.defaultStyle("watch", false) == "clean")
+        check("remote65: once applied, the user's own style is never overridden",
+            CleanHome.defaultStyle("tv", true) == "tv" &&
+                CleanHome.defaultStyle("watch", true) == "watch" &&
+                CleanHome.defaultStyle("clean", true) == "clean")
+
+        // ---- lock-flag decisions ----
+        check("remote65: app prompt needs membership AND enforcement on",
+            RemoteProtocol.appRequiresPrompt(true, true) &&
+                !RemoteProtocol.appRequiresPrompt(true, false) &&
+                !RemoteProtocol.appRequiresPrompt(false, true))
+        check("remote65: folder prompt needs locked flag AND enforcement on",
+            RemoteProtocol.folderRequiresPrompt(true, true) &&
+                !RemoteProtocol.folderRequiresPrompt(true, false) &&
+                !RemoteProtocol.folderRequiresPrompt(false, true))
+
+        // ---- wiring source pins ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) { "" }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        val serverSrc = src("app/src/main/java/com/mizan/launcher/data/RemoteServer.kt")
+        check("remote65: MainActivity applies the one-shot Clean default on first launch",
+            mainSrc.contains("cleanDefaultApplied319") &&
+                mainSrc.contains("HomeStyle.CLEAN"))
+        check("remote65: lock gates consult the remote toggles",
+            mainSrc.contains("remoteAppLockEnabled") &&
+                mainSrc.contains("remoteFolderLockEnabled"))
+        check("remote65: Clean dock renders inside a dock band",
+            mainSrc.contains("dock band"))
+        check("remote65: live-home remote nudge is wired and cleared",
+            mainSrc.contains("RemoteRefresh.onRefresh") &&
+                mainSrc.contains("remoteRefreshPending"))
+        check("remote65: Settings has a Phone remote page (toggle, code, revoke)",
+            settingsSrc.contains("Phone remote") &&
+                settingsSrc.contains("Pairing code") &&
+                settingsSrc.contains("Revoke access"))
+        check("remote65: server binds a site-local address only, is no service, no Compose",
+            serverSrc.contains("isSiteLocalAddress") &&
+                !serverSrc.contains(": Service") &&
+                !serverSrc.contains("startForeground") &&
+                !serverSrc.contains("androidx.compose") &&
+                !src("app/src/main/AndroidManifest.xml").contains("RemoteServer"))
+        check("remote65: protocol port is the documented 47819",
+            RemoteProtocol.PORT == 47819)
+    }
+}
+
+/** In-memory RemoteProtocol.Store for the sim (mirrors the Prefs adapter's defaults). */
+class FakeRemoteStore : RemoteProtocol.Store {
+    override var pairingCode: String = "123456"
+    override var style: String = "tv"
+    override var themeId: String = "apple_black"
+    override val themeOptions: List<Pair<String, String>> =
+        listOf("apple_black" to "Apple Black", "midnight" to "Midnight")
+    override var appLockEnabled: Boolean = true
+    override var folderLockEnabled: Boolean = true
+    override var arrowPin: String = ""
+    override val libraryTitles: Int = 45
+    override var refreshPending: Boolean = false
+    override var failureCount: Int = 0
+    override var lockoutUntilMs: Long = 0L
 }
