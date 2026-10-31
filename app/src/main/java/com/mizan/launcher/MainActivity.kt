@@ -326,7 +326,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 coldStart = false
-                if (isTrackerFamily() || isIptvStyle()) {
+                if (isTrackerFamily() || isIptvStyle() || isCleanStyle()) {
                     frameProbeStage = 2
                     rebuild()
                 }
@@ -722,7 +722,7 @@ class MainActivity : Activity() {
         // v3.0: each prepare is Throwable-guarded — a prepare
         // failure degrades its working set to the fail-open empty
         // state, never the whole home with it.
-        if (trackerStyle || isIptvStyle()) {
+        if (trackerStyle || isIptvStyle() || isCleanStyle()) {
             try { prepareDiscoveryData() } catch (e: Throwable) {
                 Prefs.noteError(this, "prepareDiscovery", e)
             }
@@ -752,7 +752,7 @@ class MainActivity : Activity() {
         // warm memo now prepares on the first build of any
         // instance; only a genuinely memo-less build still
         // defers to the warm workers below.
-        if (trackerStyle && (!coldStart || TrackerClient.memoOrNull() != null)) {
+        if ((trackerStyle || isCleanStyle()) && (!coldStart || TrackerClient.memoOrNull() != null)) {
             try { prepareTrackerData() } catch (e: Throwable) {
                 Prefs.noteError(this, "prepareTracker", e)
             }
@@ -904,7 +904,10 @@ class MainActivity : Activity() {
         // v1.3: the corner gear also appears when the bar is shown but
         // its Settings tile was switched off (per-tile toggles) — there
         // must ALWAYS be a visible way back into Settings.
-        if (!barCfg.showBar || !barCfg.showTileSettings) {
+        // v3.18: the Clean Tracker home renders NO bar at all, so it
+        // always gets the corner gear — otherwise a Clean home with
+        // the bar toggles on would trap the user out of Settings.
+        if (isCleanStyle() || !barCfg.showBar || !barCfg.showTileSettings) {
             addCornerGear(root)
         }
         // Guest pill when the bar is fully hidden (v1.4): the pill that
@@ -918,6 +921,34 @@ class MainActivity : Activity() {
             plp.setMargins(Ui.dp(this, 40), Ui.dp(this, 18), 0, 0)
             pill.layoutParams = plp
             root.addView(pill)
+        }
+
+        // v3.18: the Clean Tracker home style — same frame (the
+        // wallpaper/gradient treatment above, NOT the tracker
+        // backdrop layer: this home's hero art lives inside its
+        // own band), a fixed composition, no pill bar. Same
+        // whole-home guard as the tracker render: a throw drops
+        // to the TV render below instead of a black screen.
+        if (isCleanStyle()) {
+            val cleanBuilt = try {
+                buildCleanHome(content, barHost)
+                true
+            } catch (e: Throwable) {
+                Prefs.noteError(this, "cleanhome", e)
+                buildDegraded = true
+                content.removeAllViews()
+                barHost.removeAllViews()
+                firstTile = null
+                false
+            }
+            if (cleanBuilt) {
+                homeRoot = root
+                if (moveSession != null && moveSession?.container != MoveContainer.FOLDER) {
+                    attachMoveHint(root)
+                }
+                return root
+            }
+            // Fall through to the standard TV render.
         }
 
         // v1.8: the Tracker home style — same frame (wallpaper, scrim,
@@ -1209,7 +1240,7 @@ class MainActivity : Activity() {
         // the other tier stale.
         if (key == TrackerSections.UPNEXT) {
             TrackerClient.refreshAsync(this, force = true) {
-                if (isTrackerFamily()) rebuild()
+                if (isLibraryHome()) rebuild()
             }
             DiscoveryData.refreshNow(this)
             return
@@ -1221,14 +1252,14 @@ class MainActivity : Activity() {
         if (key == TrackerSections.MISSED) {
             com.mizan.launcher.data.LibraryLocal.kickMissedAll(this, force = true)
             TrackerClient.refreshAsync(this, force = true) {
-                if (isTrackerFamily()) rebuild()
+                if (isLibraryHome()) rebuild()
             }
             return
         }
         when (com.mizan.launcher.core.SectionModule.retrySource(key)) {
             com.mizan.launcher.core.SectionModule.Source.TRACKER ->
                 TrackerClient.refreshAsync(this, force = true) {
-                    if (isTrackerFamily()) rebuild()
+                    if (isLibraryHome()) rebuild()
                 }
             com.mizan.launcher.core.SectionModule.Source.DISCOVERY ->
                 DiscoveryData.refreshNow(this)
@@ -1369,7 +1400,7 @@ class MainActivity : Activity() {
         DiscoveryData.iptvRowVisible = isIptvStyle()
         DiscoveryData.onChanged = {
             runOnUiThread {
-                if ((isTrackerFamily() || isIptvStyle()) && !isFinishing && !isDestroyed) {
+                if ((isTrackerFamily() || isIptvStyle() || isCleanStyle()) && !isFinishing && !isDestroyed) {
                     rebuild()
                 }
             }
@@ -1508,7 +1539,7 @@ class MainActivity : Activity() {
         // the home once — the Missed row appears when its
         // worker finishes, not only on the next navigation.
         com.mizan.launcher.data.LibraryLocal.onMissedChanged = {
-            runOnUiThread { if (isTrackerFamily() && !isFinishing && !isDestroyed) rebuild() }
+            runOnUiThread { if (isLibraryHome() && !isFinishing && !isDestroyed) rebuild() }
         }
         var overlay = TrackerLogic.decodeForYouOverlay(prefs.forYouOverlay)
         val prunedOverlay = TrackerLogic.pruneForYouOverlay(
@@ -1940,6 +1971,22 @@ class MainActivity : Activity() {
 
     private fun isWatchStyle(): Boolean =
         com.mizan.launcher.core.HomeStyle.isWatch(homeStyleKey())
+
+    /**
+     * v3.18: the Clean Tracker home style — the tracker library
+     * in a fixed layout with minimal chrome. Safe mode forces TV
+     * (homeStyleKey), so this is never true there.
+     */
+    private fun isCleanStyle(): Boolean =
+        com.mizan.launcher.core.HomeStyle.isClean(homeStyleKey())
+
+    /**
+     * v3.18: a home that renders tracker data — Watch or Clean
+     * Tracker. Data-flow gates (memo landing, refresh, retry)
+     * use this; Watch-only UI (IPTV hint, hero rotation, the
+     * pill bar) keeps its own narrower gate.
+     */
+    private fun isLibraryHome(): Boolean = isWatchStyle() || isCleanStyle()
 
     /**
      * v3.8: the media-library home family is Watch ONLY — the
@@ -3442,19 +3489,19 @@ class MainActivity : Activity() {
         prefs.lastRefreshAt = System.currentTimeMillis()
         prefs.lastRefreshKind = "manual"
         Toast.makeText(this, "Refreshing home data…", Toast.LENGTH_SHORT).show()
-        TrackerClient.refreshAsync(this, force = true) { if (isTrackerFamily()) rebuild() }
+        TrackerClient.refreshAsync(this, force = true) { if (isLibraryHome()) rebuild() }
         DiscoveryData.refreshNow(this)
         WatchPlay.kickRecompute(this)
         if (!prefs.safeMode) {
             val beforeLive = LiveTv.cached()
             LiveTv.refreshAsync(this) { result ->
-                if (result != beforeLive && !isTrackerFamily()) rebuild()
+                if (result != beforeLive && !isLibraryHome()) rebuild()
             }
             TvData.refreshWatchNextAsync(this) { rebuild() }
             if (MostUsed.isGranted(this)) {
                 val beforeStats = MostUsed.cachedStats()
                 MostUsed.refreshAsync(this, appsByPkg.mapValues { it.value.label }) { stats ->
-                    if (stats != beforeStats && !isTrackerFamily() && !isIptvStyle()) rebuild()
+                    if (stats != beforeStats && !isLibraryHome() && !isIptvStyle()) rebuild()
                 }
             }
         }
@@ -4441,6 +4488,155 @@ class MainActivity : Activity() {
             }
         }
         startHeroRotation()
+    }
+
+    // ---------------------------------------------------------------
+    // v3.18 Clean Tracker home style — the tracker library in a
+    // FIXED layout with minimal chrome, in the calm Clean Your TV
+    // manner. Fixed order, always: Hero (backdrop band + title +
+    // overview + actions, reusing the Watch hero computation and
+    // hero zone), Up Next, Missed, For You, then a simple
+    // Favorites + apps dock. NO pill bar, NO tab bar, NO
+    // settings-driven order: this builder never reads
+    // LayoutStore rows, TrackerSections order/hidden, or the
+    // status-bar config — the composition is
+    // core/CleanHome.compose, data availability + cold-start
+    // only — so the complicated Settings pages cannot change
+    // this home (they keep editing the TV/Watch stores for
+    // when the user switches back). The background is the
+    // normal wallpaper/gradient frame from buildRoot (Look &
+    // wallpaper still applies — the one setting that stays);
+    // the hero's backdrop art lives inside its own band, not
+    // as a full-bleed root layer. Fail-open like the Watch
+    // home: an empty library shows the hint line, a failing
+    // section shows its error tile with a rebuild Retry, and
+    // the whole-home guard in buildRoot falls back to TV.
+    // No live-channels section here by design: Clean is the
+    // tracker look, and live playback stays one tap away in
+    // Watch's Live tab.
+    // ---------------------------------------------------------------
+
+    /** One dim line of chrome: the look's name + clock (+ Guest note). No pills, no tiles. */
+    private fun buildCleanHeader(): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.setMargins(0, 0, 0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M))
+        row.layoutParams = lp
+        val name = TextView(this)
+        name.text = if (guestActive()) "Clean Tracker · Guest" else "Clean Tracker"
+        name.setTextColor(0xB3FFFFFF.toInt())
+        name.textSize = 14f
+        name.setTypeface(name.typeface, android.graphics.Typeface.BOLD)
+        name.letterSpacing = 0.14f
+        row.addView(name, LinearLayout.LayoutParams(-2, -2))
+        row.addView(View(this), LinearLayout.LayoutParams(0, -2, 1f))
+        val clock = TextView(this)
+        clock.text = com.mizan.launcher.core.TimeFmt.format("HH:mm", System.currentTimeMillis())
+        clock.setTextColor(0xB3FFFFFF.toInt())
+        clock.textSize = 14f
+        row.addView(clock, LinearLayout.LayoutParams(-2, -2))
+        return row
+    }
+
+    /** The hero zone over its own backdrop band (CENTER_CROP art, hero height). */
+    private fun buildCleanHeroBand(hero: TrackerLogic.HeroItem): View {
+        val dm = resources.displayMetrics
+        val zonePx = (dm.heightPixels * com.mizan.launcher.core.Design.HERO_ZONE_FRACTION).toInt()
+        val band = FrameLayout(this)
+        val blp = LinearLayout.LayoutParams(-1, zonePx)
+        blp.setMargins(0, 0, 0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_S))
+        band.layoutParams = blp
+        val art = ImageView(this)
+        art.scaleType = ImageView.ScaleType.CENTER_CROP
+        band.addView(art, FrameLayout.LayoutParams(-1, -1))
+        if (hero.backdrop.isNotBlank()) {
+            TmdbImages.load(TmdbImages.url("w1280", hero.backdrop), art, TmdbImages.HERO_MAX_DIM)
+        }
+        // The zone's own params are LinearLayout params — re-parent
+        // them to FrameLayout params, or the band measure crashes.
+        val zone = buildHeroZone(hero)
+        zone.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        band.addView(zone)
+        return band
+    }
+
+    private fun cleanSectionLabel(key: String): String = when (key) {
+        com.mizan.launcher.core.CleanHome.HERO -> "Hero"
+        com.mizan.launcher.core.CleanHome.UPNEXT -> "Up Next"
+        com.mizan.launcher.core.CleanHome.MISSED -> "Missed"
+        com.mizan.launcher.core.CleanHome.FORYOU -> "For You"
+        com.mizan.launcher.core.CleanHome.DOCK -> "Apps"
+        else -> key
+    }
+
+    private fun buildCleanHome(content: LinearLayout, barHost: LinearLayout) {
+        // barHost is intentionally unused: this home renders no
+        // bar at all (the corner gear from buildRoot is the way
+        // back into Settings).
+        heroTextHost = null
+        heroButtonViews = mutableListOf()
+        val hero = TrackerLogic.selectHero(tHeroCandidates, prefs.trackerHeroIndex)
+        content.addView(buildCleanHeader())
+
+        if (!TrackerClient.hasStoredData(this)) {
+            TrackerClient.refreshAsync(this) { if (isCleanStyle()) rebuild() }
+        }
+        val mergedUpNext = TrackerLogic.mergeUpNext(
+            TrackerLogic.fillHeroDates(tUpNext, DiscoveryData.tvFacts()),
+            dSoon, todayIso()
+        )
+        // Diagnostics `home:` line for this build (counts only,
+        // never titles/ids) — same purpose as the Watch home's.
+        com.mizan.launcher.data.TrackerClient.noteHomeBuild(
+            "clean · memo: ${com.mizan.launcher.data.TrackerClient.memoSource}" +
+                " · snap up ${tSnap.upNext.size} · cont ${tSnap.cont.size}" +
+                " · missed ${tSnap.missed.size} · foryou ${tSnap.forYou.size}" +
+                " · tracked ${tSnap.tracked.size}" +
+                " · hero ${tHeroCandidates.size} · missedGroups ${tMissedGroups.size}" +
+                " · coldStart $coldStart"
+        )
+        val sections = com.mizan.launcher.core.CleanHome.compose(
+            hero = hero != null,
+            upNext = mergedUpNext.isNotEmpty(),
+            missed = tMissedGroups.isNotEmpty(),
+            forYou = tPicks.isNotEmpty(),
+            coldStart = coldStart
+        )
+        if (coldStart) {
+            content.addView(trackerInfoLine("Loading your library…"))
+        } else if (!tSnap.hasData) {
+            content.addView(
+                trackerInfoLine(
+                    "Your library is empty — add titles from Search, Trending, or For You."
+                )
+            )
+        }
+        for (key in sections) {
+            try {
+                when (key) {
+                    com.mizan.launcher.core.CleanHome.HERO ->
+                        hero?.let { content.addView(buildCleanHeroBand(it)) }
+                    com.mizan.launcher.core.CleanHome.UPNEXT ->
+                        content.addView(buildMergedUpNextSection(mergedUpNext))
+                    com.mizan.launcher.core.CleanHome.MISSED ->
+                        content.addView(buildMissedSection(tMissedGroups))
+                    com.mizan.launcher.core.CleanHome.FORYOU ->
+                        content.addView(buildForYouSection(tPicks))
+                    com.mizan.launcher.core.CleanHome.DOCK -> {
+                        content.addView(buildFavoritesSection())
+                        content.addView(buildAppsSectionCircular())
+                    }
+                }
+            } catch (e: Throwable) {
+                // Same containment as the Watch home, but the
+                // Retry is a plain rebuild: Clean sections have
+                // no per-section loader of their own, and the
+                // fixed order means there is nothing to re-sort.
+                noteSectionFailure("row:clean:$key", e)
+                content.addView(sectionErrorTile(cleanSectionLabel(key)) { rebuild() })
+            }
+        }
     }
 
     /**

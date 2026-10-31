@@ -1,7 +1,7 @@
 # Sreeb (Mizan Launcher) — headless test log
 
 Command: `sh sim/run_sim.sh` (kotlinc -> JVM sim over core/ pure logic)
-Date: 2026-10-30 23:39 UTC
+Date: 2026-10-31 18:06 UTC
 
 Note (v1.2): the v1.1 numeric PIN-pad tests were REPLACED by arrow-PIN
 tests — the numeric PIN is retired (spec section 10.1). All other
@@ -544,7 +544,7 @@ PASS  redditstatus: failure summary names the last result
 PASS  homestyle: missing/garbage decodes to tv
 PASS  homestyle: saved ipad migrates to tv (v2.2 removal)
 PASS  homestyle: saved tracker + iptv migrate to watch (v3.9 removal)
-PASS  homestyle: value list is tv, watch (the Settings picker order, v3.9)
+PASS  homestyle: value list is tv, watch, clean (the Settings picker order, v3.18)
 PASS  homestyle: watch survives the codec (v2.3, kept in v3.8)
 PASS  homestyle: root reorder permutes only the root slots
 PASS  homestyle: root reorder keeps nesting intact
@@ -843,7 +843,7 @@ PASS  v25src: tuples are a worker-only blocking read now (tuplesBlocking)
 PASS  v25src: the legacy purge lands via a single commit()
 PASS  v25src: the manifest bootstraps the App class (DiagLog install)
 PASS  v25src: Settings offers Copy diagnostics with the freeze/crash tails
-PASS  v25src: the app version is 3.17 / code 40 (bumped by v3.17)
+PASS  v25src: the app version is 3.18 / code 41 (bumped by v3.18)
 PASS  aspect: cycle runs Fit -> Stretch -> Zoom -> Fit
 PASS  aspect: garbled/null stored values normalize to Fit
 PASS  aspect: Fit letterboxes a 4:3 video inside the screen
@@ -1098,7 +1098,7 @@ PASS  v31src: Play-in discovers handlers via the intent query ? no hardcoded app
 PASS  v31src: the manifest declares the video/* queries intent (else the picker is always empty)
 PASS  v31src: the Sort sections page + its dialog + the category deep-link exist
 PASS  v31src: discovery Retry forces one TTL-ignoring worker run
-PASS  v31src: the version bump is 3.17 / code 40
+PASS  v31src: the version bump is 3.18 / code 41
 PASS  hero51: missed first (most overdue first), then up-next (today, then unknown)
 PASS  hero51: future episodes are never hero material
 PASS  hero51: missed labels carry Missed + coords + date chip; up-next labels carry Up next + coords
@@ -1331,7 +1331,7 @@ PASS  hero58: For You fallback present without a cached backdrop (blank, not inv
 PASS  poster58: blank Up Next poster fills from the cache; present poster untouched
 PASS  poster58: uncached title keeps a blank poster (card falls back to backdrop)
 PASS  poster58: Continue cards get the same backfill
-PASS  watch58: stored tracker + iptv decode to watch; picker is tv/watch (v3.9 re-pin)
+PASS  watch58: stored tracker + iptv decode to watch; picker is tv/watch/clean (v3.18 re-pin)
 PASS  watch58: migrated profile renders Watch tabs (Home/Library/Apps/Live, v3.9 re-pin)
 PASS  bar58: unified bar ends with the Settings tile (never clipped off the end)
 PASS  bar58: unified bar carries tabs + info + glyphs + all action tiles
@@ -1344,7 +1344,7 @@ PASS  src58: picker lists exactly TV/Watch (v3.9 re-pin)
 PASS  src58: media-home family is Watch-only
 PASS  src58: both bars use the pill builders + the fit pass (Settings stays on screen)
 PASS  src58: no foreground service anywhere (standing rule)
-PASS  watch59: final styles are TV/Watch only; iptv migrates to Watch
+PASS  watch59: styles are TV/Watch/Clean; iptv migrates to Watch
 PASS  watch59: Watch tabs are Home ? Library ? Apps ? Live, Live last
 PASS  watch59: raw iptv/tracker keys land on the Watch tabs (defensive mapping)
 PASS  missed59: pendingWatchedFor scopes adds/removes to one show
@@ -1438,5 +1438,25 @@ PASS  prof63: Status bar detail has a Tile: Profile toggle
 PASS  prof63: Home screen rows page notes it is TV-only on a Watch home
 PASS  prof63: Library sections note states the TV reverse
 PASS  prof63: no foreground service in the newly touched files (standing rule)
-RESULT: 1222 passed, 0 failed, 1222 total
+PASS  clean64: clean survives the codec and nothing else becomes clean
+PASS  clean64: tracker/iptv still migrate to watch, unknown/case still tv
+PASS  clean64: picker order is tv, watch, clean
+PASS  clean64: clean has no pill tab bar (minimal chrome)
+PASS  clean64: fixed order is hero, up next, missed, for you, dock
+PASS  clean64: full warm library renders every section in fixed order
+PASS  clean64: cold shell suppresses only the dock (app list not landed yet)
+PASS  clean64: partial data keeps fixed order (no re-sort, no bare headers)
+PASS  clean64: empty warm library renders the dock only (hint line covers the rest)
+PASS  clean64: empty cold library renders nothing (loading line covers it)
+PASS  clean64: Clean home exists and reuses the existing section builders
+PASS  clean64: Clean home renders the hero band with backdrop art
+PASS  clean64: Clean composition never reads rows/sort/status-bar prefs
+PASS  clean64: Clean home fails open (empty hint, section error tile, no new store)
+PASS  clean64: Clean home has no pill bar, no IPTV, no foreground service
+PASS  clean64: no Compose/androidx additions in the touched activities
+PASS  clean64: picker offers Clean Tracker and labels it
+PASS  clean64: Sort sections page is a fixed-layout note for Clean
+PASS  clean64: Home screen rows page notes the fixed layout for Clean
+PASS  clean64: Status bar page notes fixed minimal chrome for Clean
+RESULT: 1242 passed, 0 failed, 1242 total
 ```

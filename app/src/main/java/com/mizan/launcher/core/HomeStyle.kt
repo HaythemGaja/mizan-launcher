@@ -48,19 +48,33 @@ package com.mizan.launcher.core
  * const stays for the dead-via-dispatch fallback code
  * (buildIptvHome etc.) and SectionGuard's crash-fallback
  * mapping — see spec §39. Final styles: TV / Watch.
+ *
+ * v3.18 ADDED the Clean Tracker style (Haythem 2026-10-31:
+ * "build it as sreeb update, i want full tracker as look
+ * with the same clean your tv style"). The stored key is
+ * "clean" — deliberately NOT "tracker": v3.8 migrates a
+ * stored "tracker" to Watch, and reusing that key would
+ * resurrect migrated profiles into a different home.
+ * Clean renders the tracker library in a FIXED layout
+ * (core/CleanHome) with minimal chrome and no settings-
+ * driven order — the TV/Watch settings stores are never
+ * read by this home, so switching styles loses nothing
+ * and the complicated settings simply don't apply here.
  */
 object HomeStyle {
 
     const val TV = "tv"
     const val IPTV = "iptv"
     const val WATCH = "watch"
+    const val CLEAN = "clean"
 
-    /** Picker order: TV first (the fallback), then Watch (v3.9: IPTV removed). */
-    val VALUES: List<String> = listOf(TV, WATCH)
+    /** Picker order: TV first (the fallback), then Watch, then Clean Tracker. */
+    val VALUES: List<String> = listOf(TV, WATCH, CLEAN)
 
     /**
      * The codec: the exact "watch" key selects Watch; the
      * removed "tracker" and "iptv" keys migrate to Watch;
+     * the exact "clean" key selects Clean Tracker;
      * EVERYTHING else — missing, empty, garbled, "TV" in the
      * wrong case, an old backup, and the removed "ipad" — is
      * TV.
@@ -69,10 +83,13 @@ object HomeStyle {
         "tracker" -> WATCH
         "iptv" -> WATCH
         WATCH -> WATCH
+        CLEAN -> CLEAN
         else -> TV
     }
 
     fun isIptv(style: String): Boolean = style == IPTV
 
     fun isWatch(style: String): Boolean = style == WATCH
+
+    fun isClean(style: String): Boolean = style == CLEAN
 }

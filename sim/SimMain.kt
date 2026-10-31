@@ -47,6 +47,7 @@ import com.mizan.launcher.core.WeatherUnits
 import com.mizan.launcher.core.RedditCacheCodec
 import com.mizan.launcher.core.RedditWallpapers
 import com.mizan.launcher.core.HomeStyle
+import com.mizan.launcher.core.CleanHome
 import com.mizan.launcher.core.IptvLogic
 import com.mizan.launcher.core.IptvEpg
 import com.mizan.launcher.core.IptvLocks
@@ -1457,8 +1458,8 @@ fun main() {
             HomeStyle.normalize("tracker") == "watch" &&
                 HomeStyle.normalize("iptv") == "watch" && HomeStyle.isIptv("iptv") &&
                 !HomeStyle.isIptv("tv") && !HomeStyle.isIptv("watch"))
-        check("homestyle: value list is tv, watch (the Settings picker order, v3.9)",
-            HomeStyle.VALUES == listOf("tv", "watch"))
+        check("homestyle: value list is tv, watch, clean (the Settings picker order, v3.18)",
+            HomeStyle.VALUES == listOf("tv", "watch", "clean"))
         check("homestyle: watch survives the codec (v2.3, kept in v3.8)",
             HomeStyle.normalize("watch") == "watch" && HomeStyle.isWatch("watch") &&
                 !HomeStyle.isWatch("tv") &&
@@ -3311,6 +3312,9 @@ fun main() {
     // ---------- (63) v3.17: Watch/TV double-gate fix, poster waiter delivery, Apps tab fallback, Profile pill toggle ----------
     section63()
 
+    // ---------- (64) v3.18: Clean Tracker home style ----------
+    section64()
+
     println("RESULT: $pass passed, $fail failed, ${pass + fail} total")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
@@ -4119,9 +4123,11 @@ fun section42() {
         // Re-pinned in v3.17 (intentional version bump 3.16/39 → 3.17/40 —
         // Watch/TV double-gate fix, poster waiter delivery, Apps tab
         // fallback, Profile pill toggle).
-        check("v25src: the app version is 3.17 / code 40 (bumped by v3.17)",
-            gradleSrc.contains("versionName = \"3.17\"") &&
-                gradleSrc.contains("versionCode = 40"))
+        // Re-pinned in v3.18 (intentional version bump 3.17/40 → 3.18/41 —
+        // Clean Tracker home style).
+        check("v25src: the app version is 3.18 / code 41 (bumped by v3.18)",
+            gradleSrc.contains("versionName = \"3.18\"") &&
+                gradleSrc.contains("versionCode = 41"))
     }
 }
 
@@ -4286,9 +4292,12 @@ fun section46() {
         // prepares on its first build (coldStart is
         // per-instance, the memo is process-static). Only a
         // genuinely memo-less build still defers.
+        // v3.18 RE-PINNED (Clean Tracker joins the same staged
+        // gate: the tracker prepare now runs for the Watch
+        // family OR the Clean style, staging unchanged).
         check("v28src: cold start is staged (warm worker + deferred prepares + shell lines)",
             mainSrc.contains("ColdChainRunner.kickAfterSurvival(appCtx)") &&
-                mainSrc.contains("if (trackerStyle && (!coldStart || TrackerClient.memoOrNull() != null)) {") &&
+                mainSrc.contains("if ((trackerStyle || isCleanStyle()) && (!coldStart || TrackerClient.memoOrNull() != null)) {") &&
                 mainSrc.contains("try { prepareTrackerData() } catch (e: Throwable)") &&
                 mainSrc.contains("Loading your library…") &&
                 mainSrc.contains("Loading your channels…"))
@@ -5088,9 +5097,10 @@ fun section50() {
         // Re-pinned in v3.14 (intentional version bump 3.13/36 → 3.14/37).
         // Re-pinned in v3.16 (intentional version bump 3.15/38 → 3.16/39).
         // Re-pinned in v3.17 (intentional version bump 3.16/39 → 3.17/40).
-        check("v31src: the version bump is 3.17 / code 40",
-            src("app/build.gradle.kts").contains("versionCode = 40") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.17\""))
+        // Re-pinned in v3.18 (intentional version bump 3.17/40 → 3.18/41).
+        check("v31src: the version bump is 3.18 / code 41",
+            src("app/build.gradle.kts").contains("versionCode = 41") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.18\""))
     }
 }
 
@@ -6559,10 +6569,13 @@ fun section57() {
         // v3.9 RE-PINNED (IPTV home style removed): the picker
         // is TV / Watch, and a stored "iptv" profile decodes
         // to Watch and renders the Watch tabs (now with Live).
-        check("watch58: stored tracker + iptv decode to watch; picker is tv/watch (v3.9 re-pin)",
+        // v3.18 RE-PINNED (Clean Tracker joins the picker):
+        // the picker is TV / Watch / Clean; the tracker/iptv
+        // migration assertions below are unchanged.
+        check("watch58: stored tracker + iptv decode to watch; picker is tv/watch/clean (v3.18 re-pin)",
             HomeStyle.normalize("tracker") == "watch" &&
                 HomeStyle.normalize("iptv") == "watch" &&
-                HomeStyle.VALUES == listOf("tv", "watch"))
+                HomeStyle.VALUES == listOf("tv", "watch", "clean"))
         check("watch58: migrated profile renders Watch tabs (Home/Library/Apps/Live, v3.9 re-pin)",
             HomeTabs.forStyle(HomeStyle.normalize("tracker")) ==
                 HomeTabs.watchTabs() &&
@@ -6645,8 +6658,10 @@ fun section59() {
         // Pure codec: a stored "iptv" profile is Watch now, and
         // Watch tabs are Home · Library · Apps · Live (Live last,
         // opening IPTV Live — the single IPTV entry point).
-        check("watch59: final styles are TV/Watch only; iptv migrates to Watch",
-            HomeStyle.VALUES == listOf("tv", "watch") &&
+        // v3.18 RE-PINNED: styles are TV/Watch/Clean now; every
+        // migration assertion below is unchanged.
+        check("watch59: styles are TV/Watch/Clean; iptv migrates to Watch",
+            HomeStyle.VALUES == listOf("tv", "watch", "clean") &&
                 HomeStyle.normalize("iptv") == "watch" &&
                 HomeStyle.normalize("tracker") == "watch" &&
                 HomeStyle.normalize("ipad") == "tv" &&
@@ -7169,5 +7184,90 @@ fun section63() {
             !mainSrc.contains("startForegroundService(") &&
                 !settingsSrc.contains("startForegroundService(") &&
                 !imgSrc.contains("startForegroundService("))
+    }
+}
+
+/** v3.18 checks — Clean Tracker home style: codec, fixed composition, settings simplification. */
+fun section64() {
+    run {
+        // ---- codec: a fresh key, no resurrection of migrated profiles ----
+        check("clean64: clean survives the codec and nothing else becomes clean",
+            HomeStyle.normalize("clean") == "clean" && HomeStyle.isClean("clean") &&
+                !HomeStyle.isClean("watch") && !HomeStyle.isClean("tv") &&
+                !HomeStyle.isWatch("clean") && !HomeStyle.isClean(HomeStyle.normalize("tracker")))
+        check("clean64: tracker/iptv still migrate to watch, unknown/case still tv",
+            HomeStyle.normalize("tracker") == "watch" &&
+                HomeStyle.normalize("iptv") == "watch" &&
+                HomeStyle.normalize("Clean") == "tv" &&
+                HomeStyle.normalize(null) == "tv" && HomeStyle.normalize("bogus") == "tv")
+        check("clean64: picker order is tv, watch, clean",
+            HomeStyle.VALUES == listOf("tv", "watch", "clean"))
+        check("clean64: clean has no pill tab bar (minimal chrome)",
+            HomeTabs.forStyle("clean").isEmpty())
+
+        // ---- fixed composition: data availability + cold start only ----
+        check("clean64: fixed order is hero, up next, missed, for you, dock",
+            CleanHome.ORDER == listOf("hero", "upnext", "missed", "foryou", "dock"))
+        check("clean64: full warm library renders every section in fixed order",
+            CleanHome.compose(true, true, true, true, false) ==
+                listOf("hero", "upnext", "missed", "foryou", "dock"))
+        check("clean64: cold shell suppresses only the dock (app list not landed yet)",
+            CleanHome.compose(true, true, true, true, true) ==
+                listOf("hero", "upnext", "missed", "foryou"))
+        check("clean64: partial data keeps fixed order (no re-sort, no bare headers)",
+            CleanHome.compose(false, true, true, false, false) ==
+                listOf("upnext", "missed", "dock"))
+        check("clean64: empty warm library renders the dock only (hint line covers the rest)",
+            CleanHome.compose(false, false, false, false, false) == listOf("dock"))
+        check("clean64: empty cold library renders nothing (loading line covers it)",
+            CleanHome.compose(false, false, false, false, true).isEmpty())
+
+        // ---- renderer source pins: existing pipeline, no settings input ----
+        fun src(path: String): String = try {
+            java.io.File(path).readText()
+        } catch (e: Exception) { "" }
+        val mainSrc = src("app/src/main/java/com/mizan/launcher/MainActivity.kt")
+        val cleanFn = mainSrc.substringAfter("private fun buildCleanHome")
+            .substringBefore("\n    private fun ")
+        check("clean64: Clean home exists and reuses the existing section builders",
+            mainSrc.contains("private fun buildCleanHome") &&
+                cleanFn.contains("CleanHome.compose") &&
+                cleanFn.contains("selectHero") &&
+                cleanFn.contains("buildMergedUpNextSection") &&
+                cleanFn.contains("buildMissedSection") &&
+                cleanFn.contains("buildForYouSection") &&
+                cleanFn.contains("buildFavoritesSection") &&
+                cleanFn.contains("buildAppsSectionCircular"))
+        check("clean64: Clean home renders the hero band with backdrop art",
+            mainSrc.contains("private fun buildCleanHeroBand") &&
+                cleanFn.contains("buildCleanHeroBand"))
+        check("clean64: Clean composition never reads rows/sort/status-bar prefs",
+            !cleanFn.contains("trackerSectionsConfig") &&
+                !cleanFn.contains("rowOrder") &&
+                !cleanFn.contains("statusBar") &&
+                !cleanFn.contains("buildUnifiedBar"))
+        check("clean64: Clean home fails open (empty hint, section error tile, no new store)",
+            cleanFn.contains("trackerInfoLine") && cleanFn.contains("sectionErrorTile") &&
+                !cleanFn.contains("TrackerStore(") && !cleanFn.contains("LibraryLocal("))
+        check("clean64: Clean home has no pill bar, no IPTV, no foreground service",
+            !cleanFn.contains("buildUnifiedBar") && !cleanFn.contains("Iptv") &&
+                !mainSrc.contains("startForegroundService("))
+        check("clean64: no Compose/androidx additions in the touched activities",
+            !mainSrc.contains("androidx.compose") &&
+                !src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+                    .contains("androidx.compose"))
+
+        // ---- settings simplification pins ----
+        val settingsSrc = src("app/src/main/java/com/mizan/launcher/ui/SettingsActivity.kt")
+        check("clean64: picker offers Clean Tracker and labels it",
+            settingsSrc.contains("HomeStyle.CLEAN") &&
+                settingsSrc.contains("Clean Tracker"))
+        check("clean64: Sort sections page is a fixed-layout note for Clean",
+            settingsSrc.contains("isClean(prefs.homeStyle)") &&
+                settingsSrc.contains("Nothing to sort here"))
+        check("clean64: Home screen rows page notes the fixed layout for Clean",
+            settingsSrc.contains("uses a fixed layout"))
+        check("clean64: Status bar page notes fixed minimal chrome for Clean",
+            settingsSrc.contains("fixed minimal chrome"))
     }
 }

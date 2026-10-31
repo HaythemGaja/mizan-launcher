@@ -1331,6 +1331,13 @@ class SettingsActivity : Activity() {
 
     private fun buildStatusBarDetail(content: LinearLayout) {
         content.addView(header("Status bar"))
+        // v3.18: the Clean Tracker home uses fixed minimal chrome —
+        // these toggles don't affect it. They still apply to the
+        // TV and Watch homes, so the page stays (with this note)
+        // rather than hiding settings that matter elsewhere.
+        if (com.mizan.launcher.core.HomeStyle.isClean(prefs.homeStyle)) {
+            content.addView(info("The Clean Tracker home uses fixed minimal chrome — these status-bar toggles don't affect it. They still apply to the TV and Watch homes."))
+        }
         val sb = layout.statusBar
         content.addView(toggleRow("Show status bar", sb.showBar, "Off = clean Apple-TV style, no top bar at all") { updateStatusBar { c -> c.copy(showBar = it) } })
         content.addView(toggleRow(
@@ -1413,7 +1420,7 @@ class SettingsActivity : Activity() {
         // sits next to the Home style picker it belongs to. The hero
         // is always first when shown; the other sections reorder.
         content.addView(header("Library sections"))
-        content.addView(info("Only applies when Home style is Watch. A section with nothing in it never appears, even when switched on. When Home style is TV, these toggles change nothing — use Home screen rows instead."))
+        content.addView(info("Only applies when Home style is Watch. A section with nothing in it never appears, even when switched on. When Home style is TV, these toggles change nothing — use Home screen rows instead. When Home style is Clean Tracker, the fixed Hero › Up Next › Missed › For You order applies instead of these toggles."))
         val sectionsCfg = prefs.trackerSectionsConfig()
         val ts = com.mizan.launcher.core.TrackerSections
         content.addView(toggleRow(
@@ -1461,6 +1468,17 @@ class SettingsActivity : Activity() {
         val hs = com.mizan.launcher.core.HomeStyle
         content.addView(header("Sort home sections"))
         when {
+            // v3.18: the Clean Tracker home has a fixed layout —
+            // nothing to sort. The page says so instead of
+            // offering controls that change nothing; the TV/Watch
+            // stores below are untouched, so switching back
+            // restores those homes' own order.
+            hs.isClean(prefs.homeStyle) -> {
+                content.addView(info(
+                    "Home style: Clean Tracker — a fixed layout: Hero, Up Next, Missed, " +
+                        "For You, then the app dock. Nothing to sort here."
+                ))
+            }
             hs.isWatch(prefs.homeStyle) -> {
                 val cfg = prefs.trackerSectionsConfig()
                 content.addView(info(
@@ -1745,6 +1763,8 @@ class SettingsActivity : Activity() {
         } else when {
             com.mizan.launcher.core.HomeStyle.isWatch(prefs.homeStyle) ->
                 "Watch — your library + IPTV playback of your titles"
+            com.mizan.launcher.core.HomeStyle.isClean(prefs.homeStyle) ->
+                "Clean Tracker — hero, Up Next, Missed, For You and a simple app dock, in a fixed layout"
             // v3.9: no IPTV label anymore — a stored "iptv"
             // profile normalizes to Watch, so the label
             // above is what it prints. IPTV lives under
@@ -1765,13 +1785,16 @@ class SettingsActivity : Activity() {
      */
     private fun pickHomeStyle() {
         // v3.9: IPTV home style removed — picker lists TV / Watch only.
+        // v3.18: Clean Tracker joins — the fixed-layout tracker look.
         val keys = listOf(
             com.mizan.launcher.core.HomeStyle.TV,
-            com.mizan.launcher.core.HomeStyle.WATCH
+            com.mizan.launcher.core.HomeStyle.WATCH,
+            com.mizan.launcher.core.HomeStyle.CLEAN
         )
         val labels = arrayOf(
             "TV — rows of apps under the hero bar",
-            "Watch — your library + IPTV playback of your titles (needs an IPTV account for playback; IPTV live channels live under the Live tab)"
+            "Watch — your library + IPTV playback of your titles (needs an IPTV account for playback; IPTV live channels live under the Live tab)",
+            "Clean Tracker — hero, Up Next, Missed, For You and a simple app dock, in a fixed layout with no complicated settings"
         )
         val current = keys.indexOf(prefs.homeStyle).coerceAtLeast(0)
         val builder = AlertDialog.Builder(this).setTitle("Home style")
@@ -1806,6 +1829,15 @@ class SettingsActivity : Activity() {
         if (com.mizan.launcher.core.HomeStyle.isWatch(prefs.homeStyle)) {
             content.addView(info("These rows are the TV home — they don't affect your Watch home; use Sort sections."))
         }
+        // v3.18: the Clean Tracker home uses a fixed layout — these
+        // TV rows don't affect it, so the list hides behind this
+        // note instead of offering controls that change nothing.
+        // (The store itself is untouched: switching back to TV
+        // restores the rows exactly.)
+        val cleanStyle = com.mizan.launcher.core.HomeStyle.isClean(prefs.homeStyle)
+        if (cleanStyle) {
+            content.addView(info("The Clean Tracker home uses a fixed layout — these TV rows don't affect it."))
+        }
         // Show the EFFECTIVE order — stored orders from older
         // versions gain the new rows at their canonical positions, and
         // the normalized order is what row options below edit.
@@ -1814,12 +1846,14 @@ class SettingsActivity : Activity() {
             layout.rowOrder.clear()
             layout.rowOrder.addAll(effectiveOrder)
         }
-        for (key in layout.rowOrder) {
-            content.addView(row(rowLabel(key), if (layout.isRowVisible(key)) "Shown — tap for options" else "Hidden — tap for options") {
-                rowOptions(key)
-            })
+        if (!cleanStyle) {
+            for (key in layout.rowOrder) {
+                content.addView(row(rowLabel(key), if (layout.isRowVisible(key)) "Shown — tap for options" else "Hidden — tap for options") {
+                    rowOptions(key)
+                })
+            }
+            content.addView(info("The Recently Used row is the “Row: Recently Used” entry above — Shown/Hidden is its toggle."))
         }
-        content.addView(info("The Recently Used row is the “Row: Recently Used” entry above — Shown/Hidden is its toggle."))
         // v2.0: the Most Used row needs Usage Access; while the grant
         // is missing, its settings entry point lives here.
         if (!com.mizan.launcher.data.MostUsed.isGranted(this)) {
