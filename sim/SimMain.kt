@@ -4163,11 +4163,11 @@ fun section42() {
         // fallback, Profile pill toggle).
         // Re-pinned in v3.18 (intentional version bump 3.17/40 → 3.18/41 —
         // Clean Tracker home style).
-        // Re-pinned in v3.19 (intentional version bump 3.18/41 → 3.19/42 —
-        // Clean as the post-update home, phone-remote listener, remote lock toggles).
-        check("v25src: the app version is 3.19 / code 42 (bumped by v3.19)",
-            gradleSrc.contains("versionName = \"3.19\"") &&
-                gradleSrc.contains("versionCode = 42"))
+        // Re-pinned in v3.20 (intentional version bump 3.19/42 → 3.20/46 —
+        // code 46 skips past fork v3.22's 45 so this installs over it).
+        check("v25src: the app version is 3.20 / code 46 (bumped by v3.20)",
+            gradleSrc.contains("versionName = \"3.20\"") &&
+                gradleSrc.contains("versionCode = 46"))
     }
 }
 
@@ -5138,10 +5138,10 @@ fun section50() {
         // Re-pinned in v3.16 (intentional version bump 3.15/38 → 3.16/39).
         // Re-pinned in v3.17 (intentional version bump 3.16/39 → 3.17/40).
         // Re-pinned in v3.18 (intentional version bump 3.17/40 → 3.18/41).
-        // Re-pinned in v3.19 (intentional version bump 3.18/41 → 3.19/42).
-        check("v31src: the version bump is 3.19 / code 42",
-            src("app/build.gradle.kts").contains("versionCode = 42") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.19\""))
+        // Re-pinned in v3.20 (intentional version bump 3.19/42 → 3.20/46).
+        check("v31src: the version bump is 3.20 / code 46",
+            src("app/build.gradle.kts").contains("versionCode = 46") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.20\""))
     }
 }
 
