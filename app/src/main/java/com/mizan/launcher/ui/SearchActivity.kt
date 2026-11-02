@@ -381,7 +381,14 @@ class SearchActivity : Activity() {
             header.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 6))
             box.addView(header)
         }
-        val cols = prefs.columns
+        // v3.17: the result grid uses the FIT column count so the app
+        // size setting can never push its last column off-screen.
+        val cols = TileLayout.gridColumns(
+            resources.displayMetrics.widthPixels,
+            resources.displayMetrics.density,
+            prefs.appSize,
+            prefs.columns
+        )
         var i = 0
         while (i < items.size) {
             val rowView = LinearLayout(this)
@@ -446,7 +453,7 @@ class SearchActivity : Activity() {
     /** A result tile: the home screen's uniform tile + focus-name overlay. */
     private fun resultTile(entry: AppEntry): View {
         val dm = resources.displayMetrics
-        val m = TileLayout.tileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        val m = TileLayout.gridTileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         val frame = FrameLayout(this)
         frame.isFocusable = true
         frame.isClickable = true

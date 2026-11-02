@@ -60,6 +60,7 @@ object ArrowPinDialog {
             showGlyphs = false,
             hint = "Press your arrow pattern · Back deletes",
             autoSubmitLength = storedLength,
+            slotCount = storedLength,
             onSubmitSeq = { seq ->
                 if (ArrowPinCodec.matches(ArrowPinCodec.decode(seq), storedEncoded)) {
                     SubmitOutcome.Accept { onSuccess() }
@@ -127,6 +128,13 @@ object ArrowPinDialog {
         hint: String,
         titleProvider: (() -> String)? = null,
         autoSubmitLength: Int? = null,
+        /**
+         * v3.17: how many slots the UNLOCK display draws. The dialog
+         * used to hardcode four placeholder dots, so a 5–8 step
+         * pattern looked like a 4-step one (and auto-submit at the
+         * real length felt like a wrong guess). Zero falls back to 4.
+         */
+        slotCount: Int = 0,
         onSubmitSeq: (String) -> SubmitOutcome,
         onCancel: () -> Unit
     ) {
@@ -138,6 +146,13 @@ object ArrowPinDialog {
             root.orientation = LinearLayout.VERTICAL
             root.gravity = Gravity.CENTER_HORIZONTAL
             root.setPadding(pad, pad, pad, pad)
+            // v3.17: give the dialog window a focusable anchor. Without
+            // one, some TV firmwares route D-pad presses to focus
+            // search instead of the dialog's key listener, which made
+            // the arrow lock look dead. The listener still consumes
+            // every direction, so focus never moves off this root.
+            root.isFocusable = true
+            root.isFocusableInTouchMode = true
             val bg = GradientDrawable()
             bg.cornerRadius = Ui.dp(ctx, 18).toFloat()
             bg.setColor(0xF21A1A1E.toInt())
@@ -178,12 +193,20 @@ object ArrowPinDialog {
 
             fun render() {
                 titleView.text = titleProvider?.invoke() ?: initialTitle
-                progress.text = if (machine.entered == 0) {
-                    "· · · ·"
-                } else if (showGlyphs) {
-                    machine.steps().joinToString(" ") { it.glyph }
+                progress.text = if (showGlyphs) {
+                    if (machine.entered == 0) "· · · ·"
+                    else machine.steps().joinToString(" ") { it.glyph }
                 } else {
-                    buildString { repeat(machine.entered) { append("● ") } }.trim()
+                    // Unlock: one slot per stored step — filled for
+                    // what has been entered, hollow for the rest. Never
+                    // reveal the glyphs (a bystander could read them).
+                    val total = if (slotCount in 4..8) slotCount else 4
+                    buildString {
+                        for (i in 0 until total) {
+                            if (i > 0) append(' ')
+                            append(if (i < machine.entered) '●' else '○')
+                        }
+                    }
                 }
             }
 
@@ -298,6 +321,11 @@ object ArrowPinDialog {
                 }
             }
 
+            dialog.setOnShowListener {
+                try { root.requestFocus() } catch (e: Exception) {
+                    // Focus is best-effort; the key listener still works.
+                }
+            }
             dialog.show()
             dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
             render()

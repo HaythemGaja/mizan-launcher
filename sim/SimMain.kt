@@ -419,6 +419,42 @@ fun main() {
         check("label visible only when focused", TileLayout.labelVisible(true) && !TileLayout.labelVisible(false))
     }
 
+    // ---------- (8b) v3.17 app-grid fit: the size setting is a column budget ----------
+    run {
+        val sizes = listOf("compact", "standard", "large")
+        val screens = listOf(1280, 1920, 3840)
+        val densities = listOf(1.0f, 1.33f, 2.0f)
+        var bad: String? = null
+        for (screen in screens) for (d in densities) for (size in sizes) for (wish in 3..10) {
+            val cols = TileLayout.gridColumns(screen, d, size, wish)
+            val m = TileLayout.gridTileMetrics(screen, d, size, wish)
+            val margin = (TileLayout.TILE_MARGIN_DP * 2 * d).toInt()
+            val usable = screen -
+                ((TileLayout.SIDE_PADDING_DP + TileLayout.ROW_PADDING_DP) * 2 * d).toInt()
+            if (cols < 1 || cols > 10) bad = "cols=$cols screen=$screen size=$size wish=$wish"
+            if (cols * (m.tileWidthPx + margin) > usable)
+                bad = "overflow screen=$screen d=$d size=$size wish=$wish cols=$cols tile=${m.tileWidthPx}"
+            if (m.tileWidthPx <= 0 || m.iconPx <= 0 || m.tileHeightPx <= m.iconPx)
+                bad = "metric screen=$screen size=$size wish=$wish m=$m"
+        }
+        check("gridfit: every app-grid row fits its usable width", bad == null, bad ?: "")
+
+        val std6 = TileLayout.gridTileMetrics(1920, 2f, "standard", 6)
+        val large6 = TileLayout.gridTileMetrics(1920, 2f, "large", 6)
+        val compact6 = TileLayout.gridTileMetrics(1920, 2f, "compact", 6)
+        check("gridfit: large means fewer, wider grid cells",
+            TileLayout.gridColumns(1920, 2f, "large", 6) <
+                TileLayout.gridColumns(1920, 2f, "standard", 6) &&
+                large6.tileWidthPx > std6.tileWidthPx)
+        check("gridfit: compact means more, narrower grid cells",
+            TileLayout.gridColumns(1920, 2f, "compact", 6) >
+                TileLayout.gridColumns(1920, 2f, "standard", 6) &&
+                compact6.tileWidthPx < std6.tileWidthPx)
+        check("gridfit: a grid card follows the same column budget",
+            TileLayout.gridCardMetrics(1920, 2f, "large", 6).tileWidthPx >
+                TileLayout.gridCardMetrics(1920, 2f, "standard", 6).tileWidthPx)
+    }
+
     // ---------- (9) Weather units + background logic (v1.2) ----------
     run {
         check("weather units fahrenheit params",

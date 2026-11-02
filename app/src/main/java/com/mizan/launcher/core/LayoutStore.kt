@@ -58,6 +58,15 @@ data class Folder(
     val entries: MutableList<FolderEntry> = mutableListOf(),
     var locked: Boolean = false
 ) {
+    companion object {
+        /**
+         * Longest name the D-pad folder keyboard accepts. Names are
+         * display labels, not paths; 24 characters fits every tile
+         * and every picker row this launcher draws.
+         */
+        const val MAX_NAME_LENGTH = 24
+    }
+
     /** App packages directly inside this folder (not recursive). */
     val appPackages: List<String>
         get() = entries.filterIsInstance<FolderEntry.App>().map { it.pkg }

@@ -15,7 +15,6 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -88,6 +87,7 @@ import com.mizan.launcher.ui.ForecastActivity
 import com.mizan.launcher.ui.IptvActivity
 import com.mizan.launcher.ui.IptvCards
 import com.mizan.launcher.ui.IptvGuideActivity
+import com.mizan.launcher.ui.KeyboardDialog
 import com.mizan.launcher.ui.PlayerActivity
 import com.mizan.launcher.ui.SearchActivity
 import com.mizan.launcher.ui.SettingsActivity
@@ -4021,7 +4021,9 @@ class MainActivity : Activity() {
             return box
         }
         val ordered = orderedApps(visible)
-        val cols = prefs.columns
+        // v3.17: chunk by the FIT column count, not the stored wish —
+        // "large" tiles previously made the last column clip.
+        val cols = gridColumns()
         var i = 0
         while (i < ordered.size) {
             val rowLayout = LinearLayout(this); rowLayout.orientation = LinearLayout.HORIZONTAL
@@ -6270,11 +6272,20 @@ class MainActivity : Activity() {
     /** The ONE tile size for the whole home screen (v1.2: core/TileLayout). */
     private fun currentTileMetrics(wide: Boolean = false): TileLayout.Metrics {
         val dm = resources.displayMetrics
+        // v3.17: grid tiles use the GRID column budget (large app size =
+        // fewer, wider cells) so a grid row can never run off the right
+        // edge. Horizontal rows read the same size for a uniform look.
         return if (wide) {
-            TileLayout.cardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+            TileLayout.gridCardMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         } else {
-            TileLayout.tileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+            TileLayout.gridTileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         }
+    }
+
+    /** Columns a GRID row really holds at this profile's app size (v3.17). */
+    private fun gridColumns(): Int {
+        val dm = resources.displayMetrics
+        return TileLayout.gridColumns(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
     }
 
     /**
@@ -6662,24 +6673,35 @@ class MainActivity : Activity() {
      * gets locked out of their own launcher). If the user cancels the
      * setup, the folder simply stays unlocked.
      */
-    private fun toggleFolderLock(folder: Folder) {
+    private fun toggleFolderLock(folder: Folder, onChanged: () -> Unit = {}) {
         if (folder.locked) {
             folder.locked = false
             saveLayout(); rebuild()
             Toast.makeText(this, "Folder unlocked", Toast.LENGTH_SHORT).show()
+            onChanged()
             return
         }
         if (prefs.arrowPin.isEmpty()) {
-            ArrowPinDialog.showSetup(this, "Set a pattern to lock “${folder.name}”", accent, onDone = { seq ->
-                prefs.arrowPin = seq
-                folder.locked = true
-                saveLayout(); rebuild()
-                Toast.makeText(this, "Folder locked", Toast.LENGTH_SHORT).show()
-            })
+            // v3.17: do not touch the folder overlay while the setup
+            // dialog is up — re-rendering it stole focus from the
+            // dialog and the arrow keys went nowhere. The overlay is
+            // re-rendered only when the flow ends (onChanged).
+            ArrowPinDialog.showSetup(
+                this, "Set a pattern to lock “${folder.name}”", accent,
+                onDone = { seq ->
+                    prefs.arrowPin = seq
+                    folder.locked = true
+                    saveLayout(); rebuild()
+                    Toast.makeText(this, "Folder locked", Toast.LENGTH_SHORT).show()
+                    onChanged()
+                },
+                onCancel = onChanged
+            )
         } else {
             folder.locked = true
             saveLayout(); rebuild()
             Toast.makeText(this, "Folder locked", Toast.LENGTH_SHORT).show()
+            onChanged()
         }
     }
 
@@ -6722,36 +6744,38 @@ class MainActivity : Activity() {
 
     // -------------------------------------------------------------- folders
 
+    /**
+     * v3.17: folder names use the D-pad keyboard, not an EditText.
+     * The EditText dialog was unreadable on the dark TV dialog (it
+     * forced near-black text) and depended on a soft IME that many
+     * TVs do not have — the exact "creating folders does nothing"
+     * report. This is the same remote-only keyboard as Search and
+     * profile rename, so a name can be typed with arrows alone.
+     */
     private fun promptFolderName(after: ((String) -> Unit)?) {
-        val input = EditText(this)
-        input.hint = "Folder name"
-        input.setTextColor(0xFF111111.toInt())
-        AlertDialog.Builder(this).setTitle("New folder").setView(input)
-            .setPositiveButton("Create") { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isNotEmpty()) {
-                    if (after != null) after(name) else {
-                        // v1.5: every folder gets a stable id at birth.
-                        layout.folders.add(Folder(FolderTree.freshId(layout.folders), name))
-                        saveLayout(); rebuild()
-                    }
-                }
+        KeyboardDialog.show(this, "New folder", accent, "", Folder.MAX_NAME_LENGTH) { raw ->
+            val name = raw.trim()
+            if (name.isEmpty()) {
+                Toast.makeText(this, "Give the folder a name first", Toast.LENGTH_SHORT).show()
+                return@show
             }
-            .setNegativeButton("Cancel", null).show()
+            if (after != null) after(name) else {
+                // v1.5: every folder gets a stable id at birth.
+                layout.folders.add(Folder(FolderTree.freshId(layout.folders), name))
+                saveLayout(); rebuild()
+            }
+        }
     }
 
     private fun renameFolder(folder: Folder) {
-        val input = EditText(this)
-        input.setText(folder.name)
-        input.setTextColor(0xFF111111.toInt())
-        AlertDialog.Builder(this).setTitle("Rename folder").setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isNotEmpty()) {
-                    folder.name = name; saveLayout(); rebuild()
-                }
+        KeyboardDialog.show(this, "Rename folder", accent, folder.name, Folder.MAX_NAME_LENGTH) { raw ->
+            val name = raw.trim()
+            if (name.isEmpty()) {
+                Toast.makeText(this, "A folder needs a name", Toast.LENGTH_SHORT).show()
+                return@show
             }
-            .setNegativeButton("Cancel", null).show()
+            folder.name = name; saveLayout(); rebuild()
+        }
     }
 
     /**
@@ -6809,12 +6833,42 @@ class MainActivity : Activity() {
         }
         currentFolderDialog = dlg
         currentFolderBox = box
+        // v3.17: the overlay is a GRID, and it used to size its cells
+        // for the FULL screen while the AlertDialog window was much
+        // narrower — rows of 6 tiles ran past the dialog and the right
+        // columns were clipped. Give the window the same near-full
+        // width the home grid uses, then lay the tiles out for the
+        // width we actually got.
+        val dm = resources.displayMetrics
+        folderDialogWidthPx = (dm.widthPixels - Ui.dp(this, 64))
+            .coerceAtLeast(Ui.dp(this, 320))
+        dlg.setOnShowListener {
+            try {
+                dlg.window?.setLayout(
+                    folderDialogWidthPx,
+                    android.view.WindowManager.LayoutParams.WRAP_CONTENT
+                )
+            } catch (e: Exception) {
+                // Window sizing is cosmetic; the grid still renders.
+            }
+            // Measure first: the window manager may clamp the
+            // requested width, and the grid must follow the width it
+            // really got, not the one we asked for.
+            box.post {
+                renderFolderOverlay()
+                // A fresh folder open should put the remote on its
+                // first tile, not on Close.
+                focusFirstTile(box)
+            }
+        }
         renderFolderOverlay()
         dlg.show()
     }
 
     private var currentFolderDialog: AlertDialog? = null
     private var currentFolderBox: LinearLayout? = null
+    /** Width of the open folder overlay window, in pixels (v3.17). */
+    private var folderDialogWidthPx: Int = 0
 
     /** Folder ids from the overlay's root down to the folder on display. */
     private val folderStack = mutableListOf<String>()
@@ -6864,7 +6918,7 @@ class MainActivity : Activity() {
             box.addView(t)
             return
         }
-        val cols = prefs.columns
+        val cols = folderOverlayColumns()
         var i = 0
         while (i < tiles.size) {
             val rowLayout = LinearLayout(this); rowLayout.orientation = LinearLayout.HORIZONTAL
@@ -6874,6 +6928,28 @@ class MainActivity : Activity() {
             box.addView(rowLayout)
             i += cols
         }
+    }
+
+    /**
+     * v3.17: columns the folder overlay can actually draw. Every tile
+     * keeps the one home size; the count is capped by BOTH the
+     * profile's grid budget (app size) and the dialog window's inner
+     * width, so a narrow overlay never clips its last column.
+     */
+    private fun folderOverlayColumns(): Int {
+        val tileW = currentTileMetrics().tileWidthPx
+        val cell = tileW + Ui.dp(this, TileLayout.TILE_MARGIN_DP * 2)
+        val box = currentFolderBox
+        // Measured content width when available (after the dialog has
+        // laid out); the requested width before that.
+        val available = if (box != null && box.width > 0) {
+            box.width - box.paddingLeft - box.paddingRight
+        } else {
+            folderDialogWidthPx - Ui.dp(this, 32)
+        }
+        val inner = available.coerceAtLeast(cell)
+        val fit = (inner / cell).coerceAtLeast(1)
+        return minOf(fit, gridColumns())
     }
 
     /**
@@ -6920,11 +6996,10 @@ class MainActivity : Activity() {
             }
             labels.add(if (folder.locked) "Unlock folder" else "Lock folder")
             actions.add {
-                toggleFolderLock(folder)
-                // toggleFolderLock rebuilds HOME; the overlay shows a
-                // possibly-stale layout object afterwards, so re-render
-                // it from the current layout too.
-                renderFolderOverlay()
+                // v3.17: the overlay re-renders when (and only when)
+                // the lock actually changes — never under the
+                // set-pattern dialog, where it would steal focus.
+                toggleFolderLock(folder) { renderFolderOverlay() }
             }
             AlertDialog.Builder(this).setTitle(folder.name)
                 .setItems(labels.toTypedArray()) { _, which -> actions[which].invoke() }
@@ -7152,7 +7227,15 @@ class MainActivity : Activity() {
         initialOrder: List<String>,
         folderId: String?
     ) {
-        val machine = MoveSessionMachine(grabbedKey, initialOrder, prefs.columns)
+        // v3.17: a grid container wraps by the columns actually on
+        // screen (the app-size budget), so DOWN lands on the tile
+        // directly below rather than one from the stored wish. The
+        // horizontal rows keep the stored wrap (their order still
+        // wraps by that count).
+        val moveColumns = if (container == MoveContainer.ALL_APPS ||
+            container == MoveContainer.FOLDER
+        ) gridColumns() else prefs.columns
+        val machine = MoveSessionMachine(grabbedKey, initialOrder, moveColumns)
         if (!machine.isValid) return
         moveSession = ActiveMove(
             machine, container,

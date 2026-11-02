@@ -937,13 +937,25 @@ class SettingsActivity : Activity() {
                 // Enabling with no pattern runs the set-pattern flow
                 // first (the standing fail-open rule); until a pattern
                 // exists the switch stays off.
-                ArrowPinDialog.showSetup(this, "Set a pattern to lock Settings", accent, onDone = { seq ->
-                    prefs.arrowPin = seq
-                    prefs.lockSettings = true
-                    toast("Settings lock on")
-                    rebuild()
-                })
-                rebuild()
+                //
+                // v3.17: DO NOT rebuild while the setup dialog is up.
+                // The old unconditional rebuild() here replaced the
+                // activity's content view under the dialog and stole
+                // its focus, so the arrow keys went to the Settings
+                // page behind it and the lock looked impossible to
+                // set. Rebuild only when the flow ends — after a set
+                // (switch stays on) or after a cancel (switch snaps
+                // back off, matching prefs).
+                ArrowPinDialog.showSetup(
+                    this, "Set a pattern to lock Settings", accent,
+                    onDone = { seq ->
+                        prefs.arrowPin = seq
+                        prefs.lockSettings = true
+                        toast("Settings lock on")
+                        rebuild()
+                    },
+                    onCancel = { rebuild() }
+                )
             } else {
                 prefs.lockSettings = on
                 rebuild()
@@ -2918,16 +2930,22 @@ class SettingsActivity : Activity() {
         }
     }
 
+    /**
+     * v3.17: folder names (create / rename) use the D-pad keyboard.
+     * An EditText here depended on a soft IME and forced dark text on
+     * a dark TV dialog — on a remote-only box the "New folder" flow
+     * looked dead. KeyboardDialog is the remote-only path used by
+     * Search and profile rename.
+     */
     private fun promptName(title: String, initial: String = "", onOk: (String) -> Unit) {
-        val input = EditText(this)
-        input.setText(initial)
-        input.hint = "Name"
-        AlertDialog.Builder(this).setTitle(title).setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isNotEmpty()) onOk(name)
+        KeyboardDialog.show(this, title, accent, initial, Folder.MAX_NAME_LENGTH) { raw ->
+            val name = raw.trim()
+            if (name.isEmpty()) {
+                toast("A folder needs a name")
+                return@show
             }
-            .setNegativeButton("Cancel", null).show()
+            onOk(name)
+        }
     }
 
     // ------------------------------------------------------------ arrow lock

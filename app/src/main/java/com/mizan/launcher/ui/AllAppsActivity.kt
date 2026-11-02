@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -182,7 +181,14 @@ class AllAppsActivity : Activity() {
         val catItems = items.mapNotNull { li ->
             byPkg[li.pkg]?.let { AppCategories.Item(it.pkg, it.label, it.category) }
         }
-        val cols = prefs.columns
+        // v3.17: chunk by the FIT column count (app size = column
+        // budget), so "large" tiles no longer clip the last column.
+        val cols = TileLayout.gridColumns(
+            resources.displayMetrics.widthPixels,
+            resources.displayMetrics.density,
+            prefs.appSize,
+            prefs.columns
+        )
         for ((category, group) in AppCategories.sections(catItems)) {
             // v3.16 (redesign): the same section header the home uses —
             // white small-caps with the accent rule — instead of a third
@@ -220,7 +226,7 @@ class AllAppsActivity : Activity() {
     /** One catalogue tile: uniform tile + focus-name overlay + badges. */
     private fun appTile(entry: AppEntry, item: AllAppsLogic.Item): View {
         val dm = resources.displayMetrics
-        val m = TileLayout.tileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
+        val m = TileLayout.gridTileMetrics(dm.widthPixels, dm.density, prefs.appSize, prefs.columns)
         val frame = FrameLayout(this)
         frame.isFocusable = true
         frame.isClickable = true
@@ -417,16 +423,19 @@ class AllAppsActivity : Activity() {
             }.show()
     }
 
+    /**
+     * v3.17: remote-only folder naming (see MainActivity). No
+     * EditText, no soft keyboard — the same D-pad keyboard as Search.
+     */
     private fun promptFolderName(after: (String) -> Unit) {
-        val input = EditText(this)
-        input.hint = "Folder name"
-        input.setTextColor(0xFF111111.toInt())
-        AlertDialog.Builder(this).setTitle("New folder").setView(input)
-            .setPositiveButton("Create") { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isNotEmpty()) after(name)
+        KeyboardDialog.show(this, "New folder", accent, "", Folder.MAX_NAME_LENGTH) { raw ->
+            val name = raw.trim()
+            if (name.isEmpty()) {
+                Toast.makeText(this, "Give the folder a name first", Toast.LENGTH_SHORT).show()
+                return@show
             }
-            .setNegativeButton("Cancel", null).show()
+            after(name)
+        }
     }
 
     // -------------------------------------------------------------- launching
