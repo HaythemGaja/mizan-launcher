@@ -72,7 +72,7 @@ object RemoteProtocol {
 
     /** A pairing code is exactly 6 decimal digits. */
     fun isValidPairingCode(code: String?): Boolean =
-        code != null && code.length == 6 && code.all { it.isDigit() }
+        code != null && code.length == 6 && code.all { it in '0'..'9' }
 
     /** The arrow-lock gate decision (v3.19): the remote toggles
      *  suspend enforcement; the per-app / per-folder membership

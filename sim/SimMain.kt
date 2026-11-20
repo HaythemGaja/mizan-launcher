@@ -3258,7 +3258,7 @@ fun main() {
                 !browserSrc2.contains("IptvClient.cached"))
         val imagesSrc = src("app/src/main/java/com/mizan/launcher/data/TmdbImages.kt")
         check("iptvstore: image decode is downsampled and the bitmap cache is byte-bounded",
-            imagesSrc.contains("inSampleSize") && imagesSrc.contains("MAX_CACHE_BYTES"))
+            imagesSrc.contains("DecodeBounds.decodeBytesBounded") && imagesSrc.contains("MAX_CACHE_BYTES"))
     }
 
     // ---------- (39) v2.3.1 hotfix: source checks (manifest cleartext + the one true version label) ----------
@@ -4165,9 +4165,9 @@ fun section42() {
         // Clean Tracker home style).
         // Re-pinned in v3.20 (intentional version bump 3.19/42 → 3.20/46 —
         // code 46 skips past fork v3.22's 45 so this installs over it).
-        check("v25src: the app version is 3.20 / code 46 (bumped by v3.20)",
-            gradleSrc.contains("versionName = \"3.20\"") &&
-                gradleSrc.contains("versionCode = 46"))
+        check("v25src: the app version is 3.22 / code 48",
+            gradleSrc.contains("versionName = \"3.22\"") &&
+                gradleSrc.contains("versionCode = 48"))
     }
 }
 
@@ -5139,9 +5139,9 @@ fun section50() {
         // Re-pinned in v3.17 (intentional version bump 3.16/39 → 3.17/40).
         // Re-pinned in v3.18 (intentional version bump 3.17/40 → 3.18/41).
         // Re-pinned in v3.20 (intentional version bump 3.19/42 → 3.20/46).
-        check("v31src: the version bump is 3.20 / code 46",
-            src("app/build.gradle.kts").contains("versionCode = 46") &&
-                src("app/build.gradle.kts").contains("versionName = \"3.20\""))
+        check("v31src: the version bump is 3.22 / code 48",
+            src("app/build.gradle.kts").contains("versionCode = 48") &&
+                src("app/build.gradle.kts").contains("versionName = \"3.22\""))
     }
 }
 
@@ -7202,11 +7202,11 @@ fun section63() {
         // ---- (4) Poster waiter delivery: source pins on TmdbImages ----
         val imgSrc = src("app/src/main/java/com/mizan/launcher/data/TmdbImages.kt")
         check("prof63: loader keeps a waiter list per key instead of dropping duplicates",
-            imgSrc.contains("waiters") && imgSrc.contains("getOrPut(key)") &&
+            imgSrc.contains("waiters") && imgSrc.contains("waiters[key] = it") &&
                 !imgSrc.contains("inFlight"))
         check("prof63: completion applies the bitmap to every waiter whose tag still matches",
-            imgSrc.contains("for ((view, cb) in served)") &&
-                imgSrc.contains("if (view.tag == url)"))
+            imgSrc.contains("for ((reference, cb) in served)") &&
+                imgSrc.contains("if (view.tag == key)"))
         check("prof63: loader pool, timeouts and decode bounds untouched",
             imgSrc.contains("prestartAllCoreThreads()") &&
                 imgSrc.contains("MAX_DOWNLOAD_BYTES") &&

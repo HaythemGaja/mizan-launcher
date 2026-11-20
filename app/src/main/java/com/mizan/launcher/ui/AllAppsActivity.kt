@@ -90,12 +90,17 @@ class AllAppsActivity : Activity() {
         gridBox?.post { focusFirstTile() }
     }
 
+    private var resumedOnce = false
+
     override fun onResume() {
         super.onResume()
+        if (!resumedOnce) { resumedOnce = true; return }
         if (::prefs.isInitialized) {
             // Layout may have changed (hide/favorite/folder edits made
             // from this screen go through dialogs; a resume rebuild is
             // the simple, always-correct refresh).
+            allApps = AppLoader.loadApps(packageManager, packageName)
+            byPkg = allApps.associateBy { it.pkg }
             reloadItems()
             rebuildGrid()
         }
@@ -115,7 +120,23 @@ class AllAppsActivity : Activity() {
         title.text = "All Apps"
         title.setTextColor(accent); title.textSize = 28f
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
-        root.addView(title)
+        val heading = LinearLayout(this)
+        heading.gravity = Gravity.CENTER_VERTICAL
+        heading.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
+        val search = TextView(this)
+        search.text = "Search apps"
+        search.textSize = 16f
+        search.setTextColor(textColour)
+        search.isFocusable = true
+        search.isClickable = true
+        search.minHeight = Ui.dp(this, 48)
+        search.gravity = Gravity.CENTER
+        search.setPadding(Ui.dp(this, 20), Ui.dp(this, 10), Ui.dp(this, 20), Ui.dp(this, 10))
+        search.background = Ui.tileBackground(accent, false, 14, this)
+        Ui.focusLift(search, accent, 14)
+        search.setOnClickListener { startActivity(Intent(this, SearchActivity::class.java)) }
+        heading.addView(search)
+        root.addView(heading)
 
         val sub = TextView(this)
         sub.text = "Every app on this TV, grouped by kind — apps inside folders are badged ▸"
@@ -165,6 +186,7 @@ class AllAppsActivity : Activity() {
 
     private fun rebuildGridInner() {
         val box = gridBox ?: return
+        val focusedPackage = currentFocus?.tag as? String
         box.removeAllViews()
         artworkByPkg = prefs.artworkMap()
         if (items.isEmpty()) {
@@ -209,6 +231,13 @@ class AllAppsActivity : Activity() {
                 i += cols
             }
         }
+        if (focusedPackage != null) box.post {
+            if (!isFinishing && !isDestroyed) {
+                val tile = box.findViewWithTag<View>(focusedPackage)
+                if (tile != null) tile.requestFocus() else focusFirstTile()
+            }
+        }
+
     }
 
     private fun focusFirstTile() {
@@ -230,6 +259,7 @@ class AllAppsActivity : Activity() {
         val frame = FrameLayout(this)
         frame.isFocusable = true
         frame.isClickable = true
+        frame.tag = entry.pkg
         val lp = LinearLayout.LayoutParams(m.tileWidthPx, m.tileHeightPx)
         val margin = Ui.dp(this, TileLayout.TILE_MARGIN_DP)
         lp.setMargins(margin, margin, margin, margin)
@@ -446,7 +476,8 @@ class AllAppsActivity : Activity() {
      * set-pattern-first rule), recording the launch in Recently Used.
      */
     private fun launchWithGate(entry: AppEntry) {
-        if (!prefs.lockedApps.contains(entry.pkg)) {
+        if (!com.mizan.launcher.core.RemoteProtocol.appRequiresPrompt(
+                prefs.lockedApps.contains(entry.pkg), prefs.remoteAppLockEnabled)) {
             doLaunch(entry)
             return
         }

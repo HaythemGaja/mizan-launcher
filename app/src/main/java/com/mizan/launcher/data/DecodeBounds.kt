@@ -25,7 +25,8 @@ object DecodeBounds {
     fun sampleSize(width: Int, height: Int, maxDim: Int): Int {
         if (width <= 0 || height <= 0 || maxDim <= 0) return 1
         var s = 1
-        while (maxOf(width, height) / s > maxDim) s *= 2
+        val longest = maxOf(width, height).toLong()
+        while ((longest + s - 1) / s > maxDim && s < (1 shl 30)) s *= 2
         return s
     }
 
@@ -34,7 +35,7 @@ object DecodeBounds {
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            if (maxDim <= 0 || bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 null
             } else {
                 val opts = BitmapFactory.Options().apply {
@@ -51,7 +52,7 @@ object DecodeBounds {
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(path, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            if (maxDim <= 0 || bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 null
             } else {
                 val opts = BitmapFactory.Options().apply {

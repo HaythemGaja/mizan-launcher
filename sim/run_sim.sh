@@ -4,12 +4,15 @@
 # Usage: sh sim/run_sim.sh   — writes TEST_LOG.md at the project root.
 set -e
 cd "$(dirname "$0")/.."
-KOTLINC="${KOTLINC:-$HOME/workspace/.tools/kotlin-1.9.24/kotlinc/bin/kotlinc}"
-# v2.2: SimMain outgrew the default kotlinc heap (one giant main);
-# give the compiler room unless the caller already chose a heap.
+KOTLINC="${KOTLINC:-}"
+if [ -z "$KOTLINC" ]; then KOTLINC="$(command -v kotlinc || true)"; fi
+if [ -z "$KOTLINC" ] || [ ! -x "$KOTLINC" ]; then
+  echo "Kotlin compiler unavailable. Install Kotlin 1.9.24 or set KOTLINC to its executable." >&2
+  exit 127
+fi
+# The historical suite has one large main; let callers choose a smaller heap.
 : "${JAVA_OPTS:=-Xmx6g}"
 export JAVA_OPTS
-[ -x "$KOTLINC" ] || KOTLINC="$(command -v kotlinc)"
 "$KOTLINC" \
   app/src/main/java/com/mizan/launcher/core/Themes.kt \
   app/src/main/java/com/mizan/launcher/core/DominantColor.kt \
@@ -80,6 +83,9 @@ export JAVA_OPTS
   app/src/main/java/com/mizan/launcher/core/DeathCapture.kt \
   sim/SimMain.kt \
   -include-runtime -d sim/sim.jar
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT HUP INT TERM
+result=0
 {
   echo "# Sreeb (Mizan Launcher) — headless test log"
   echo
@@ -293,6 +299,8 @@ echo "Note (v3.0): the crash-hardening redo (spec S30). New section"
   echo "deterministic composition crash still arms the safe shell."
   echo
   echo '```'
-  java -jar sim/sim.jar
+  java -jar sim/sim.jar || result=$?
   echo '```'
-} | tee TEST_LOG.md
+} > "$LOG"
+cat "$LOG" | tee TEST_LOG.md
+exit "$result"

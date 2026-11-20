@@ -5,14 +5,17 @@ import com.mizan.launcher.core.RemoteProtocol
 import com.mizan.launcher.core.Themes
 import com.mizan.launcher.core.asObj
 import com.mizan.launcher.core.asStr
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
+import com.mizan.launcher.core.RemoteHttp
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * The live-home nudge for remote commands (v3.19). MainActivity
@@ -69,6 +72,10 @@ object RemoteServer {
     var lastError: String? = null
         private set
 
+    private val commandLock = Any()
+    private val connections = java.util.Collections.synchronizedSet(HashSet<Socket>())
+    private var workers: ThreadPoolExecutor? = null
+
     fun isRunning(): Boolean = thread?.isAlive == true
 
     /** First up, non-loopback, site-local IPv4 address, or null. */
@@ -111,13 +118,23 @@ object RemoteServer {
             srv.soTimeout = 0
             socket = srv
             boundAddress = "$lan:${RemoteProtocol.PORT}"
+            val executor = ThreadPoolExecutor(2, 2, 30L, TimeUnit.SECONDS,
+                ArrayBlockingQueue<Runnable>(4),
+                { task -> Thread(task, "phone-remote-conn").apply { isDaemon = true } })
+            workers = executor
             val t = Thread({
                 while (!Thread.currentThread().isInterrupted) {
                     try {
                         val conn = srv.accept()
-                        Thread({ handleConnection(conn, prefs) }, "phone-remote-conn").apply {
-                            isDaemon = true
-                            start()
+                        connections.add(conn)
+                        try {
+                            executor.execute {
+                                try { handleConnection(conn, prefs) }
+                                finally { connections.remove(conn) }
+                            }
+                        } catch (e: RejectedExecutionException) {
+                            connections.remove(conn)
+                            conn.close()
                         }
                     } catch (e: Exception) {
                         break
@@ -132,6 +149,8 @@ object RemoteServer {
             lastError = e.javaClass.simpleName
             try { socket?.close() } catch (ignored: Exception) { }
             socket = null
+            workers?.shutdownNow()
+            workers = null
             boundAddress = null
             false
         }
@@ -143,6 +162,12 @@ object RemoteServer {
         socket = null
         thread?.interrupt()
         thread = null
+        workers?.shutdownNow()
+        workers = null
+        synchronized(connections) {
+            connections.forEach { try { it.close() } catch (ignored: Exception) { } }
+            connections.clear()
+        }
         boundAddress = null
     }
 
@@ -187,27 +212,13 @@ object RemoteServer {
     private fun handleConnection(conn: Socket, prefs: Prefs) {
         try {
             conn.soTimeout = 10_000
-            val input = BufferedReader(InputStreamReader(conn.getInputStream(), Charsets.UTF_8))
-            val requestLine = input.readLine() ?: return
-            var contentLength = 0
-            while (true) {
-                val line = input.readLine() ?: return
-                if (line.isEmpty()) break
-                val parts = line.split(":", limit = 2)
-                if (parts.size == 2 && parts[0].trim().equals("Content-Length", ignoreCase = true)) {
-                    contentLength = parts[1].trim().toIntOrNull()?.coerceIn(0, 8192) ?: 0
+            val (status, payload) = try {
+                val body = RemoteHttp.readBody(conn.getInputStream())
+                // Serialize the read/modify/write lockout counters across phones.
+                val json = synchronized(commandLock) {
+                    if (!prefs.remoteEnabled) "{\"ok\":false,\"error\":\"disabled\"}"
+                    else RemoteProtocol.handle(body, System.currentTimeMillis(), PrefsStore(prefs))
                 }
-            }
-            val bodyChars = CharArray(contentLength)
-            var read = 0
-            while (read < contentLength) {
-                val n = input.read(bodyChars, read, contentLength - read)
-                if (n < 0) break
-                read += n
-            }
-            val body = String(bodyChars, 0, read)
-            val (status, payload) = if (requestLine.startsWith("POST /v1/command")) {
-                val json = RemoteProtocol.handle(body, System.currentTimeMillis(), PrefsStore(prefs))
                 val httpStatus = when {
                     json.contains("\"ok\":true") -> 200
                     json.contains("\"locked_out\"") -> 429
@@ -225,12 +236,23 @@ object RemoteServer {
                     }
                 }
                 httpStatus to json
-            } else {
-                404 to "{\"ok\":false,\"error\":\"not_found\"}"
+            } catch (e: RemoteHttp.Invalid) {
+                e.status to "{\"ok\":false,\"error\":\"${e.error}\"}"
             }
             val bytes = payload.toByteArray(Charsets.UTF_8)
             val out = conn.getOutputStream()
-            val head = "HTTP/1.1 $status\r\nContent-Type: application/json\r\n" +
+            val reason = when (status) {
+                200 -> "OK"
+                400 -> "Bad Request"
+                401 -> "Unauthorized"
+                404 -> "Not Found"
+                411 -> "Length Required"
+                413 -> "Content Too Large"
+                429 -> "Too Many Requests"
+                431 -> "Request Header Fields Too Large"
+                else -> "Error"
+            }
+            val head = "HTTP/1.1 $status $reason\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\n" +
                 "Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
             out.write(head.toByteArray(Charsets.UTF_8))
             out.write(bytes)

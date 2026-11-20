@@ -28,8 +28,6 @@ import com.mizan.launcher.data.AppLoader
 import com.mizan.launcher.data.Prefs
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
 
 /**
  * Settings — two columns, Roku style (v1.2).
@@ -52,7 +50,7 @@ import java.io.InputStreamReader
  * on short screens), BOTH panes scroll independently with the focused
  * control auto-scrolled into view, and every boolean is an iOS-style
  * switch row (ui/SwitchRow.kt). Nav-machine behaviour is unchanged,
- * except LEFT/RIGHT on a focused switch toggles it (BACK returns).
+ * with LEFT/BACK returning to categories and OK changing a switch.
  *
  * v1.5 ENTRY GATE: onCreate asks core/SettingsGate BEFORE any content
  * is built. The global "Lock Settings" switch and the v1.4 Guest rule
@@ -104,6 +102,11 @@ class SettingsActivity : Activity() {
 
     /** True while the "Make Sreeb your home screen" checklist replaces the home category's detail. */
     private var showingMakeHome: Boolean = false
+    private var restoredState: Bundle? = null
+    private var detailContent: LinearLayout? = null
+    private var renderedCategory: String? = null
+    private var hasResumed = false
+    private var searchButton: TextView? = null
 
     // ------------------------------------------------ two-column state
 
@@ -154,7 +157,7 @@ class SettingsActivity : Activity() {
         const val CARD_HEADER_TAG = "cardHeader"
 
         /** Fail-open fallback for [appVersionLabel] — see its doc. */
-        const val VERSION_FALLBACK = "2.3.1"
+        const val VERSION_FALLBACK = "3.22"
     }
 
     /**
@@ -245,6 +248,7 @@ class SettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        restoredState = savedInstanceState
         // v1.5 entry gate — BEFORE any settings content is built, so
         // every entry point (gear tile, corner gear, watcher
         // deep-links) is covered by this one prompt. The global Lock
@@ -303,10 +307,33 @@ class SettingsActivity : Activity() {
         // v3.1 (ask 41): deep-link from the quick-settings
         // "Sort sections" entry (or any future internal target) —
         // an unknown value keeps the default first category.
-        val deep = intent.getStringExtra("category")
+        val saved = restoredState
+        val deep = saved?.getString("settings.category") ?: intent.getStringExtra("category")
         val deepIdx = categories.indexOfFirst { it.first == deep }
         if (deepIdx >= 0) nav.select(deepIdx)
+        focusedPane = saved?.getInt("settings.pane", SettingsNavMachine.COLUMN_LEFT)
+            ?: SettingsNavMachine.COLUMN_LEFT
+        nav.noteFocus(focusedPane)
+        showingMakeHome = saved?.getBoolean("settings.setup", false) ?: false
+        categories.forEach { (id, _) ->
+            saved?.getString("settings.focus.$id")?.let { detailFocusMemory[id] = it }
+            if (saved?.containsKey("settings.index.$id") == true) {
+                detailFocusIndexMemory[id] = saved.getInt("settings.index.$id")
+            }
+        }
+        restoredState = null
         rebuild()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (!entered || !::nav.isInitialized) return
+        outState.putString("settings.category", nav.selectedId)
+        outState.putInt("settings.pane", focusedPane)
+        outState.putBoolean("settings.setup", showingMakeHome)
+        detailFocusMemory.forEach { (id, title) -> outState.putString("settings.focus.$id", title) }
+        detailFocusIndexMemory.forEach { (id, index) -> outState.putInt("settings.index.$id", index) }
+        // Authentication is deliberately re-evaluated by onCreate.
     }
 
     override fun onDestroy() {
@@ -322,7 +349,8 @@ class SettingsActivity : Activity() {
         super.onResume()
         // Before the gate passes there is no UI to rebuild (and the
         // blank gate view must stay untouched behind the prompt).
-        if (entered && ::prefs.isInitialized) rebuild()
+        if (hasResumed && entered && ::prefs.isInitialized) rebuild()
+        hasResumed = true
     }
 
     /**
@@ -378,7 +406,6 @@ class SettingsActivity : Activity() {
     }
 
     private fun rebuildInner() {
-        iptvProgressView = null
         layout = prefs.layout
         val preset = Themes.preset(prefs.themeId)
         textColour = preset.text; subColour = preset.subText
@@ -417,7 +444,8 @@ class SettingsActivity : Activity() {
         // Bottom padding >= one row height: the last control can
         // always scroll fully into view (never clipped by the edge).
         detail.setPadding(
-            Ui.dp(this, 40), Ui.dp(this, metrics.panePadDp), Ui.dp(this, 48),
+            Ui.dp(this, if (stacked) 16 else 24), Ui.dp(this, metrics.panePadDp),
+            Ui.dp(this, if (stacked) 16 else 24),
             Ui.dp(this, metrics.detailBottomPadDp)
         )
         detailScroll.addView(detail)
@@ -429,35 +457,50 @@ class SettingsActivity : Activity() {
         detailScrollView = detailScroll
         root.addView(detailScroll)
 
-        // v1.6: the detail pane opens with the category name + a
-        // one-line description, then the category's controls grouped
-        // into cards (groupDetailIntoCards, keyed off header() tags).
+        detailContent = detail
+        renderDetail()
+        setContentView(root)
+        restoreFocus(root)
+    }
+
+    /** Replace only the selected page; keep the category strip and its focus intact. */
+    private fun renderDetail() {
+        val detail = detailContent ?: return
+        iptvProgressView = null
+        detailFocusable = emptyList()
+        renderedCategory = nav.selectedId
+        detail.removeAllViews()
         detail.addView(detailHeader(nav.selectedId))
         buildingDetail = true
-        detailFocusable = emptyList()
-        // v3.0: the page dispatch is contained — one broken
-        // settings page renders an error line in the detail pane
-        // while the nav and every other page keep working.
         try {
             buildDetail(detail, nav.selectedId)
         } catch (e: Throwable) {
             Prefs.noteError(this, "settingsPage:${nav.selectedId}", e)
-            val line = TextView(this)
-            line.text = "This settings page hit a snag — the error is noted in Diagnostics."
-            line.setTextColor(subColour)
-            line.textSize = 16f
-            detail.addView(line)
+            detail.addView(info("This page could not load. Try another category or check Data & about."))
+        } finally {
+            buildingDetail = false
         }
-        buildingDetail = false
         groupDetailIntoCards(detail, firstContentIndex = 1)
+        detailScrollView?.scrollTo(0, 0)
+    }
 
-        setContentView(root)
-        restoreFocus(root)
+    private fun selectCategory(index: Int, enterDetail: Boolean) {
+        val changed = nav.select(index)
+        if (changed) com.mizan.launcher.data.DiagLog.note("settings page: ${nav.selectedId}")
+        if (nav.selectedId != "home") showingMakeHome = false
+        if (changed || renderedCategory != nav.selectedId) renderDetail()
+        navRows.forEachIndexed { i, row -> applyNavRowStyle(row, i, row.hasFocus()) }
+        if (enterDetail) {
+            nav.enterDetail()
+            focusedPane = SettingsNavMachine.COLUMN_RIGHT
+            restoreFocus(window.decorView)
+        }
     }
 
     /** After a rebuild, put focus back where the user was (see class doc). */
     private fun restoreFocus(root: View) {
         root.post {
+            if (!root.isAttachedToWindow || isFinishing || isDestroyed) return@post
             try {
                 var placed = false
                 if (focusedPane == SettingsNavMachine.COLUMN_RIGHT) {
@@ -467,8 +510,8 @@ class SettingsActivity : Activity() {
                     // the remembered index (the nearest row), and
                     // only then the page top.
                     val rememberedIndex = detailFocusIndexMemory[nav.selectedId]
-                    val target = detailFocusable.firstOrNull { it.tag == remembered }
-                        ?: rememberedIndex?.let {
+                    val target = detailFocusable.firstOrNull { it.tag == remembered && it.isShown }
+                        ?: rememberedIndex?.takeIf { detailFocusable.isNotEmpty() }?.let {
                             detailFocusable.getOrNull(it.coerceIn(0, detailFocusable.size - 1))
                         }
                         ?: detailFocusable.firstOrNull()
@@ -482,6 +525,7 @@ class SettingsActivity : Activity() {
                     }
                 }
                 if (!placed) {
+                    nav.backToList()
                     val row = navRows.getOrNull(nav.selectedIndex)
                     row?.requestFocus()
                     if (row != null) scrollIntoView(row)
@@ -508,6 +552,58 @@ class SettingsActivity : Activity() {
                 // Cosmetic only — scrolling must never crash Settings.
             }
         }
+    }
+
+    /** Search uses metadata only; it never builds pages or performs their actions. */
+    private fun showSettingsSearch() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Ui.dp(context, 24), Ui.dp(context, 8), Ui.dp(context, 24), 0)
+        }
+        val input = EditText(this).apply {
+            hint = "Try wallpaper, backup, PIN, icons…"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+        }
+        val results = android.widget.ListView(this)
+        val empty = TextView(this).apply {
+            text = "No matching settings. Try another word."
+            setPadding(0, Ui.dp(context, 16), 0, Ui.dp(context, 16))
+        }
+        box.addView(input)
+        box.addView(empty)
+        val resultsHeight = (resources.configuration.screenHeightDp / 3).coerceIn(96, 240)
+        box.addView(results, LinearLayout.LayoutParams(-1, Ui.dp(this, resultsHeight)))
+        results.emptyView = empty
+        var matches = com.mizan.launcher.core.SettingsSearch.find("")
+        val adapter = android.widget.ArrayAdapter<String>(this, android.R.layout.simple_list_item_1,
+            matches.map { it.title }.toMutableList())
+        results.adapter = adapter
+        val dialog = AlertDialog.Builder(this).setTitle("Find a setting").setView(box)
+            .setNegativeButton("Close", null).create()
+        fun openResult(position: Int) {
+            val id = matches.getOrNull(position)?.id ?: return
+            val index = categories.indexOfFirst { it.first == id }
+            if (index < 0) return
+            dialog.dismiss()
+            selectCategory(index, enterDetail = true)
+        }
+        results.setOnItemClickListener { _, _, position, _ -> openResult(position) }
+        input.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                matches = com.mizan.launcher.core.SettingsSearch.find(s?.toString().orEmpty())
+                adapter.clear()
+                adapter.addAll(matches.map { it.title })
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+        input.setOnEditorActionListener { _, _, _ ->
+            if (matches.isNotEmpty()) { openResult(0); true } else false
+        }
+        dialog.setOnShowListener { input.requestFocus() }
+        dialog.show()
     }
 
     /** Left column: title + version + the category list. */
@@ -538,6 +634,34 @@ class SettingsActivity : Activity() {
         version.textSize = 15f
         version.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, metrics.rowPadVDp + 2))
         pane.addView(version)
+
+        val search = TextView(this)
+        search.text = "Search settings…"
+        search.contentDescription = "Search settings by name or feature"
+        search.setTextColor(textColour)
+        search.textSize = metrics.navTextSp
+        search.minHeight = Ui.dp(this, 48)
+        search.gravity = android.view.Gravity.CENTER_VERTICAL
+        search.setPadding(Ui.dp(this, 16), Ui.dp(this, 8), Ui.dp(this, 16), Ui.dp(this, 8))
+        search.isFocusable = true
+        search.isClickable = true
+        search.background = Ui.tileBackground(accent, false, 12, this)
+        Ui.focusLift(search, accent, 12) { focused ->
+            if (focused) {
+                focusedPane = SettingsNavMachine.COLUMN_LEFT
+                nav.backToList()
+            }
+        }
+        search.setOnClickListener { showSettingsSearch() }
+        searchButton = search
+        pane.addView(search)
+        val help = TextView(this)
+        help.text = if (stacked) "Choose a category · OK to open · Back to return"
+            else "→ Open  ·  ← Categories  ·  OK Change"
+        help.textSize = 12f
+        help.setTextColor(subColour)
+        help.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8))
+        pane.addView(help)
 
         val list = LinearLayout(this)
         list.orientation = if (stacked) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
@@ -578,8 +702,10 @@ class SettingsActivity : Activity() {
         tv.isClickable = true
         tv.minHeight = Ui.dp(this, if (metrics.compact) 48 else 56)
         tv.setPadding(Ui.dp(this, 16), Ui.dp(this, metrics.rowPadVDp), Ui.dp(this, 16), Ui.dp(this, metrics.rowPadVDp))
-        val lp = LinearLayout.LayoutParams(-1, -2)
-        lp.setMargins(0, Ui.dp(this, 3), 0, Ui.dp(this, 3))
+        tv.gravity = android.view.Gravity.CENTER_VERTICAL
+        tv.contentDescription = titleText
+        val lp = LinearLayout.LayoutParams(if (metrics.stacked) -2 else -1, -2)
+        lp.setMargins(0, Ui.dp(this, 3), Ui.dp(this, if (metrics.stacked) 6 else 0), Ui.dp(this, 3))
         tv.layoutParams = lp
         applyNavRowStyle(tv, index, focused = false)
         Ui.focusLift(tv, accent, 12) { hasFocus ->
@@ -598,11 +724,8 @@ class SettingsActivity : Activity() {
                         // queues several of these posts, and a
                         // stale one re-selected an older category
                         // and yanked focus back mid-navigation.
-                        if (tv.hasFocus() && nav.selectedIndex != index) {
-                            nav.select(index)
-                            com.mizan.launcher.data.DiagLog.note("settings page: ${nav.selectedId}")
-                            if (nav.selectedId != "home") showingMakeHome = false
-                            rebuild()
+                        if (tv.isAttachedToWindow && tv.hasFocus() && nav.selectedIndex != index) {
+                            selectCategory(index, enterDetail = false)
                         }
                     }
                 }
@@ -610,12 +733,7 @@ class SettingsActivity : Activity() {
         }
         tv.setOnClickListener {
             // OK / tap on a category: select it AND enter its detail.
-            nav.select(index)
-            com.mizan.launcher.data.DiagLog.note("settings page: ${nav.selectedId}")
-            if (nav.selectedId != "home") showingMakeHome = false
-            nav.enterDetail()
-            focusedPane = SettingsNavMachine.COLUMN_RIGHT
-            rebuild()
+            selectCategory(index, enterDetail = true)
         }
         return tv
     }
@@ -623,6 +741,7 @@ class SettingsActivity : Activity() {
     /** Persistent selection highlight for nav rows (focus adds the lift on top). */
     private fun applyNavRowStyle(tv: TextView, index: Int, focused: Boolean) {
         val selected = nav.selectedIndex == index
+        tv.isSelected = selected
         tv.background = when {
             selected -> {
                 // Accent fill tint + stroke: visible even unfocused.
@@ -667,25 +786,26 @@ class SettingsActivity : Activity() {
                 }
             }
             when (event.keyCode) {
+                KeyEvent.KEYCODE_SEARCH -> {
+                    showSettingsSearch()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (metrics.stacked && focusedPane == SettingsNavMachine.COLUMN_LEFT &&
+                        currentFocus !== searchButton) {
+                        selectCategory(navRows.indexOfFirst { it === currentFocus }.takeIf { it >= 0 } ?: nav.selectedIndex, true)
+                        return true
+                    }
+                }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (focusedPane == SettingsNavMachine.COLUMN_LEFT) {
-                        nav.enterDetail()
-                        focusedPane = SettingsNavMachine.COLUMN_RIGHT
-                        val remembered = detailFocusMemory[nav.selectedId]
-                        val target = detailFocusable.firstOrNull { it.tag == remembered }
-                            ?: detailFocusable.firstOrNull()
-                        target?.requestFocus()
+                    if (!metrics.stacked && focusedPane == SettingsNavMachine.COLUMN_LEFT &&
+                        currentFocus !== searchButton) {
+                        selectCategory(navRows.indexOfFirst { it === currentFocus }.takeIf { it >= 0 } ?: nav.selectedIndex, true)
                         return true
                     }
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    // v1.3 exception: LEFT/RIGHT on a focused switch
-                    // TOGGLES it (iOS-style) instead of jumping back to
-                    // the category list — the switch row consumes the
-                    // key itself. BACK still returns to the list.
-                    if (focusedPane == SettingsNavMachine.COLUMN_RIGHT &&
-                        currentFocus !is SwitchRowView
-                    ) {
+                    if (!metrics.stacked && focusedPane == SettingsNavMachine.COLUMN_RIGHT) {
                         focusNavList()
                         return true
                     }
@@ -2069,7 +2189,13 @@ class SettingsActivity : Activity() {
      */
     private fun row(title: String, subtitle: String, onClick: () -> Unit): TextView {
         val tv = TextView(this)
-        tv.text = if (subtitle.isEmpty()) title else "$title\n$subtitle"
+        tv.text = if (subtitle.isEmpty()) title else android.text.SpannableString("$title\n$subtitle").apply {
+            setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), 0, title.length, 0)
+            setSpan(android.text.style.ForegroundColorSpan(subColour), title.length + 1, length, 0)
+            setSpan(android.text.style.RelativeSizeSpan(0.84f), title.length + 1, length, 0)
+        }
+        tv.minHeight = Ui.dp(this, metrics.rowHeightDp)
+        tv.gravity = android.view.Gravity.CENTER_VERTICAL
         tv.setTextColor(textColour)
         tv.textSize = metrics.rowTextSp
         tv.isFocusable = true
@@ -2096,6 +2222,8 @@ class SettingsActivity : Activity() {
             }
         }
         tv.setOnClickListener {
+            focusedPane = SettingsNavMachine.COLUMN_RIGHT
+            nav.noteFocus(focusedPane)
             detailFocusMemory[nav.selectedId] = title
             onClick()
         }
@@ -2378,14 +2506,19 @@ class SettingsActivity : Activity() {
     /**
      * A boolean settings row rendered as an iPhone-style switch (v1.3):
      * title/subtitle left, pill switch right (grey OFF / green ON).
-     * OK/CENTER and LEFT/RIGHT toggle; the row registers with the same
+     * OK/CENTER toggles; arrows navigate. The row registers with the same
      * focus-memory + nav hooks as text rows.
      */
     private fun toggleRow(title: String, value: Boolean, subtitle: String = "", apply: (Boolean) -> Unit): View {
         val switch = SwitchRowView(
             this, title, subtitle, textColour, subColour,
             metrics.rowTextSp, metrics.infoTextSp, metrics.rowPadVDp, value
-        ) { newValue -> apply(newValue) }
+        ) { newValue ->
+            focusedPane = SettingsNavMachine.COLUMN_RIGHT
+            nav.noteFocus(focusedPane)
+            detailFocusMemory[nav.selectedId] = title
+            apply(newValue)
+        }
         switch.tag = title
         if (buildingDetail) {
             detailFocusable = detailFocusable + switch
@@ -3216,49 +3349,53 @@ class SettingsActivity : Activity() {
         root.put("lock_settings", prefs.lockSettings)
         val profiles = JSONObject()
         val current = prefs.currentProfile
-        // v3.14: export every profile that exists (was hardcoded
-        // 1 and 2 — profiles 3 and 4 used to drop out of backups
-        // silently). The temp-switch pattern is unchanged: each
-        // profile's k()-prefixed values are read while it is
-        // active, and `current` is restored at the end.
-        for (p in prefs.profileSet.sorted()) {
-            prefs.currentProfile = p
-            val o = JSONObject()
-            o.put("theme", prefs.themeId)
-            o.put("wall_kind", prefs.wallpaperKind)
-            o.put("wall_value", prefs.wallpaperValue)
-            o.put("icon_shape", prefs.iconShape)
-            o.put("app_size", prefs.appSize)
-            o.put("columns", prefs.columns)
-            o.put("layout", com.mizan.launcher.core.LayoutCodec.encode(prefs.layout))
-            o.put("locked", JSONArray(prefs.lockedApps.toList()))
-            o.put("reddit_subs", prefs.redditSubs)
-            o.put("reddit_nsfw", prefs.redditAllowNsfw)
-            // v1.4 per-profile extra: the rotation interval setting
-            // (not the rotation clock/index — those are runtime state).
-            o.put("reddit_rotation", prefs.redditRotation)
-            o.put("home_hint_dismissed", prefs.homeHintDismissed)
-            // v1.2 per-profile extra.
-            o.put("weather_units", prefs.weatherUnitsKey)
-            // v1.7 per-profile extra: the home style.
-            o.put("home_style", prefs.homeStyle)
-            // v1.9 per-profile extras: custom name, the unlock-grace
-            // window, the sticky status bar.
-            o.put("profile_name", prefs.profileName(p))
-            o.put("unlock_grace_min", prefs.unlockGraceMinutes)
-            o.put("sticky_status_bar", prefs.stickyStatusBar)
-            // v2.0 per-profile extras: tracker section controls +
-            // custom app artwork (both codec strings).
-            o.put("tracker_sections", prefs.trackerSections)
-            o.put("artwork", prefs.artwork)
-            profiles.put(p.toString(), o)
+        try {
+            // v3.14: export every profile that exists (was hardcoded
+            // 1 and 2 — profiles 3 and 4 used to drop out of backups
+            // silently). The temp-switch pattern is unchanged: each
+            // profile's k()-prefixed values are read while it is
+            // active, and `current` is restored at the end.
+            for (p in prefs.profileSet.sorted()) {
+                prefs.currentProfile = p
+                val o = JSONObject()
+                o.put("theme", prefs.themeId)
+                o.put("wall_kind", prefs.wallpaperKind)
+                o.put("wall_value", prefs.wallpaperValue)
+                o.put("icon_shape", prefs.iconShape)
+                o.put("app_size", prefs.appSize)
+                o.put("columns", prefs.columns)
+                o.put("layout", com.mizan.launcher.core.LayoutCodec.encode(prefs.layout))
+                o.put("locked", JSONArray(prefs.lockedApps.toList()))
+                o.put("reddit_subs", prefs.redditSubs)
+                o.put("reddit_nsfw", prefs.redditAllowNsfw)
+                // v1.4 per-profile extra: the rotation interval setting
+                // (not the rotation clock/index — those are runtime state).
+                o.put("reddit_rotation", prefs.redditRotation)
+                o.put("home_hint_dismissed", prefs.homeHintDismissed)
+                // v1.2 per-profile extra.
+                o.put("weather_units", prefs.weatherUnitsKey)
+                // v1.7 per-profile extra: the home style.
+                o.put("home_style", prefs.homeStyle)
+                // v1.9 per-profile extras: custom name, the unlock-grace
+                // window, the sticky status bar.
+                o.put("profile_name", prefs.profileName(p))
+                o.put("unlock_grace_min", prefs.unlockGraceMinutes)
+                o.put("sticky_status_bar", prefs.stickyStatusBar)
+                // v2.0 per-profile extras: tracker section controls +
+                // custom app artwork (both codec strings).
+                o.put("tracker_sections", prefs.trackerSections)
+                o.put("artwork", prefs.artwork)
+                profiles.put(p.toString(), o)
+            }
+        } finally {
+            prefs.currentProfile = current
         }
-        prefs.currentProfile = current
         root.put("profiles", profiles)
         return root.toString(2)
     }
 
     private fun importJson(text: String): Boolean {
+        if (!com.mizan.launcher.core.SettingsBackup.valid(text)) return false
         // v3.14: captured BEFORE the try so the catch can restore
         // the pre-import profile even if the loop dies mid-switch.
         val currentBeforeImport = prefs.currentProfile
@@ -3354,17 +3491,17 @@ class SettingsActivity : Activity() {
         try {
             when (requestCode) {
                 41 -> {
-                    contentResolver.openOutputStream(uri)?.use { out ->
-                        out.write(exportJson().toByteArray(Charsets.UTF_8))
-                    }
+                    val output = contentResolver.openOutputStream(uri)
+                        ?: throw java.io.IOException("Could not open the backup destination")
+                    output.use { out -> out.write(exportJson().toByteArray(Charsets.UTF_8)) }
                     toast("Settings exported")
                 }
                 42 -> {
                     val text = contentResolver.openInputStream(uri)?.use { input ->
-                        BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readText()
+                        com.mizan.launcher.core.SettingsBackup.read(input)
                     } ?: ""
                     if (importJson(text)) { toast("Settings imported"); rebuild() }
-                    else toast("That file isn't a Sreeb backup — nothing imported")
+                    else toast("Backup could not be restored. Use a valid version 1 Sreeb settings backup.")
                 }
                 43 -> {
                     try {

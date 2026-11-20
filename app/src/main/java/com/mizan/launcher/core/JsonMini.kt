@@ -157,7 +157,10 @@ object JsonMini {
                         }
                         i++
                     }
-                    else -> { sb.append(c); i++ }
+                    else -> {
+                        if (c < ' ') throw IllegalArgumentException("control character")
+                        sb.append(c); i++
+                    }
                 }
             }
             throw IllegalArgumentException("unterminated string")
@@ -166,9 +169,28 @@ object JsonMini {
         private fun readNumber(): Double {
             val start = i
             if (i < s.length && s[i] == '-') i++
-            while (i < s.length && (s[i].isDigit() || s[i] == '.' || s[i] == 'e' || s[i] == 'E' || s[i] == '+' || s[i] == '-')) i++
-            if (start == i) throw IllegalArgumentException("number")
-            return s.substring(start, i).toDouble()
+            if (i >= s.length) throw IllegalArgumentException("number")
+            if (s[i] == '0') i++
+            else {
+                if (s[i] !in '1'..'9') throw IllegalArgumentException("number")
+                while (i < s.length && s[i] in '0'..'9') i++
+            }
+            if (i < s.length && s[i] == '.') {
+                i++
+                val fraction = i
+                while (i < s.length && s[i] in '0'..'9') i++
+                if (fraction == i) throw IllegalArgumentException("fraction")
+            }
+            if (i < s.length && (s[i] == 'e' || s[i] == 'E')) {
+                i++
+                if (i < s.length && (s[i] == '+' || s[i] == '-')) i++
+                val exponent = i
+                while (i < s.length && s[i] in '0'..'9') i++
+                if (exponent == i) throw IllegalArgumentException("exponent")
+            }
+            val value = s.substring(start, i).toDouble()
+            if (!value.isFinite()) throw IllegalArgumentException("non-finite number")
+            return value
         }
     }
 }

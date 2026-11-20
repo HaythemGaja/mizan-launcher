@@ -76,6 +76,7 @@ class SearchActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        query = savedInstanceState?.getString("search_query").orEmpty().take(128)
         val preset = Themes.preset(prefs.themeId)
         textColour = preset.text; subColour = preset.subText
         accent = if (preset.dynamic && prefs.accentOverride != 0) prefs.accentOverride else preset.accent
@@ -106,7 +107,9 @@ class SearchActivity : Activity() {
         }
         // v1.8: warm the tracker snapshot cache (read-only, fail-open);
         // the "In your library" section reads the cache per keystroke.
-        TrackerClient.refreshAsync(this) {}
+        TrackerClient.refreshAsync(this) {
+            if (!isFinishing && !isDestroyed) runOnUiThread { rebuildResults() }
+        }
     }
 
     /**
@@ -114,8 +117,26 @@ class SearchActivity : Activity() {
      * two boundary crossings are intercepted; everything else is the
      * framework's geometric focus search.
      */
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("search_query", query)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
+            if (event.keyCode == KeyEvent.KEYCODE_DEL) {
+                deleteCharacter()
+                return true
+            }
+            if (!event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
+                val codePoint = event.unicodeChar
+                if (codePoint > 0 && Character.isValidCodePoint(codePoint) &&
+                    !Character.isISOControl(codePoint) && (codePoint and Int.MIN_VALUE) == 0) {
+                    query = (query + String(Character.toChars(codePoint))).take(128)
+                    onQueryChanged()
+                    return true
+                }
+            }
             val focus = currentFocus
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
@@ -148,7 +169,7 @@ class SearchActivity : Activity() {
         root.setPadding(Ui.dp(this, 48), Ui.dp(this, 26), Ui.dp(this, 48), Ui.dp(this, 30))
 
         val title = TextView(this)
-        title.text = "Search apps"
+        title.text = "Search apps & library"
         title.setTextColor(accent); title.textSize = 28f
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         root.addView(title)
@@ -220,7 +241,7 @@ class SearchActivity : Activity() {
         }
         val space = keyButton("␣ Space") { typeChar(' ') }
         val back = keyButton("⌫") {
-            if (query.isNotEmpty()) { query = query.dropLast(1); onQueryChanged() }
+            deleteCharacter()
         }
         val clear = keyButton("Clear") {
             if (query.isNotEmpty()) { query = ""; onQueryChanged() }
@@ -282,7 +303,7 @@ class SearchActivity : Activity() {
             null
         }
         if (!spoken.isNullOrBlank()) {
-            query = spoken.trim()
+            query = spoken.trim().take(128)
             onQueryChanged()
         }
     }
@@ -303,8 +324,15 @@ class SearchActivity : Activity() {
         return tv
     }
 
+    private fun deleteCharacter() {
+        if (query.isNotEmpty()) {
+            query = query.substring(0, query.offsetByCodePoints(query.length, -1))
+            onQueryChanged()
+        }
+    }
+
     private fun typeChar(ch: Char) {
-        query += ch
+        query = (query + ch).take(128)
         onQueryChanged()
     }
 
@@ -574,7 +602,8 @@ class SearchActivity : Activity() {
      * set-pattern-first rule), recording the launch in Recently Used.
      */
     private fun launchWithGate(entry: AppEntry) {
-        if (!prefs.lockedApps.contains(entry.pkg)) {
+        if (!com.mizan.launcher.core.RemoteProtocol.appRequiresPrompt(
+                prefs.lockedApps.contains(entry.pkg), prefs.remoteAppLockEnabled)) {
             doLaunch(entry)
             return
         }

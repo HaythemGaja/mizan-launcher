@@ -1,7 +1,6 @@
 package com.mizan.launcher.data
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.widget.ImageView
@@ -11,6 +10,8 @@ import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.lang.ref.WeakReference
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * Image loading for posters, backdrops and IPTV logos (v1.8;
@@ -71,8 +72,8 @@ object TmdbImages {
      * applies the bitmap to EVERY waiter whose view tag still
      * equals the URL, then clears the list.
      */
-    private val imageQueue = LinkedBlockingDeque<Runnable>()
-    private val waiters = HashMap<String, MutableList<Pair<android.widget.ImageView, (() -> Unit)?>>>()
+    private val imageQueue = LinkedBlockingDeque<Runnable>(256)
+    private val waiters = HashMap<String, MutableList<Pair<WeakReference<ImageView>, (() -> Unit)?>>>()
     private val threadNo = AtomicInteger(0)
 
     // NOTE (v3.16 fix): the first cut of this pool overrode execute()
@@ -101,7 +102,7 @@ object TmdbImages {
 
     /** The cached bitmap for [url] decoded for [maxDim], or null (never blocks). */
     fun cached(url: String, maxDim: Int): Bitmap? =
-        synchronized(lock) { cache[cacheKey(url, maxDim)] }
+        synchronized(lock) { cache[cacheKey(url, maxDim.coerceIn(1, HERO_MAX_DIM))] }
 
     /**
      * Load [url] into [target]: cache hit applies immediately;
@@ -118,45 +119,51 @@ object TmdbImages {
         maxDim: Int = DEFAULT_MAX_DIM,
         onApplied: (() -> Unit)? = null
     ) {
+        val dimension = maxDim.coerceIn(1, HERO_MAX_DIM)
+        val key = cacheKey(url, dimension)
+        // Assign before even a cache hit: an older in-flight load must not
+        // overwrite a newly cached image (including another size of this URL).
+        target.tag = key
         if (url.isBlank()) return
-        cached(url, maxDim)?.let {
+        cached(url, dimension)?.let {
             target.setImageBitmap(it)
             onApplied?.invoke()
             return
         }
-        target.tag = url
-        val key = cacheKey(url, maxDim)
         val alreadyDownloading = synchronized(lock) {
-            val list = waiters.getOrPut(key) { mutableListOf() }
-            val wasPresent = list.isNotEmpty()
-            if (list.none { it.first === target }) list.add(target to onApplied)
-            wasPresent
+            val existing = waiters[key]
+            val list = existing ?: mutableListOf<Pair<WeakReference<ImageView>, (() -> Unit)?>>()
+                .also { waiters[key] = it }
+            list.removeAll { it.first.get() == null || it.first.get() === target }
+            list.add(WeakReference(target) to onApplied)
+            existing != null
         }
-        // A waiter registered while a download is already in flight
-        // is served by that download's completion; starting a second
-        // download would only duplicate the network work.
         if (alreadyDownloading) return
-        pool.execute {
-            val bmp = download(url, maxDim)
-            if (bmp != null) {
-                synchronized(lock) { putCached(key, bmp) }
-            }
-            val served = synchronized(lock) { waiters.remove(key) } ?: emptyList()
-            if (bmp != null) {
-                mainHandler.post {
-                    for ((view, cb) in served) {
-                        if (view.tag == url) {
+        try {
+            pool.execute {
+                val bmp = download(url, dimension)
+                val served = synchronized(lock) {
+                    if (bmp != null) putCached(key, bmp)
+                    waiters.remove(key).orEmpty()
+                }
+                if (bmp != null) mainHandler.post {
+                    for ((reference, cb) in served) {
+                        val view = reference.get() ?: continue
+                        if (view.tag == key) {
                             view.setImageBitmap(bmp)
                             cb?.invoke()
                         }
                     }
                 }
             }
+        } catch (e: RejectedExecutionException) {
+            synchronized(lock) { waiters.remove(key) }
         }
     }
 
     /** Insert under the byte budget, evicting least-recently-used entries. Caller holds [lock]. */
     private fun putCached(key: String, bmp: Bitmap) {
+        if (bmp.byteCount > MAX_CACHE_BYTES) return
         cache.remove(key)?.let { cacheBytes -= it.byteCount }
         cache[key] = bmp
         cacheBytes += bmp.byteCount
@@ -168,8 +175,11 @@ object TmdbImages {
     }
 
     private fun download(url: String, maxDim: Int): Bitmap? {
-        val conn = URL(url).openConnection() as HttpURLConnection
+        var conn: HttpURLConnection? = null
         return try {
+            val address = URL(url)
+            if (address.protocol != "http" && address.protocol != "https") return null
+            conn = address.openConnection() as? HttpURLConnection ?: return null
             conn.connectTimeout = 10_000
             conn.readTimeout = 15_000
             conn.instanceFollowRedirects = true
@@ -188,25 +198,11 @@ object TmdbImages {
                 }
                 buf.toByteArray()
             }
-            // Two-pass decode: bounds first, then a sampled decode
-            // whose longest side lands within ~2× of maxDim.
-            val bounds = BitmapFactory.Options()
-            bounds.inJustDecodeBounds = true
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-            var sample = 1
-            while (bounds.outWidth / (sample * 2) >= maxDim &&
-                bounds.outHeight / (sample * 2) >= maxDim
-            ) {
-                sample *= 2
-            }
-            val opts = BitmapFactory.Options()
-            opts.inSampleSize = sample
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            DecodeBounds.decodeBytesBounded(bytes, maxDim)
         } catch (e: Exception) {
             null
         } finally {
-            conn.disconnect()
+            conn?.disconnect()
         }
     }
 }

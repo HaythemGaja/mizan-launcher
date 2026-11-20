@@ -4,7 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.view.Gravity
-import android.view.KeyEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -20,10 +20,8 @@ import com.mizan.launcher.core.SwitchLogic
  * on the left, the pill on the right, focus ring around the whole row.
  *
  * Interaction: OK/CENTER toggles (via the normal click path);
- * LEFT/RIGHT also toggle while the row is focused — SettingsActivity's
- * key dispatcher deliberately lets LEFT/RIGHT fall through to a
- * focused SwitchRowView instead of jumping back to the category list
- * (BACK still returns to the list, per the nav machine).
+ * Arrow keys navigate without changing the value. SettingsActivity returns
+ * to the category list on LEFT; only OK, click or accessibility click toggles.
  */
 class SwitchPillView(ctx: Context) : View(ctx) {
 
@@ -75,12 +73,17 @@ class SwitchRowView(
     private val onToggle: (Boolean) -> Unit
 ) : LinearLayout(ctx) {
 
+    private val rowTitle = title
+    private val rowSubtitle = subtitle
     private val pill = SwitchPillView(ctx)
 
     var checked: Boolean = initiallyChecked
         private set(v) {
             field = v
             pill.checked = v
+            contentDescription = "$rowTitle, ${if (v) "On" else "Off"}" +
+                if (rowSubtitle.isEmpty()) "" else ", $rowSubtitle"
+            sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         }
 
     init {
@@ -88,6 +91,11 @@ class SwitchRowView(
         gravity = Gravity.CENTER_VERTICAL
         isFocusable = true
         isClickable = true
+        descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        minimumHeight = Ui.dp(ctx, 52)
+        contentDescription = "$title, ${if (initiallyChecked) "On" else "Off"}" +
+            if (subtitle.isEmpty()) "" else ", $subtitle"
         setPadding(Ui.dp(ctx, 16), Ui.dp(ctx, padVDp), Ui.dp(ctx, 16), Ui.dp(ctx, padVDp))
         val lp = LayoutParams(-1, -2)
         lp.setMargins(0, Ui.dp(ctx, 4), 0, Ui.dp(ctx, 4))
@@ -95,10 +103,14 @@ class SwitchRowView(
 
         val texts = LinearLayout(ctx)
         texts.orientation = VERTICAL
+        texts.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        texts.setPadding(0, 0, Ui.dp(ctx, 16), 0)
+        pill.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         val titleView = TextView(ctx)
         titleView.text = title
         titleView.setTextColor(titleColour)
         titleView.textSize = titleSp
+        titleView.setTypeface(titleView.typeface, android.graphics.Typeface.BOLD)
         texts.addView(titleView)
         if (subtitle.isNotEmpty()) {
             val sub = TextView(ctx)
@@ -124,18 +136,11 @@ class SwitchRowView(
         onToggle(checked)
     }
 
-    /**
-     * LEFT/RIGHT flip the switch (iOS settings behaviour). CENTER/ENTER
-     * are left alone — the default click handling toggles via the
-     * click listener, so handling them here too would double-toggle.
-     */
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if ((keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) &&
-            event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0
-        ) {
-            toggle()
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
+    /** Expose the entire row as one checkable switch to accessibility services. */
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.widget.Switch"
+        info.isCheckable = true
+        info.isChecked = checked
     }
 }

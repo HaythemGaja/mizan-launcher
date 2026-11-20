@@ -11,34 +11,29 @@ android {
         applicationId = "com.mizan.launcherremote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
+    // Debug builds work on a fresh checkout. Existing installs can be updated
+    // only with their original signing key; opt in through environment variables.
+    val signingPath = System.getenv("SREEBREMOTE_KEYSTORE")?.takeIf { it.isNotBlank() }
     signingConfigs {
-        // Pinned keystore in persistent workspace storage (house
-        // pattern, same as the TV launcher): the default
-        // ~/.android/debug.keystore lives under /root (ephemeral)
-        // and is wiped on VM replacement -> new signing key ->
-        // "App not installed" on update. Absolute path: the
-        // Gradle daemon runs as root, so a user.home-relative
-        // path would resolve to /root and fail. The keystore
-        // file itself must NEVER enter the repo.
-        create("pinnedDebug") {
-            val keystorePath = System.getenv("SREEBREMOTE_KEYSTORE")?.takeIf { it.isNotBlank() }
-                ?: "/home/hatch/workspace/.keystores/sreebremote-debug.keystore"
-            storeFile = file(keystorePath)
-            storePassword = System.getenv("SREEBREMOTE_STOREPASS") ?: "android"
-            keyAlias = "sreebremote"
-            keyPassword = System.getenv("SREEBREMOTE_KEYPASS") ?: "android"
+        if (signingPath != null) {
+            create("provided") {
+                storeFile = file(signingPath)
+                storePassword = System.getenv("SREEBREMOTE_STOREPASS") ?: "android"
+                keyAlias = System.getenv("SREEBREMOTE_KEY_ALIAS") ?: "sreebremote"
+                keyPassword = System.getenv("SREEBREMOTE_KEYPASS") ?: "android"
+            }
         }
     }
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("pinnedDebug")
+            if (signingPath != null) signingConfig = signingConfigs.getByName("provided")
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("pinnedDebug")
+            if (signingPath != null) signingConfig = signingConfigs.getByName("provided")
         }
     }
     compileOptions {
@@ -51,6 +46,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     // Views only, framework Android + Kotlin stdlib. No Compose,
     // no androidx: this app is one connect screen + one control
     // screen, and it must stay light.

@@ -28,10 +28,13 @@ object Ui {
         val d = GradientDrawable()
         d.cornerRadius = dp(ctx, cornerDp).toFloat()
         if (focused) {
-            d.setColor(com.mizan.launcher.core.Design.FOCUS_FILL)
+            d.orientation = GradientDrawable.Orientation.TOP_BOTTOM
+            d.colors = intArrayOf(0x443D506B, 0xCC111827.toInt())
             d.setStroke(dp(ctx, com.mizan.launcher.core.Design.FOCUS_STROKE_DP), accent)
         } else {
-            d.setColor(com.mizan.launcher.core.Design.TILE_FILL)
+            d.orientation = GradientDrawable.Orientation.TOP_BOTTOM
+            d.colors = intArrayOf(0x24FFFFFF, 0x10FFFFFF)
+            d.setStroke(dp(ctx, 1).coerceAtLeast(1), 0x20FFFFFF)
         }
         return d
     }
@@ -115,7 +118,7 @@ object Ui {
         row.layoutParams = lp
 
         val tv = TextView(ctx)
-        tv.text = text.uppercase()
+        tv.text = text.uppercase(java.util.Locale.getDefault())
         tv.setTextColor(colour)
         tv.textSize = com.mizan.launcher.core.Design.SECTION_HEADER_SP
         tv.letterSpacing = com.mizan.launcher.core.Design.SECTION_HEADER_TRACKING
@@ -141,13 +144,25 @@ object Ui {
      * sat on artwork. This gives the design the positions instead.
      */
     fun verticalGradient(colors: IntArray, positions: FloatArray): android.graphics.drawable.Drawable {
-        val h = 1000f
-        val shader = android.graphics.LinearGradient(
-            0f, 0f, 0f, h, colors, positions, android.graphics.Shader.TileMode.CLAMP
-        )
-        val d = android.graphics.drawable.ShapeDrawable()
-        d.paint.shader = shader
-        return d
+        require(colors.size >= 2 && colors.size == positions.size)
+        val stops = colors.copyOf()
+        val offsets = positions.copyOf()
+        return object : android.graphics.drawable.Drawable() {
+            private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            override fun onBoundsChange(bounds: android.graphics.Rect) {
+                paint.shader = android.graphics.LinearGradient(
+                    0f, bounds.top.toFloat(), 0f, bounds.bottom.coerceAtLeast(bounds.top + 1).toFloat(),
+                    stops, offsets, android.graphics.Shader.TileMode.CLAMP
+                )
+            }
+            override fun draw(canvas: Canvas) { canvas.drawRect(bounds, paint) }
+            override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }
+            override fun setColorFilter(filter: android.graphics.ColorFilter?) {
+                paint.colorFilter = filter; invalidateSelf()
+            }
+            @Deprecated("Required by Drawable")
+            override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+        }
     }
 
     fun scrimDrawable(): GradientDrawable =

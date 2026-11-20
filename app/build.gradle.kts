@@ -11,35 +11,29 @@ android {
         applicationId = "com.mizan.launcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 46
-        versionName = "3.20"
+        versionCode = 48
+        versionName = "3.22"
     }
+    // Debug builds work on a fresh checkout. Existing installs can be updated
+    // only with their original signing key; opt in through environment variables.
+    val signingPath = System.getenv("MIZAN_KEYSTORE")?.takeIf { it.isNotBlank() }
     signingConfigs {
-        // Pinned debug keystore in persistent workspace storage. The default
-        // ~/.android/debug.keystore lives under /root (ephemeral) and is wiped
-        // on VM replacement -> new signing key -> "App not installed" on
-        // update. Absolute path: the Gradle daemon runs as root, so a
-        // user.home-relative path would resolve to /root and fail.
-        create("pinnedDebug") {
-            // The release/update build must keep ONE signing key or the
-            // TV refuses the update ("App not installed"). The default
-            // is the original build-VM path; set MIZAN_KEYSTORE to point
-            // a checkout at its own copy (see .gitignore).
-            val keystorePath = System.getenv("MIZAN_KEYSTORE")?.takeIf { it.isNotBlank() }
-                ?: "/home/hatch/workspace/.keystores/mizanlauncher-debug.keystore"
-            storeFile = file(keystorePath)
-            storePassword = "android"
-            keyAlias = "mizanlauncher"
-            keyPassword = "android"
+        if (signingPath != null) {
+            create("provided") {
+                storeFile = file(signingPath)
+                storePassword = System.getenv("MIZAN_STOREPASS") ?: "android"
+                keyAlias = System.getenv("MIZAN_KEY_ALIAS") ?: "mizanlauncher"
+                keyPassword = System.getenv("MIZAN_KEYPASS") ?: "android"
+            }
         }
     }
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("pinnedDebug")
+            if (signingPath != null) signingConfig = signingConfigs.getByName("provided")
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("pinnedDebug")
+            if (signingPath != null) signingConfig = signingConfigs.getByName("provided")
         }
     }
     compileOptions {
@@ -52,6 +46,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     // Views only, framework Android + Kotlin stdlib. No Compose, no media3:
     // the whole point is a launcher that stays light on a slow TV box.
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")

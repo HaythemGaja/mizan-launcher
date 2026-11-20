@@ -374,12 +374,17 @@ class MainActivity : Activity() {
         // v3.19: drop the live-home remote nudge (the pending
         // flag in prefs still carries the request to next build).
         com.mizan.launcher.data.RemoteRefresh.onRefresh = null
+        handler.removeCallbacksAndMessages(null)
+        stopHeroRotation()
         super.onDestroy()
     }
 
+    private var resumedOnce = false
+
     override fun onResume() {
         super.onResume()
-        if (::prefs.isInitialized) rebuild()
+        if (resumedOnce && ::prefs.isInitialized) rebuild()
+        resumedOnce = true
         // v3.19: consume a pending remote refresh (the rebuild
         // above already applied it).
         try {
@@ -4556,26 +4561,54 @@ class MainActivity : Activity() {
     // Watch's Live tab.
     // ---------------------------------------------------------------
 
-    /** One dim line of chrome: the look's name + clock (+ Guest note). No pills, no tiles. */
+    /** Clean home navigation stays accessible even while library data loads. */
     private fun buildCleanHeader(): View {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
         val lp = LinearLayout.LayoutParams(-1, -2)
-        lp.setMargins(0, 0, 0, Ui.dp(this, com.mizan.launcher.core.Design.SPACE_M))
+        lp.setMargins(0, 0, 0, Ui.dp(this, 20))
         row.layoutParams = lp
         val name = TextView(this)
-        name.text = if (guestActive()) "Clean Tracker · Guest" else "Clean Tracker"
-        name.setTextColor(0xB3FFFFFF.toInt())
-        name.textSize = 14f
+        name.text = getString(com.mizan.launcher.R.string.app_name).uppercase(Locale.ROOT) +
+            if (guestActive()) " · GUEST" else ""
+        name.setTextColor(textColour)
+        name.textSize = 20f
         name.setTypeface(name.typeface, android.graphics.Typeface.BOLD)
-        name.letterSpacing = 0.14f
-        row.addView(name, LinearLayout.LayoutParams(-2, -2))
-        row.addView(View(this), LinearLayout.LayoutParams(0, -2, 1f))
+        name.letterSpacing = 0.12f
+        row.addView(name)
+        row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        fun action(label: String, screen: Class<out android.app.Activity>) {
+            val button = TextView(this)
+            button.text = label
+            button.contentDescription = label
+            button.textSize = 15f
+            button.setTextColor(textColour)
+            button.gravity = Gravity.CENTER
+            button.isFocusable = true
+            button.isClickable = true
+            button.minHeight = Ui.dp(this, 48)
+            button.setPadding(Ui.dp(this, 16), Ui.dp(this, 10), Ui.dp(this, 16), Ui.dp(this, 10))
+            button.background = Ui.tileBackground(accent, false, 14, this)
+            Ui.focusLift(button, accent, 14)
+            button.setOnClickListener {
+                try { startActivity(Intent(this, screen)) }
+                catch (e: Exception) { Prefs.noteError(this, "cleanNavigation", e) }
+            }
+            val params = LinearLayout.LayoutParams(-2, -2)
+            params.setMargins(Ui.dp(this, 8), Ui.dp(this, 4), 0, Ui.dp(this, 4))
+            row.addView(button, params)
+        }
+        action("Apps", com.mizan.launcher.ui.AllAppsActivity::class.java)
+        action("Search", SearchActivity::class.java)
+        action("My Library", com.mizan.launcher.ui.LibraryActivity::class.java)
         val clock = TextView(this)
-        clock.text = com.mizan.launcher.core.TimeFmt.format("HH:mm", System.currentTimeMillis())
-        clock.setTextColor(0xB3FFFFFF.toInt())
-        clock.textSize = 14f
-        row.addView(clock, LinearLayout.LayoutParams(-2, -2))
+        clock.setTextColor(subColour)
+        clock.textSize = 18f
+        clock.setPadding(Ui.dp(this, 24), 0, 0, 0)
+        clockView = clock
+        clock.text = com.mizan.launcher.core.TimeFmt.format(layout.statusBar.clockPattern(), System.currentTimeMillis())
+        row.addView(clock)
         return row
     }
 
@@ -4593,6 +4626,16 @@ class MainActivity : Activity() {
         if (hero.backdrop.isNotBlank()) {
             TmdbImages.load(TmdbImages.url("w1280", hero.backdrop), art, TmdbImages.HERO_MAX_DIM)
         }
+        // Readable titles over bright photography, scaled with the band.
+        val sideShade = View(this)
+        sideShade.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(0xE6111827.toInt(), 0x80111827.toInt(), 0x10111827))
+        band.addView(sideShade, FrameLayout.LayoutParams(-1, -1))
+        val bottomShade = View(this)
+        bottomShade.background = Ui.verticalGradient(
+            intArrayOf(0x00111827, 0xD9111827.toInt()), floatArrayOf(0f, 1f))
+        band.addView(bottomShade, FrameLayout.LayoutParams(-1, -1))
+        Ui.roundClip(band, 24, this)
         // The zone's own params are LinearLayout params — re-parent
         // them to FrameLayout params, or the band measure crashes.
         val zone = buildHeroZone(hero)
@@ -4669,11 +4712,7 @@ class MainActivity : Activity() {
                         // + apps, instead of two bare sections.
                         val band = LinearLayout(this)
                         band.orientation = LinearLayout.VERTICAL
-                        val bandBg = GradientDrawable()
-                        bandBg.shape = GradientDrawable.RECTANGLE
-                        bandBg.cornerRadius = Ui.dp(this, 16).toFloat()
-                        bandBg.setColor(0x22000000.toInt())
-                        band.background = bandBg
+                        band.background = Ui.glassPanelDark(this, 24)
                         band.setPadding(
                             Ui.dp(this, 16), Ui.dp(this, 12),
                             Ui.dp(this, 16), Ui.dp(this, 12)

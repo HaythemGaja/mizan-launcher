@@ -7,10 +7,10 @@ import android.os.Looper
 import android.widget.ImageView
 import com.mizan.launcher.ui.Ui
 import java.io.File
-import java.io.FileOutputStream
+import android.util.AtomicFile
 import java.net.HttpURLConnection
 import java.net.URL
-import kotlin.concurrent.thread
+import java.util.concurrent.Executors
 
 /**
  * v2.0: URL artwork for custom app icons. An image URL is downloaded
@@ -43,6 +43,30 @@ object ArtworkImages {
         ): Boolean = size > 32
     }
     private val lock = Any()
+    private val diskLock = Any()
+    private val workers = Executors.newFixedThreadPool(2) { task ->
+        Thread(task, "mizan-artwork").apply { isDaemon = true }
+    }
+
+    private fun clearMemory(pkg: String) {
+        synchronized(lock) {
+            val it = shapedCache.keys.iterator()
+            while (it.hasNext()) if (it.next().startsWith("$pkg|")) it.remove()
+        }
+    }
+
+    private fun save(file: File, bitmap: Bitmap) = synchronized(diskLock) {
+        file.parentFile?.mkdirs()
+        val atomic = AtomicFile(file)
+        val output = atomic.startWrite()
+        try {
+            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+            atomic.finishWrite(output)
+        } catch (e: Throwable) {
+            atomic.failWrite(output)
+            throw e
+        }
+    }
 
     fun fileFor(ctx: Context, pkg: String): File {
         val safe = pkg.replace(Regex("[^A-Za-z0-9._-]"), "_")
@@ -51,11 +75,8 @@ object ArtworkImages {
 
     /** Drop a package's disk + memory cache (reset / URL replaced). */
     fun invalidate(ctx: Context, pkg: String) {
-        try { fileFor(ctx, pkg).delete() } catch (e: Exception) { /* best effort */ }
-        synchronized(lock) {
-            val it = shapedCache.keys.iterator()
-            while (it.hasNext()) if (it.next().startsWith("$pkg|")) it.remove()
-        }
+        synchronized(diskLock) { AtomicFile(fileFor(ctx, pkg)).delete() }
+        clearMemory(pkg)
     }
 
     /**
@@ -64,18 +85,15 @@ object ArtworkImages {
      */
     fun fetchAndStore(ctx: Context, pkg: String, url: String, onResult: (Boolean) -> Unit) {
         val appCtx = ctx.applicationContext
-        thread(name = "mizan-artwork-fetch") {
+        workers.execute {
             val ok = try {
                 val bmp = download(url)
                 if (bmp == null) {
                     false
                 } else {
                     val file = fileFor(appCtx, pkg)
-                    file.parentFile?.mkdirs()
-                    FileOutputStream(file).use { out ->
-                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-                    }
-                    invalidate(appCtx, pkg)
+                    save(file, bmp)
+                    clearMemory(pkg)
                     true
                 }
             } catch (e: Throwable) {
@@ -103,12 +121,13 @@ object ArtworkImages {
         shape: String,
         fallback: Bitmap
     ) {
-        val key = "$pkg|$sizePx|$shape"
+        val dimension = sizePx.coerceIn(1, MAX_DIM)
+        val key = "$pkg|$dimension|$shape|$url"
+        target.tag = key
         synchronized(lock) { shapedCache[key] }?.let { target.setImageBitmap(it); return }
         target.setImageBitmap(fallback)
-        target.tag = key
         val appCtx = ctx.applicationContext
-        thread(name = "mizan-artwork-img") {
+        workers.execute {
             val raw: Bitmap? = try {
                 val file = fileFor(appCtx, pkg)
                 if (file.isFile) {
@@ -116,26 +135,25 @@ object ArtworkImages {
                 } else {
                     val bmp = download(url)
                     if (bmp != null) {
-                        file.parentFile?.mkdirs()
-                        FileOutputStream(file).use { out ->
-                            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        }
+                        save(file, bmp)
                     }
                     bmp
                 }
             } catch (e: Throwable) {
                 null
             }
-            if (raw == null) return@thread
+            if (raw == null) return@execute
             // Centre-crop to a square, then apply the icon mask.
-            val side = minOf(raw.width, raw.height)
-            if (side <= 0) return@thread
-            val square = Bitmap.createBitmap(
-                raw, (raw.width - side) / 2, (raw.height - side) / 2, side, side
-            )
-            val scaled = if (side == sizePx) square
-            else Bitmap.createScaledBitmap(square, sizePx, sizePx, true)
-            val shaped = Ui.maskToShape(scaled, shape)
+            val shaped = try {
+                val side = minOf(raw.width, raw.height)
+                if (side <= 0) return@execute
+                val square = Bitmap.createBitmap(
+                    raw, (raw.width - side) / 2, (raw.height - side) / 2, side, side
+                )
+                val scaled = if (side == dimension) square
+                else Bitmap.createScaledBitmap(square, dimension, dimension, true)
+                Ui.maskToShape(scaled, shape)
+            } catch (e: Throwable) { return@execute }
             synchronized(lock) { shapedCache[key] = shaped }
             mainHandler.post {
                 if (target.tag == key) target.setImageBitmap(shaped)
@@ -144,8 +162,11 @@ object ArtworkImages {
     }
 
     private fun download(url: String): Bitmap? {
-        val conn = URL(url).openConnection() as? HttpURLConnection ?: return null
+        var conn: HttpURLConnection? = null
         return try {
+            val address = URL(url)
+            if (address.protocol != "http" && address.protocol != "https") return null
+            conn = address.openConnection() as? HttpURLConnection ?: return null
             conn.connectTimeout = 10_000
             conn.readTimeout = 15_000
             conn.instanceFollowRedirects = true
@@ -168,7 +189,7 @@ object ArtworkImages {
         } catch (e: Exception) {
             null
         } finally {
-            conn.disconnect()
+            conn?.disconnect()
         }
     }
 }

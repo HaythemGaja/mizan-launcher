@@ -78,10 +78,12 @@ object RemoteClient {
 
     private class Parser(private val s: String) {
         private var i = 0
+        private var depth = 0
         fun parse(): Any? {
             skipWs()
             val v = readValue()
             skipWs()
+            if (i != s.length) throw IllegalArgumentException("trailing data")
             return v
         }
         private fun skipWs() {
@@ -90,7 +92,8 @@ object RemoteClient {
         private fun readValue(): Any? {
             skipWs()
             if (i >= s.length) throw IllegalArgumentException("truncated")
-            return when (s[i]) {
+            if (++depth > 64) throw IllegalArgumentException("nesting")
+            return try { when (s[i]) {
                 '{' -> readObject()
                 '[' -> readArray()
                 '"' -> readString()
@@ -98,7 +101,7 @@ object RemoteClient {
                 'f' -> { expect("false"); false }
                 'n' -> { expect("null"); null }
                 else -> readNumber()
-            }
+            } } finally { depth-- }
         }
         private fun expect(word: String) {
             if (!s.startsWith(word, i)) throw IllegalArgumentException("bad literal")
@@ -136,7 +139,7 @@ object RemoteClient {
             }
         }
         private fun readString(): String {
-            if (s[i] != '"') throw IllegalArgumentException("expected string")
+            if (i >= s.length || s[i] != '"') throw IllegalArgumentException("expected string")
             i++
             val b = StringBuilder()
             while (i < s.length) {
@@ -150,27 +153,38 @@ object RemoteClient {
                         'n' -> b.append('\n')
                         'r' -> b.append('\r')
                         't' -> b.append('\t')
+                        'b' -> b.append('\b')
+                        'f' -> b.append('\u000C')
                         'u' -> {
-                            val hex = s.substring(i, (i + 4).coerceAtMost(s.length))
-                            b.append(hex.toIntOrNull(16)?.toChar() ?: '?')
+                            if (i + 4 > s.length) throw IllegalArgumentException("unicode")
+                            val hex = s.substring(i, i + 4)
+                            b.append(hex.toInt(16).toChar())
                             i += 4
                         }
-                        else -> b.append(e)
+                        else -> throw IllegalArgumentException("escape")
                     }
-                } else b.append(c)
+                } else {
+                    if (c < ' ' || c == '\\') throw IllegalArgumentException("string")
+                    b.append(c)
+                }
             }
             throw IllegalArgumentException("unterminated string")
         }
         private fun readNumber(): Double {
             val start = i
             while (i < s.length && (s[i].isDigit() || s[i] in "-+.eE")) i++
-            return s.substring(start, i).toDoubleOrNull()
-                ?: throw IllegalArgumentException("bad number")
+            val token = s.substring(start, i)
+            if (!token.matches(Regex("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")))
+                throw IllegalArgumentException("bad number")
+            return token.toDouble().also {
+                if (!it.isFinite()) throw IllegalArgumentException("non-finite number")
+            }
         }
     }
 
     /** Parse one reply. Never throws: garbage is Err("bad_reply"). */
     fun parseResponse(json: String): Result {
+        if (json.length > 65536) return Result.Err("bad_reply")
         return try {
             val obj = Parser(json).parse() as? Map<*, *> ?: return Result.Err("bad_reply")
             val ok = obj["ok"] ?: return Result.Err("bad_reply")

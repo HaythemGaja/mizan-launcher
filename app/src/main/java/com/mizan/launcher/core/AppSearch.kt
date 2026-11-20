@@ -1,34 +1,33 @@
 package com.mizan.launcher.core
 
-/**
- * App search filtering — pure functions, no Android imports (v1.4).
- *
- * The Search screen shows the same visible set as All Apps (installed
- * − hidden − in-any-folder; the caller applies that dedupe) and filters
- * it by the typed query:
- * - matching is a case-insensitive substring test on the app label,
- * - labels that START WITH the query sort before mere substring hits
- *   (typing "you" should surface YouTube above "My YouTube Clips"),
- * - original order is preserved inside each group (stable),
- * - an empty/blank query returns the full set, in order.
- */
-object AppSearch {
+import java.text.Normalizer
+import java.util.Locale
 
-    /** One searchable app: package + display label. */
+/** Stable app search: exact labels, prefixes, then all-word matches. */
+object AppSearch {
     data class Item(val pkg: String, val label: String)
 
+    private fun normalize(value: String): String = Normalizer
+        .normalize(value, Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}+"), "")
+        .lowercase(Locale.ROOT)
+        .trim().replace(Regex("\\s+"), " ")
+
     fun filter(apps: List<Item>, query: String): List<Item> {
-        val q = query.trim().lowercase()
+        val q = normalize(query)
         if (q.isEmpty()) return apps
+        val words = q.split(' ')
+        val exact = ArrayList<Item>()
         val prefix = ArrayList<Item>()
-        val substring = ArrayList<Item>()
+        val matches = ArrayList<Item>()
         for (app in apps) {
-            val label = app.label.lowercase()
+            val label = normalize(app.label)
             when {
+                label == q -> exact.add(app)
                 label.startsWith(q) -> prefix.add(app)
-                label.contains(q) -> substring.add(app)
+                words.all { label.contains(it) } -> matches.add(app)
             }
         }
-        return prefix + substring
+        return exact + prefix + matches
     }
 }

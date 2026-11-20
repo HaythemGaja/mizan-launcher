@@ -77,14 +77,21 @@ object TrackerStoreDisk {
     private fun episodeFile(ctx: Context, tmdbId: Long): File =
         File(episodesDir(ctx), "tv_$tmdbId.json")
 
+    @Synchronized
     private fun writeAtomic(target: File, content: String): Boolean {
+        val tmp = File(target.parentFile, target.name + ".tmp")
         return try {
-            val tmp = File(target.parentFile, target.name + ".tmp")
-            tmp.writeText(content)
-            if (target.exists()) target.delete()
+            java.io.FileOutputStream(tmp).use { out ->
+                out.write(content.toByteArray(Charsets.UTF_8))
+                out.fd.sync()
+            }
+            // Android's same-directory rename replaces atomically. A failed
+            // rename leaves the last good file in place; never delete it first.
             tmp.renameTo(target)
         } catch (e: Exception) {
             false
+        } finally {
+            if (tmp.exists()) tmp.delete()
         }
     }
 

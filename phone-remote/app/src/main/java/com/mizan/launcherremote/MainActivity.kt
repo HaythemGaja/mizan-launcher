@@ -35,6 +35,14 @@ class MainActivity : Activity() {
     private var pairing: String = ""
     private var status: RemoteClient.Status? = null
     private val arrows = StringBuilder()
+    private val requests = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "mizan-remote-client").apply { isDaemon = true }
+    }
+
+    override fun onDestroy() {
+        requests.shutdownNow()
+        super.onDestroy()
+    }
 
     // Set while the screen is being filled from a status reply,
     // so programmatic switch/spinner sets never fire commands.
@@ -294,23 +302,36 @@ class MainActivity : Activity() {
     private fun send(command: String, params: List<Pair<String, Any>> = emptyList(), onResult: (RemoteClient.Result) -> Unit) {
         val body = RemoteClient.requestJson(pairing, command, params)
         val endpoint = RemoteClient.url(ip)
-        Thread {
+        requests.execute {
+            var conn: HttpURLConnection? = null
             val result = try {
-                val conn = URL(endpoint).openConnection() as HttpURLConnection
+                conn = URL(endpoint).openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.connectTimeout = 8000
                 conn.readTimeout = 8000
                 conn.doOutput = true
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val bytes = body.toByteArray(Charsets.UTF_8)
+                conn.setFixedLengthStreamingMode(bytes.size)
+                conn.outputStream.use { it.write(bytes) }
                 val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-                val text = stream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
-                conn.disconnect()
+                val text = stream?.use {
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(4096)
+                    while (true) {
+                        val n = it.read(buffer)
+                        if (n < 0) break
+                        if (output.size() + n > 65536) throw java.io.IOException("reply too large")
+                        output.write(buffer, 0, n)
+                    }
+                    output.toString("UTF-8")
+                }.orEmpty()
                 RemoteClient.parseResponse(text)
             } catch (e: Exception) {
                 RemoteClient.Result.Err("unreachable (${e.javaClass.simpleName})")
             }
-            runOnUiThread { onResult(result) }
-        }.apply { isDaemon = true; start() }
+            finally { conn?.disconnect() }
+            runOnUiThread { if (!isFinishing && !isDestroyed) onResult(result) }
+        }
     }
 }
